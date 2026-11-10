@@ -4,7 +4,7 @@ use orchard::keys::{FullViewingKey, Scope};
 use orchard::primitives::redpallas::{self, SpendAuth};
 use pasta_curves::pallas;
 use rand::CryptoRng;
-use zcash_address::unified::{self, Encoding, Revision, Uitem};
+use zcash_address::unified::{self, Encoding};
 use zcash_protocol::consensus::NetworkType;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -89,12 +89,9 @@ impl JointAccount {
 
     /// An Orchard-only unified full viewing key, for importing as a view-only account.
     pub fn ufvk(&self, network: NetworkType) -> String {
-        unified::Ufvk::try_from_items(
-            Revision::R0,
-            vec![Uitem::Data(unified::Fvk::Orchard(self.fvk.to_bytes()))],
-        )
-        .expect("a lone Orchard FVK is a valid UFVK")
-        .encode(&network)
+        unified::Ufvk::try_from_items(vec![unified::Fvk::Orchard(self.fvk.to_bytes())])
+            .expect("a lone Orchard FVK is a valid UFVK")
+            .encode(&network)
     }
 
     pub fn deposit_address(&self) -> orchard::Address {
@@ -104,7 +101,7 @@ impl JointAccount {
     /// The deposit address as an Orchard-only unified address.
     pub fn unified_address(&self, network: NetworkType) -> String {
         let receiver = unified::Receiver::Orchard(self.deposit_address().to_raw_address_bytes());
-        unified::Address::try_from_items(Revision::R0, vec![Uitem::Data(receiver)])
+        unified::Address::try_from_items(vec![receiver])
             .expect("a lone Orchard receiver is a valid unified address")
             .encode(&network)
     }

@@ -11,28 +11,28 @@ publish = false
 # pczt's transparent support links bip32 0.6 and secp256k1 0.33 already; deposit keys take
 # its backend rather than a second curve stack.
 bip32 = { version = "0.6", default-features = false, features = ["secp256k1-ffi"] }
-blake2b_simd.workspace = true
-ff.workspace = true
-group.workspace = true
+blake2b_simd = "1"
+ff = "0.14"
+group = "0.14"
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
-orchard.workspace = true
-pasta_curves.workspace = true
-pczt.workspace = true
-rand.workspace = true
+orchard = { package = "zakura-orchard", version = "=4.0.0", default-features = false, features = ["std", "zip32-addresses"] }
+pasta_curves = { package = "zakura-pasta-curves", version = "=4.0.0" }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc9", default-features = false, features = ["std", "orchard", "signer"] }
+rand = { version = "0.10", default-features = false, features = ["sys_rng"] }
 secp256k1 = { version = "0.33", default-features = false }
 sha3 = "0.10"
-zcash_address.workspace = true
-zcash_note_encryption = "0.5.1"
-zcash_protocol.workspace = true
-zeroize.workspace = true
+zcash_address = { package = "zakura-address", version = "=4.0.0" }
+zcash_note_encryption = { package = "zakura-note-encryption", version = "=4.0.0" }
+zcash_protocol = { package = "zakura-protocol", version = "=4.0.0" }
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 [dev-dependencies]
-incrementalmerkletree = "0.9"
-orchard = { workspace = true, features = ["circuit"] }
-pczt = { workspace = true, features = ["io-finalizer", "prover", "spend-finalizer", "tx-extractor", "zcp-builder"] }
+incrementalmerkletree = "0.8"
+orchard = { package = "zakura-orchard", version = "=4.0.0", features = ["circuit"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc9", features = ["io-finalizer", "prover", "spend-finalizer", "tx-extractor", "zcp-builder"] }
 rand_chacha = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shardtree = "0.8"
-zcash_primitives = "0.31.0"
-zcash_protocol = { workspace = true, features = ["local-consensus"] }
+shardtree = "0.7"
+zcash_primitives = { package = "zakura-primitives", version = "=4.0.0" }
+zcash_protocol = { package = "zakura-protocol", version = "=4.0.0", features = ["local-consensus"] }

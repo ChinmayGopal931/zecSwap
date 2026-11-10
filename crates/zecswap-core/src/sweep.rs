@@ -35,12 +35,8 @@ impl SweepIntent {
 
     /// The Orchard receiver a sweep to `address` pays, if it is a unified address on `network`.
     pub fn recipient(address: &str, network: NetworkType) -> Result<Address, Error> {
-        let (actual_network, _, address) = unified::Address::decode(address)
+        let (actual_network, address) = unified::Address::decode(address)
             .map_err(|_| policy("sweep destination must be a unified address"))?;
-        // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
-        if !address.metadata_items().is_empty() {
-            return Err(policy("sweep destination must not carry address metadata"));
-        }
         if actual_network != network {
             return Err(policy("sweep destination is on another network"));
         }
@@ -204,7 +200,8 @@ fn verify_ciphertext(action: &orchard::pczt::Action, pool: ValuePool) -> Result<
 fn recover<D>(domain: &D, note: &orchard::Note, action: &orchard::pczt::Action) -> bool
 where
     D: zcash_note_encryption::Domain<Note = orchard::Note>,
-    orchard::pczt::Action: zcash_note_encryption::ShieldedOutput<D>,
+    orchard::pczt::Action:
+        zcash_note_encryption::ShieldedOutput<D, { zcash_note_encryption::ENC_CIPHERTEXT_SIZE }>,
 {
     D::derive_esk(note)
         .and_then(|esk| {
