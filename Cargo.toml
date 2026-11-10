@@ -1,0 +1,28 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+blake2b_simd = "1"
+ff = "0.14"
+group = "0.14"
+orchard = { version = "0.16.0", default-features = false, features = ["std"] }
+pasta_curves = "0.6"
+pczt = { version = "0.10.0", default-features = false, features = ["std", "orchard", "signer"] }
+rand = { version = "0.10", default-features = false, features = ["sys_rng"] }
+zcash_address = "0.14.0"
+zcash_protocol = "0.11.0"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+# Halo 2 proving in the end-to-end tests is unusably slow unoptimised.
+[profile.test.package."*"]
+opt-level = 3

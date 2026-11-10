@@ -1,0 +1,25 @@
+[package]
+name = "zecswap-api"
+description = "The ZecSwap maker's and relayer's APIs on the wire, shared with wallets"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+server = ["dep:anyhow", "dep:axum", "dep:blake2b_simd", "dep:zeroize"]
+
+[dependencies]
+anyhow = { version = "1", optional = true }
+axum = { version = "0.8", optional = true }
+blake2b_simd = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+alloy-primitives = { version = "1.7", default-features = false, features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+zcash_protocol.workspace = true
+zecswap-core = { path = "../zecswap-core" }
+zecswap-railgun = { path = "../zecswap-railgun" }
+
+[dev-dependencies]
+serde_json = "1"

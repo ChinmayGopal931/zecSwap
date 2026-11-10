@@ -1,0 +1,402 @@
+//! Narrow sponsorship of V2 Relay Adapt reverse escrow funding. The ABI and adapt-params
+//! encoding match @railgun-community/engine 9.8.0 (abi/V2/RelayAdapt.json and RelayAdaptHelper).
+
+use alloy::network::TransactionBuilder;
+use alloy::primitives::{Bytes, keccak256};
+use alloy::providers::Provider;
+use alloy::rpc::types::TransactionRequest;
+use alloy::sol_types::{SolCall, SolValue};
+use zecswap_core::{Domain, ReverseOpen, signer};
+
+use super::canonical::{self, Malformed, Shape};
+use super::railgun::{IRelayAdapt, MAX_CALLDATA_BYTES, MAX_TRANSACTIONS, TRANSACTION, erc20};
+use super::{
+    Address, B256, Eip1559Estimation, IErc20, IZecSwap, Settlement, U256, reverse_swap_id,
+    share_from_words,
+};
+use crate::Error;
+
+/// `openReverse`, the longest call a funding makes, is 548 bytes.
+const MAX_CALL_BYTES: usize = 1024;
+const CALL: Shape = Shape::Tuple(&[
+    Shape::Words(1),
+    Shape::Bytes(MAX_CALL_BYTES),
+    Shape::Words(1),
+]);
+const RELAY: &[Shape] = &[
+    Shape::Array(&TRANSACTION, MAX_TRANSACTIONS),
+    // ActionData: random, requireSuccess, minGasLimit, calls
+    Shape::Tuple(&[
+        Shape::Words(1),
+        Shape::Bool,
+        Shape::Words(1),
+        Shape::Array(&CALL, 4),
+    ]),
+];
+/// `approve` and `transfer`: an address and an amount.
+const TOKEN_CALL: &[Shape] = &[Shape::Words(2)];
+const OPEN_REVERSE: &[Shape] = &[Shape::Words(12), Shape::Bytes(65)];
+/// One `ShieldRequest`, nine words.
+const SHIELD: &[Shape] = &[Shape::Array(&Shape::Words(9), 1)];
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct FundingPolicy {
+    pub relay_adapt: Address,
+    pub token: Address,
+    pub maker: Address,
+    pub max_gas_limit: u64,
+    pub max_gas_price_wei: u128,
+    /// Escrow-token base units the funding must transfer to `fee_recipient` for the gas.
+    pub fee: u128,
+    pub fee_recipient: Address,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FundingError {
+    #[error("{0}")]
+    Rejected(&'static str),
+    #[error(transparent)]
+    Chain(#[from] Error),
+}
+
+type Result<T> = std::result::Result<T, FundingError>;
+
+/// Only validation can construct one. Submission uses the original, proof-bound bytes.
+pub struct ValidatedFunding {
+    id: B256,
+    chain_id: u64,
+    contract: Address,
+    data: Bytes,
+    terms: ReverseOpen,
+    min_gas_price: u128,
+    policy: FundingPolicy,
+}
+
+impl FundingPolicy {
+    pub fn validate_config(&self, account: Address) -> Result<()> {
+        require(
+            !self.relay_adapt.is_zero() && !self.token.is_zero() && !self.maker.is_zero(),
+            "funding addresses must be configured",
+        )?;
+        require(
+            self.maker != account,
+            "funding relayer must be separate from maker",
+        )?;
+        require(
+            self.fee_recipient == account,
+            "the funding fee must pay the relayer",
+        )?;
+        require(
+            self.max_gas_limit > 0 && self.max_gas_price_wei > 0,
+            "funding gas limits must be positive",
+        )
+    }
+
+    /// Checks the complete call tree, its proof binding, and the user's escrow signature.
+    /// Cryptographic Railgun proof verification is performed by simulation and on-chain.
+    pub fn validate(
+        &self,
+        domain: Domain,
+        id: B256,
+        to: Address,
+        value: u128,
+        data: Bytes,
+    ) -> Result<ValidatedFunding> {
+        require(
+            to == self.relay_adapt && value == 0,
+            "wrong funding destination or ETH value",
+        )?;
+        require(
+            data.len() <= MAX_CALLDATA_BYTES,
+            "funding calldata is too large",
+        )?;
+        let relay =
+            canonical::decode::<IRelayAdapt::relayCall>(&data, RELAY).map_err(|malformed| {
+                FundingError::Rejected(match malformed {
+                    Malformed::NotTheCall => "invalid V2 Relay Adapt calldata",
+                    Malformed::Noncanonical => "noncanonical Relay Adapt calldata",
+                    Malformed::TooLong => "the funding calldata holds more than the relayer takes",
+                })
+            })?;
+        let action = &relay._actionData;
+        require(
+            action.requireSuccess,
+            "funding must require every call to succeed",
+        )?;
+        require(
+            action.minGasLimit <= U256::from(self.max_gas_limit),
+            "Relay Adapt minimum gas exceeds sponsorship limit",
+        )?;
+        // Shield remaining token dust even when no remainder is expected.
+        require(
+            action.calls.len() == 4,
+            "expected approve, openReverse, fee, and shield calls",
+        )?;
+        require(
+            action.calls.iter().all(|c| c.value.is_zero()),
+            "funding calls cannot send ETH",
+        )?;
+        let [approve_call, open_call, fee_call, shield_call] = action.calls.as_slice() else {
+            unreachable!()
+        };
+        require(
+            approve_call.to == self.token
+                && open_call.to == Address::from(domain.contract)
+                && fee_call.to == self.token
+                && shield_call.to == self.relay_adapt,
+            "unexpected funding call target",
+        )?;
+        let approve: IErc20::approveCall =
+            inner(approve_call, TOKEN_CALL, "invalid token approval")?;
+        let open: IZecSwap::openReverseCall =
+            inner(open_call, OPEN_REVERSE, "invalid escrow open")?;
+        let payment: IErc20::transferCall = inner(fee_call, TOKEN_CALL, "invalid relayer fee")?;
+        let shield: IRelayAdapt::shieldCall = inner(shield_call, SHIELD, "invalid dust shield")?;
+        require(
+            payment.to == self.fee_recipient && payment.amount >= U256::from(self.fee),
+            "funding must pay the relayer its advertised fee",
+        )?;
+        let words = open.terms;
+        require(
+            words.maker == self.maker && words.token == self.token && !words.user.is_zero(),
+            "wrong escrow maker, token, or user",
+        )?;
+        require(
+            words.amount > 0 && words.amount < (1u128 << 120) && !words.refundNote.is_zero(),
+            "invalid escrow amount or refund commitment",
+        )?;
+        require(
+            words.deadline < words.t0 && words.t0 < words.t1,
+            "invalid escrow deadlines",
+        )?;
+        require(
+            approve.spender == open_call.to && approve.amount == U256::from(words.amount),
+            "approval must match the exact escrow amount and spender",
+        )?;
+        require(
+            shield._shieldRequests.len() == 1,
+            "expected one dust shield",
+        )?;
+        let dust = &shield._shieldRequests[0].preimage;
+        require(
+            erc20(&dust.token, self.token) && dust.value.is_zero() && !dust.npk.is_zero(),
+            "dust shield must return the entire remaining escrow token balance",
+        )?;
+        let terms = ReverseOpen {
+            maker: words.maker.into(),
+            user: words.user.into(),
+            token: words.token.into(),
+            amount: words.amount,
+            maker_share: share_from_words(words.makerKey[0], words.makerKey[1])
+                .map_err(|_| FundingError::Rejected("invalid maker share"))?,
+            user_share: share_from_words(words.userKey[0], words.userKey[1])
+                .map_err(|_| FundingError::Rejected("invalid user share"))?,
+            t0: words.t0,
+            t1: words.t1,
+            refund_note: words.refundNote.0,
+            deadline: words.deadline,
+        };
+        require(
+            id == reverse_swap_id(words.user, &terms.maker_share),
+            "wrong reverse swap ID",
+        )?;
+        let signature = open
+            .signature
+            .as_ref()
+            .try_into()
+            .map_err(|_| FundingError::Rejected("invalid escrow signature length"))?;
+        require(
+            signer(&domain.open_reverse(&terms), signature) == Some(terms.user),
+            "escrow is not authorized by its user",
+        )?;
+        require(
+            !relay._transactions.is_empty(),
+            "expected at least one Railgun transaction",
+        )?;
+        let nullifiers: Vec<Vec<B256>> = relay
+            ._transactions
+            .iter()
+            .map(|t| t.nullifiers.clone())
+            .collect();
+        let adapt_params = keccak256(
+            (
+                nullifiers,
+                U256::from(relay._transactions.len()),
+                action.clone(),
+            )
+                .abi_encode_params(),
+        );
+        let mut unshields = 0;
+        let mut min_gas_price = 0;
+        for tx in &relay._transactions {
+            let bound = &tx.boundParams;
+            require(
+                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),
+                "Railgun transaction must spend notes",
+            )?;
+            require(
+                bound.chainID == domain.chain_id
+                    && bound.adaptContract == self.relay_adapt
+                    && bound.adaptParams == adapt_params,
+                "Railgun proof must bind this chain, adapter, and complete action",
+            )?;
+            min_gas_price = min_gas_price.max(bound.minGasPrice.to::<u128>());
+            require(
+                min_gas_price <= self.max_gas_price_wei,
+                "proof gas price exceeds sponsorship limit",
+            )?;
+            require(
+                bound.unshield <= 1,
+                "redirected unshields are not supported",
+            )?;
+            if bound.unshield == 1 {
+                let unshield = &tx.unshieldPreimage;
+                require(
+                    unshield.npk == self.relay_adapt.into_word()
+                        && erc20(&unshield.token, self.token)
+                        && !unshield.value.is_zero(),
+                    "unshield must fund Relay Adapt with the escrow token",
+                )?;
+                unshields += 1;
+            }
+        }
+        require(unshields > 0, "funding must unshield from Railgun")?;
+        Ok(ValidatedFunding {
+            id,
+            chain_id: domain.chain_id,
+            contract: domain.contract.into(),
+            data,
+            terms,
+            min_gas_price,
+            policy: self.clone(),
+        })
+    }
+}
+
+impl Settlement {
+    pub async fn check_funding_adapter(&self, adapter: Address) -> Result<()> {
+        let railgun = self.railgun().await?;
+        let actual = IRelayAdapt::new(adapter, &self.provider)
+            .railgun()
+            .call()
+            .await
+            .map_err(|_| {
+                FundingError::Rejected("cannot read funding adapter's Railgun deployment")
+            })?;
+        require(
+            !railgun.is_zero() && actual == railgun,
+            "funding adapter uses a different Railgun deployment",
+        )
+    }
+
+    /// Returns a submitted hash immediately; wallets must independently confirm the escrow.
+    /// A matching escrow already on-chain is an idempotent success with no new transaction.
+    /// There are no automatic send retries: after transport failure reuse the same proof and
+    /// reconcile on-chain. Nullifiers and openReverse prevent a second transfer even if the
+    /// original submission's outcome is unknown.
+    pub async fn sponsor_reverse_funding(
+        &self,
+        policy: &FundingPolicy,
+        request: &ValidatedFunding,
+    ) -> Result<Option<B256>> {
+        require(
+            policy == &request.policy && self.contract() == request.contract,
+            "funding policy or deployment changed; validate again",
+        )?;
+        let account = self
+            .account
+            .ok_or_else(|| Error::Config("read-only funding connection".into()))?;
+        let terms = &request.terms;
+        let mismatch = "existing escrow does not match funding authorization";
+        match self.swap(request.id, &terms.terms()).await {
+            Ok(Some(_)) => {
+                let funding = self.reverse_funding(request.id).await?;
+                require(
+                    funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),
+                    mismatch,
+                )?;
+                return Ok(None);
+            }
+            Ok(None) => {}
+            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),
+            Err(e) => return Err(e.into()),
+        }
+        require(
+            self.now().await? < terms.deadline,
+            "funding deadline passed",
+        )?;
+        let fees = funding_fees(
+            super::fees(&self.provider)
+                .await
+                .map_err(|_| Error::Contract("funding gas price unavailable".into()))?,
+            request.min_gas_price,
+        );
+        require(
+            fees.max_fee_per_gas <= policy.max_gas_price_wei,
+            "network gas price exceeds sponsorship limit",
+        )?;
+        let mut tx = TransactionRequest::default()
+            .with_from(account)
+            .with_to(policy.relay_adapt)
+            .with_value(U256::ZERO)
+            .with_input(request.data.clone())
+            .with_chain_id(request.chain_id)
+            .with_gas_limit(policy.max_gas_limit)
+            .with_max_fee_per_gas(fees.max_fee_per_gas)
+            .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
+        // Pending-state simulation runs real proof, nullifier, signature and token checks.
+        // Never surface raw RPC errors: they can contain the complete private payload.
+        let estimate = self.provider.estimate_gas(tx.clone()).await.map_err(|_| {
+            FundingError::Rejected(
+                "funding simulation failed; reconcile escrow before retrying the same proof",
+            )
+        })?;
+        require(
+            estimate <= policy.max_gas_limit,
+            "funding gas exceeds sponsorship limit",
+        )?;
+        tx.set_gas_limit(
+            estimate
+                .saturating_add(estimate / 5)
+                .min(policy.max_gas_limit),
+        );
+        let _sending = self.sending.turn().await;
+        let pending = self.provider.send_transaction(tx).await
+            .map_err(|_| Error::Contract("funding submission outcome unknown; reconcile escrow before retrying the same proof".into()))?;
+        let hash = *pending.tx_hash();
+        tracing::info!(swap_id = %request.id, transaction_hash = %hash, "reverse funding submitted; awaiting escrow confirmation");
+        Ok(Some(hash))
+    }
+}
+
+/// One of a funding's calls, decoded.
+fn inner<C: SolCall>(call: &IRelayAdapt::Call, args: &[Shape], invalid: &'static str) -> Result<C> {
+    canonical::decode(&call.data, args).map_err(|malformed| {
+        FundingError::Rejected(match malformed {
+            Malformed::NotTheCall => invalid,
+            Malformed::Noncanonical | Malformed::TooLong => "noncanonical funding call",
+        })
+    })
+}
+
+/// The fees every send pays, tip floor included, with the tip raised to a proof's minimum gas
+/// price: Railgun checks it against what the transaction pays, the base fee and the tip. Sent at
+/// the node's gas price alone, the first mainnet funding was never mined.
+fn funding_fees(fees: Eip1559Estimation, min_gas_price: u128) -> Eip1559Estimation {
+    let tip = fees.max_priority_fee_per_gas.max(min_gas_price);
+    Eip1559Estimation {
+        max_fee_per_gas: fees.max_fee_per_gas - fees.max_priority_fee_per_gas + tip,
+        max_priority_fee_per_gas: tip,
+    }
+}
+
+fn require(condition: bool, reason: &'static str) -> Result<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(FundingError::Rejected(reason))
+    }
+}
+
+#[cfg(test)]
+mod tests;

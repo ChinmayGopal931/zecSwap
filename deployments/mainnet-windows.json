@@ -1,0 +1,19 @@
+{
+  "chainId": 1,
+  "zcashNetwork": "mainnet",
+  "contract": "0xeB3A00bcB6c9fF626fE57a5dBbDCf01730e7898f",
+  "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "railgun": "0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9",
+  "minWindowSeconds": 3600,
+  "lateWindowSeconds": 86400,
+  "deploymentTransaction": "0x9a1f10e785f6bed8c9e3dbe17d85adc9e70844ee8694468b991d688518bea7ee",
+  "deploymentBlock": 26250774,
+  "deployedAt": "2026-10-22",
+  "deployer": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "maker": "0x4370eEaa6bEcf1dAeF21Deeb0379Eb7f6CaEf7eF",
+  "relayer": "0xcBcb5f57C79C88a0E4BB450289dE2088958A017F",
+  "replaces": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
+  "status": "live",
+  "vaultLogic": "0x99DE0d481AdDb39D020bd61DB741720601FF9697",
+  "etherscan": "source verified on Etherscan (2026-11-01); the vault logic by matching bytecode"
+}

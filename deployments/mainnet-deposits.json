@@ -1,0 +1,32 @@
+{
+  "chainId": 1,
+  "deposits": "0xebc7508e20bd4467491ee7e7589d5c7d4c5e8cb6",
+  "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+  "tokenName": "USD Coin",
+  "tokenVersion": "2",
+  "tokenDecimals": 6,
+  "railgun": "0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9",
+  "sanctions": "0x40C57923924B5c5c5455c48D93317139ADDaC8fb",
+  "vaultLogic": "0x81235c1cBE59DA348B74084b660bD0917a3c3E39",
+  "deployer": "0xcbcb5f57c79c88a0e4bb450289de2088958a017f",
+  "deployedAt": "2026-10-19",
+  "terms": {
+    "fee": "100000",
+    "feeBps": 10,
+    "feeGas": 950000,
+    "minValue": "1000000",
+    "maxValidity": 86400,
+    "maxPending": 1,
+    "maxGasLimit": 1500000,
+    "maxGasPriceWei": "20000000000",
+    "minValueStaged": "5000000"
+  },
+  "status": "live",
+  "settlement": "0x4708D7d36992b7e33Ad97a1ab0A31c3ac6C4fe6D",
+  "deployment": {
+    "transaction": "0x08115a2ecf54b776c681ea9b6e1f9b4a6ff8959c9bddfbaaa4753b94e95f7556",
+    "block": 26224004
+  },
+  "etherscan": "source verified on Etherscan (2026-10-20) for the contract and its vault logic",
+  "note": "settlement is the swap contract of the time; the windows contract in mainnet-windows.json replaced it on 2026-10-22"
+}

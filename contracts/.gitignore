@@ -1,0 +1,12 @@
+# Compiler files
+cache/
+out/
+
+# Broadcast logs stay local; public deployment manifests live in ../deployments.
+/broadcast/
+
+# Docs
+docs/
+
+# Dotenv file
+.env

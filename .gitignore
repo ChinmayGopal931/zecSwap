@@ -1,0 +1,17 @@
+/target
+.DS_Store
+/contracts/out
+/contracts/cache
+/contracts/broadcast
+.env*
+!.env.example
+.testnet/
+docs/local/
+/docs/deployment.md
+node_modules/
+/deploy/worker/.wrangler/
+/deploy/worker/dist/
+/android/build
+/deploy/worker/wrangler*.local.jsonc
+/.claude/
+/android/.gradle/
