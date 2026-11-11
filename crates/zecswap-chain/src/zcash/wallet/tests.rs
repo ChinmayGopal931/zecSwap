@@ -350,24 +350,45 @@ fn deposit_blocks(
     (blocks, state)
 }
 
-/// A wallet on `network` whose joint account `deposit_blocks` pays at `tip`, with `count` blocks
-/// cached from `tip` and the first two scanned.
+/// A wallet on `network` whose account `deposit_blocks` pays at `tip`, with `count` blocks cached
+/// from `tip` and the first two scanned.
 struct Funded {
     _dir: TempDir,
     wallet: Wallet,
-    joint: JointAccount,
-    key: SpendKey,
     account: AccountUuid,
     tip: u32,
     state: Box<dyn Fn(u8) -> ChainState>,
 }
 
 impl Funded {
-    async fn new(network: Network, tip: u32, count: u8) -> Self {
+    /// Funds the account `add` makes, at the address it gives.
+    async fn new(
+        network: Network,
+        tip: u32,
+        count: u8,
+        add: impl FnOnce(&mut Wallet) -> (AccountUuid, orchard::Address),
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), network)
             .unwrap()
             .with_confirmations(NonZeroU32::new(1).unwrap());
+        let (account, to) = add(&mut wallet);
+        let (blocks, state) = deposit_blocks(tip, to, count);
+        wallet.blocks.insert(blocks).await.unwrap();
+        let mut funded = Self {
+            _dir: dir,
+            wallet,
+            account,
+            tip,
+            state: Box::new(state),
+        };
+        funded.scan(tip + 1, 0, 2);
+        assert_eq!(funded.spendable(), DEPOSIT);
+        funded
+    }
+
+    /// A funded joint account, its combined key, and the joint.
+    async fn joint(network: Network, tip: u32, count: u8) -> (Self, SpendKey, JointAccount) {
         let (e, z) = (
             SecretShare::random(UnwrapErr(SysRng)),
             SecretShare::random(UnwrapErr(SysRng)),
@@ -378,21 +399,32 @@ impl Funded {
             &ViewingKeys::random(UnwrapErr(SysRng)),
         )
         .unwrap();
-        let account = import_at(&mut wallet, &joint, tip);
-        let (blocks, state) = deposit_blocks(tip, joint.deposit_address(), count);
-        wallet.blocks.insert(blocks).await.unwrap();
-        let mut funded = Self {
-            _dir: dir,
-            wallet,
-            key: joint.spend_key(&e, &z).unwrap(),
-            joint,
-            account,
-            tip,
-            state: Box::new(state),
-        };
-        funded.scan(tip + 1, 0, 2);
-        assert_eq!(funded.spendable(), DEPOSIT);
-        funded
+        let funded = Self::new(network, tip, count, |wallet| {
+            (import_at(wallet, &joint, tip), joint.deposit_address())
+        })
+        .await;
+        (funded, joint.spend_key(&e, &z).unwrap(), joint)
+    }
+
+    /// A funded seed-derived account, and its key.
+    async fn derived(network: Network, tip: u32, count: u8) -> (Self, UnifiedSpendingKey) {
+        let mut key = None;
+        let funded = Self::new(network, tip, count, |wallet| {
+            let birthday = AccountBirthday::from_parts(
+                ChainState::empty(BlockHeight::from_u32(tip - 1), BlockHash([0; 32])),
+                None,
+            );
+            let (account, usk) = wallet
+                .db
+                .create_account("inventory", &SecretVec::new(vec![7; 32]), &birthday, None)
+                .unwrap();
+            let fvk = usk.to_unified_full_viewing_key();
+            let to = fvk.orchard().unwrap().address_at(0u32, Scope::External);
+            key = Some(usk);
+            (account, to)
+        })
+        .await;
+        (funded, key.unwrap())
     }
 
     /// Moves the chain tip to `chain_tip` and scans `count` cached blocks from the one at `from`.
@@ -416,41 +448,44 @@ impl Funded {
         .unwrap();
     }
 
-    fn sweep(&mut self, to: &ZcashAddress) -> TxId {
-        self.wallet
-            .sweep(&PROVER, self.account, &self.key, to)
-            .unwrap()
-    }
-
     fn spendable(&self) -> u64 {
         self.wallet.funds(self.account).unwrap().spendable
+    }
+
+    /// What `txid`, as stored, pays `home`.
+    fn paid(&self, txid: TxId, home: &JointAccount) -> u64 {
+        let tx = self.wallet.db.get_transaction(txid).unwrap().unwrap();
+        [tx.orchard_bundle(), tx.ironwood_bundle()]
+            .iter()
+            .flatten()
+            .flat_map(|bundle| {
+                bundle.decrypt_outputs_with_keys(&[home.fvk().to_ivk(Scope::External)])
+            })
+            .map(|(_, _, note, _, _)| note.value().inner())
+            .sum()
     }
 }
 
 #[tokio::test]
 async fn the_other_side_cannot_read_where_a_sweep_went() {
-    let mut funded = Funded::new(Network::TestNetwork, TIP, 2).await;
+    let (mut funded, key, joint) = Funded::joint(Network::TestNetwork, TIP, 2).await;
     let home = random_joint();
     let to = home
         .unified_address(funded.wallet.network.network_type())
         .parse()
         .unwrap();
-    let txid = funded.sweep(&to);
+    let txid = funded
+        .wallet
+        .sweep(&PROVER, funded.account, &key, &to)
+        .unwrap();
 
-    let tx = funded.wallet.db.get_transaction(txid).unwrap().unwrap();
-    let bundles = [tx.orchard_bundle(), tx.ironwood_bundle()];
-    let received: u64 = bundles
-        .iter()
-        .flatten()
-        .flat_map(|bundle| bundle.decrypt_outputs_with_keys(&[home.fvk().to_ivk(Scope::External)]))
-        .map(|(_, _, note, _, _)| note.value().inner())
-        .sum();
     assert_eq!(
-        received,
+        funded.paid(txid, &home),
         DEPOSIT - funded.wallet.fee(txid).unwrap().unwrap()
     );
-    let joint_ovks =
-        [Scope::External, Scope::Internal].map(|scope| funded.joint.fvk().to_ovk(scope));
+    let tx = funded.wallet.db.get_transaction(txid).unwrap().unwrap();
+    let bundles = [tx.orchard_bundle(), tx.ironwood_bundle()];
+    let joint_ovks = [Scope::External, Scope::Internal].map(|scope| joint.fvk().to_ovk(scope));
     for bundle in bundles.iter().flatten() {
         assert!(
             bundle.recover_outputs_with_ovks(&joint_ovks).is_empty(),
@@ -465,12 +500,18 @@ async fn the_other_side_cannot_read_where_a_sweep_went() {
 #[tokio::test]
 async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
     let nu7 = nu7();
-    let mut funded = Funded::new(Network::MainNetwork, nu7 - 3, 4).await;
+    let (mut funded, key, _) = Funded::joint(Network::MainNetwork, nu7 - 3, 4).await;
     let to = random_joint()
         .unified_address(funded.wallet.network.network_type())
         .parse()
         .unwrap();
-    let before = funded.sweep(&to);
+    let sweep = |funded: &mut Funded| {
+        funded
+            .wallet
+            .sweep(&PROVER, funded.account, &key, &to)
+            .unwrap()
+    };
+    let before = sweep(&mut funded);
     let tx = funded.wallet.db.get_transaction(before).unwrap().unwrap();
     assert_eq!(tx.consensus_branch_id(), BranchId::Nu6_3);
     assert_eq!(tx.expiry_height(), BlockHeight::from_u32(nu7 - 1));
@@ -482,10 +523,53 @@ async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
     assert!(funded.wallet.is_expired(before).unwrap());
     assert_eq!(funded.spendable(), DEPOSIT);
 
-    let after = funded.sweep(&to);
+    let after = sweep(&mut funded);
     let tx = funded.wallet.db.get_transaction(after).unwrap().unwrap();
     assert_eq!(tx.consensus_branch_id(), BranchId::Nu7);
     assert_eq!(tx.expiry_height(), BlockHeight::from_u32(nu7 + 1 + 120));
+}
+
+/// A payment proved ahead holds its note from every other payment until it is sent or given
+/// up; its holder, having lost it, proves it again from the note it holds; and one held too long
+/// is released, never sent.
+#[tokio::test]
+async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
+    let (mut funded, usk) = Funded::derived(Network::TestNetwork, TIP, 5).await;
+    let account = funded.account;
+    let home = random_joint();
+    let to: ZcashAddress = home
+        .unified_address(funded.wallet.network.network_type())
+        .parse()
+        .unwrap();
+    let payment = [(to, DEPOSIT / 2)];
+    let prove = |funded: &mut Funded, holder: u8| {
+        funded
+            .wallet
+            .prove_payment(&PROVER, account, [holder; 32], &payment, 2)
+    };
+
+    let held = prove(&mut funded, 1).unwrap();
+    assert_eq!(funded.spendable(), 0);
+    assert!(funded.wallet.pay(&PROVER, account, &usk, &payment).is_err());
+    assert!(prove(&mut funded, 2).is_err());
+    drop(held);
+    let held = prove(&mut funded, 1).unwrap();
+    funded.wallet.release(held).unwrap();
+    assert_eq!(funded.spendable(), DEPOSIT);
+
+    // Proved for the block after the tip, and held two more.
+    let held = prove(&mut funded, 1).unwrap();
+    funded.scan(TIP + 3, 2, 2);
+    assert!(funded.wallet.holds(&held).unwrap());
+    funded.scan(TIP + 4, 4, 1);
+    assert!(!funded.wallet.holds(&held).unwrap());
+    assert!(funded.wallet.send_proved(held, &usk).is_err());
+    assert_eq!(funded.spendable(), DEPOSIT);
+
+    let held = prove(&mut funded, 1).unwrap();
+    let txid = funded.wallet.send_proved(held, &usk).unwrap();
+    assert_eq!(funded.spendable(), 0);
+    assert_eq!(funded.paid(txid, &home), DEPOSIT / 2);
 }
 
 /// Only an expiry that would outlive a scheduled upgrade stops before it, and nothing stops one
