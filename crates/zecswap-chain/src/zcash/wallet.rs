@@ -421,7 +421,7 @@ impl Wallet {
                 held_until,
             }),
             Err(e) => {
-                unlock_proposal_inputs(&mut self.db, &proposal, holder)?;
+                self.give_back(&proposal, holder);
                 Err(e)
             }
         }
@@ -439,7 +439,8 @@ impl Wallet {
     }
 
     /// Stores `payment`, signed with `usk`; `broadcast` sends it. One that no longer `holds` is
-    /// released instead, as its notes may since have gone into another payment.
+    /// released instead, as its notes may since have gone into another payment, and so is one
+    /// that fails to sign or store, as nothing then spends its notes.
     pub fn send_proved(
         &mut self,
         payment: ProvedPayment,
@@ -451,10 +452,19 @@ impl Wallet {
                 "a proved payment was held too long to send".into(),
             ));
         }
+        let ProvedPayment {
+            pczt,
+            circuit,
+            proposal,
+            holder,
+            ..
+        } = payment;
         let ask = SpendAuthorizingKey::from(usk.orchard());
-        self.store_proved(payment.pczt, &payment.circuit, |pczt| {
-            sign_own_spends(pczt, &ask)
-        })
+        let stored = self.store_proved(pczt, &circuit, |pczt| sign_own_spends(pczt, &ask));
+        if stored.is_err() {
+            self.give_back(&proposal, holder);
+        }
+        stored
     }
 
     /// Gives up `payment`, so its notes go to other payments again.
@@ -464,6 +474,18 @@ impl Wallet {
             &payment.proposal,
             payment.holder,
         )?)
+    }
+
+    /// Releases the notes of a payment that failed, whose error is the one to report: failing
+    /// here too only leaves them held until the hold lapses.
+    fn give_back(
+        &mut self,
+        proposal: &Proposal<StandardFeeRule, ReceivedNoteId>,
+        holder: LockOwner,
+    ) {
+        if let Err(e) = unlock_proposal_inputs(&mut self.db, proposal, holder) {
+            tracing::warn!("releasing a failed payment's notes: {e}");
+        }
     }
 
     /// Sends a stored transaction to the network. Sending one again is harmless.
