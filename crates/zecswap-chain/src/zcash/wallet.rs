@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::sync::Arc;
 
 use orchard::keys::SpendAuthorizingKey;
 use pczt::Pczt;
@@ -9,12 +10,14 @@ use pczt::roles::signer::Signer;
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use secrecy::SecretVec;
 use zcash_address::ZcashAddress;
+use zcash_client_backend::data_api::locking::LockOwner;
 use zcash_client_backend::data_api::wallet::input_selection::{
-    GreedyInputSelector, LockedInputPolicy, SpendPolicy,
+    GreedyInputSelector, LockedInputPolicy, NonEmptyBTreeSet, SpendPolicy,
 };
 use zcash_client_backend::data_api::wallet::{
-    ConfirmationsPolicy, create_pczt_from_proposal, extract_and_store_transaction_from_pczt,
-    propose_send_max_transfer, propose_transfer,
+    ConfirmationsPolicy, LockRequest, create_pczt_from_proposal,
+    extract_and_store_transaction_from_pczt, propose_send_max_transfer, propose_transfer,
+    unlock_proposal_inputs,
 };
 use zcash_client_backend::data_api::{
     Account, AccountBirthday, AccountPurpose, AccountSource, MaxSpendMode, WalletRead, WalletWrite,
@@ -36,7 +39,7 @@ use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
 
 use super::cache::MemoryBlockCache;
 use super::lightwalletd::{self, Lightwalletd};
-use super::prover::Prover;
+use super::prover::{Circuit, Prover};
 use crate::Error;
 
 mod sync;
@@ -54,6 +57,17 @@ pub struct Funds {
     pub total: u64,
     /// What has enough confirmations to spend now.
     pub spendable: u64,
+}
+
+/// A payment proved but neither signed nor stored. Until `send_proved` or `release` takes it, the
+/// notes it spends are held from every other payment, for as many blocks as `prove_payment` was
+/// asked to hold them.
+pub struct ProvedPayment {
+    pczt: Pczt,
+    circuit: Arc<Circuit>,
+    proposal: Proposal<StandardFeeRule, ReceivedNoteId>,
+    holder: LockOwner,
+    held_until: BlockHeight,
 }
 
 pub struct Wallet {
@@ -372,38 +386,84 @@ impl Wallet {
         usk: &UnifiedSpendingKey,
         payments: &[(ZcashAddress, u64)],
     ) -> Result<TxId, Error> {
-        let payments = payments
-            .iter()
-            .map(|(to, amount)| {
-                let amount = Zatoshis::from_u64(*amount)
-                    .map_err(|_| Error::Wallet(format!("{amount} zatoshis is out of range")))?;
-                Ok(Payment::without_memo(to.clone(), amount))
-            })
-            .collect::<Result<_, Error>>()?;
-        let request = TransactionRequest::new(payments).map_err(Error::wallet)?;
-        let change_strategy = SingleOutputChangeStrategy::new(
-            StandardFeeRule::Zip317,
-            None,
-            ShieldedPool::Ironwood,
-            DustOutputPolicy::default(),
-        );
-        let proposal = propose_transfer::<_, _, _, _, Infallible>(
-            &mut self.db,
-            &self.network,
-            account,
-            &GreedyInputSelector::new(),
-            &change_strategy,
-            request,
-            self.confirmations,
-            &SpendPolicy::default(),
-            None,
-            None,
-        )
-        .map_err(Error::wallet)?;
+        let proposal = self.propose_payment(account, payments, &SpendPolicy::default(), None)?;
         let ask = SpendAuthorizingKey::from(usk.orchard());
         self.store_proposal(prover, account, &proposal, OvkPolicy::Sender, |pczt| {
             sign_own_spends(pczt, &ask)
         })
+    }
+
+    /// Proves a payment as `pay` would, without signing or storing it, holding the notes it
+    /// spends from other payments for `hold_blocks` blocks: `send_proved` then stores it in
+    /// moments. Notes `holder` holds already, from a payment proved before and lost, go first.
+    pub fn prove_payment(
+        &mut self,
+        prover: &Prover,
+        account: AccountUuid,
+        holder: [u8; 32],
+        payments: &[(ZcashAddress, u64)],
+        hold_blocks: u32,
+    ) -> Result<ProvedPayment, Error> {
+        let holder = LockOwner::new(holder);
+        let own = NonEmptyBTreeSet::from_set(BTreeSet::from([holder]))
+            .ok_or_else(|| Error::Wallet("a hold needs a holder".into()))?;
+        let policy =
+            SpendPolicy::default().with_locked_input_policy(LockedInputPolicy::PreferLocked(own));
+        let hold = LockRequest::new(holder, hold_blocks);
+        let proposal = self.propose_payment(account, payments, &policy, Some(hold))?;
+        let held_until = BlockHeight::from(proposal.min_target_height()) + hold_blocks;
+        match self.prove(prover, account, &proposal, OvkPolicy::Sender) {
+            Ok((pczt, circuit)) => Ok(ProvedPayment {
+                pczt,
+                circuit,
+                proposal,
+                holder,
+                held_until,
+            }),
+            Err(e) => {
+                unlock_proposal_inputs(&mut self.db, &proposal, holder)?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Whether `payment` may still be sent: its notes still held, and the next block within its
+    /// expiry.
+    pub fn holds(&self, payment: &ProvedPayment) -> Result<bool, Error> {
+        let Some(tip) = self.db.chain_height()? else {
+            return Ok(false);
+        };
+        let next = tip + 1;
+        let expiry = *payment.pczt.global().expiry_height();
+        Ok(payment.held_until >= next && (expiry == 0 || BlockHeight::from(expiry) >= next))
+    }
+
+    /// Stores `payment`, signed with `usk`; `broadcast` sends it. One that no longer `holds` is
+    /// released instead, as its notes may since have gone into another payment.
+    pub fn send_proved(
+        &mut self,
+        payment: ProvedPayment,
+        usk: &UnifiedSpendingKey,
+    ) -> Result<TxId, Error> {
+        if !self.holds(&payment)? {
+            self.release(payment)?;
+            return Err(Error::Wallet(
+                "a proved payment was held too long to send".into(),
+            ));
+        }
+        let ask = SpendAuthorizingKey::from(usk.orchard());
+        self.store_proved(payment.pczt, &payment.circuit, |pczt| {
+            sign_own_spends(pczt, &ask)
+        })
+    }
+
+    /// Gives up `payment`, so its notes go to other payments again.
+    pub fn release(&mut self, payment: ProvedPayment) -> Result<(), Error> {
+        Ok(unlock_proposal_inputs(
+            &mut self.db,
+            &payment.proposal,
+            payment.holder,
+        )?)
     }
 
     /// Sends a stored transaction to the network. Sending one again is harmless.
@@ -494,6 +554,44 @@ impl Wallet {
             .is_some_and(|birthday| birthday > tip))
     }
 
+    /// A payment of every `(address, zatoshis)` from `account`, its change to Ironwood.
+    fn propose_payment(
+        &mut self,
+        account: AccountUuid,
+        payments: &[(ZcashAddress, u64)],
+        policy: &SpendPolicy,
+        hold: Option<LockRequest>,
+    ) -> Result<Proposal<StandardFeeRule, ReceivedNoteId>, Error> {
+        let payments = payments
+            .iter()
+            .map(|(to, amount)| {
+                let amount = Zatoshis::from_u64(*amount)
+                    .map_err(|_| Error::Wallet(format!("{amount} zatoshis is out of range")))?;
+                Ok(Payment::without_memo(to.clone(), amount))
+            })
+            .collect::<Result<_, Error>>()?;
+        let request = TransactionRequest::new(payments).map_err(Error::wallet)?;
+        let change_strategy = SingleOutputChangeStrategy::new(
+            StandardFeeRule::Zip317,
+            None,
+            ShieldedPool::Ironwood,
+            DustOutputPolicy::default(),
+        );
+        propose_transfer::<_, _, _, _, Infallible>(
+            &mut self.db,
+            &self.network,
+            account,
+            &GreedyInputSelector::new(),
+            &change_strategy,
+            request,
+            self.confirmations,
+            policy,
+            hold,
+            None,
+        )
+        .map_err(Error::wallet)
+    }
+
     fn store_proposal(
         &mut self,
         prover: &Prover,
@@ -502,6 +600,17 @@ impl Wallet {
         ovk_policy: OvkPolicy,
         sign: impl FnOnce(Pczt) -> Result<Pczt, Error>,
     ) -> Result<TxId, Error> {
+        let (pczt, circuit) = self.prove(prover, account, proposal, ovk_policy)?;
+        self.store_proved(pczt, &circuit, sign)
+    }
+
+    fn prove(
+        &mut self,
+        prover: &Prover,
+        account: AccountUuid,
+        proposal: &Proposal<StandardFeeRule, ReceivedNoteId>,
+        ovk_policy: OvkPolicy,
+    ) -> Result<(Pczt, Arc<Circuit>), Error> {
         let target = BlockHeight::from(proposal.min_target_height());
         let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
             &mut self.db,
@@ -515,7 +624,15 @@ impl Wallet {
             BundlePadding::DEFAULT,
         )
         .map_err(Error::wallet)?;
-        let (pczt, circuit) = prover.prove(pczt)?;
+        prover.prove(pczt)
+    }
+
+    fn store_proved(
+        &mut self,
+        pczt: Pczt,
+        circuit: &Circuit,
+        sign: impl FnOnce(Pczt) -> Result<Pczt, Error>,
+    ) -> Result<TxId, Error> {
         extract_and_store_transaction_from_pczt::<_, ReceivedNoteId>(
             &mut self.db,
             &SystemClock,
