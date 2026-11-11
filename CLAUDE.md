@@ -96,7 +96,8 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
 - **Payments proved ahead.** `Wallet::prove_payment` proves a payment unsigned and unstored, its
   notes held from every other payment (the backend's output locks) for some blocks;
   `send_proved` stores it, `release` gives it up, and one held too long is released, never sent.
-  A holder's own held notes go first, so a payment lost in a restart is proved again from them.
+  One that fails to prove, sign or store gives its notes back at once. A holder's own held notes
+  go first, so a payment lost in a restart is proved again from them.
 - **Terms hash.** The contract stores only `hashTerms(terms)`; every call on a swap passes its
   `Terms` and reverts `WrongTerms` on a mismatch. Rust's one definition is
   `zecswap_core::Terms::hash`, and every relayer request carries `terms`.

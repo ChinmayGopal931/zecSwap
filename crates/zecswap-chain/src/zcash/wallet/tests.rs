@@ -530,8 +530,8 @@ async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
 }
 
 /// A payment proved ahead holds its note from every other payment until it is sent or given
-/// up; its holder, having lost it, proves it again from the note it holds; and one held too long
-/// is released, never sent.
+/// up; its holder, having lost it, proves it again from the note it holds; one held too long is
+/// released, never sent; and one that fails to sign gives its note back.
 #[tokio::test]
 async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     let (mut funded, usk) = Funded::derived(Network::TestNetwork, TIP, 5).await;
@@ -564,6 +564,13 @@ async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     funded.scan(TIP + 4, 4, 1);
     assert!(!funded.wallet.holds(&held).unwrap());
     assert!(funded.wallet.send_proved(held, &usk).is_err());
+    assert_eq!(funded.spendable(), DEPOSIT);
+
+    let held = prove(&mut funded, 1).unwrap();
+    let another =
+        UnifiedSpendingKey::from_seed(&funded.wallet.network, &[8; 32], zip32::AccountId::ZERO)
+            .unwrap();
+    assert!(funded.wallet.send_proved(held, &another).is_err());
     assert_eq!(funded.spendable(), DEPOSIT);
 
     let held = prove(&mut funded, 1).unwrap();
