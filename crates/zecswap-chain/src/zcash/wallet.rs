@@ -447,7 +447,7 @@ impl Wallet {
         usk: &UnifiedSpendingKey,
     ) -> Result<TxId, Error> {
         if !self.holds(&payment)? {
-            self.release(payment)?;
+            self.give_back(&payment.proposal, payment.holder);
             return Err(Error::Wallet(
                 "a proved payment was held too long to send".into(),
             ));
@@ -484,7 +484,7 @@ impl Wallet {
         holder: LockOwner,
     ) {
         if let Err(e) = unlock_proposal_inputs(&mut self.db, proposal, holder) {
-            tracing::warn!("releasing a failed payment's notes: {e}");
+            tracing::warn!(?holder, "releasing a failed payment's notes: {e}");
         }
     }
 
