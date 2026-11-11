@@ -39,6 +39,8 @@ use super::lightwalletd::{self, Lightwalletd};
 use super::prover::Prover;
 use crate::Error;
 
+mod sync;
+
 const JOINT_KEY_SOURCE: &str = "zecswap";
 const SYNC_BATCH_SIZE: u32 = 1_000;
 const ORCHARD_POOLS: [ShieldedPool; 2] = [ShieldedPool::Orchard, ShieldedPool::Ironwood];
@@ -112,7 +114,7 @@ impl Wallet {
         if self.born_above(tip)? {
             return Ok(());
         }
-        zcash_client_backend::sync::run(
+        sync::run(
             client,
             &self.network,
             &self.blocks,
@@ -120,7 +122,6 @@ impl Wallet {
             SYNC_BATCH_SIZE,
         )
         .await
-        .map_err(Error::wallet)
     }
 
     /// Starts watching a joint account from the chain tip, so it must be imported before
@@ -131,14 +132,11 @@ impl Wallet {
         joint: &JointAccount,
         name: &str,
     ) -> Result<AccountUuid, Error> {
-        for account in self.db.get_account_ids()? {
-            if self.tracks_joint(account, joint)? {
-                return Ok(account);
-            }
+        let ufvk = self.joint_ufvk(joint)?;
+        if let Some(account) = self.find_joint(joint, &ufvk)? {
+            return Ok(account);
         }
         self.check_server(client).await?;
-        let encoded = joint.ufvk(self.network.network_type());
-        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)?;
         let birthday = Self::birthday_at_tip(client).await?;
         // A spending account whose key is assembled outside the wallet, as for hardware signers.
         let purpose = AccountPurpose::Spending { derivation: None };
@@ -156,14 +154,11 @@ impl Wallet {
         name: &str,
         from_height: Option<u32>,
     ) -> Result<AccountUuid, Error> {
-        for account in self.db.get_account_ids()? {
-            if self.tracks_joint(account, joint)? {
-                return Ok(account);
-            }
+        let ufvk = self.joint_ufvk(joint)?;
+        if let Some(account) = self.find_joint(joint, &ufvk)? {
+            return Ok(account);
         }
         self.check_server(client).await?;
-        let encoded = joint.ufvk(self.network.network_type());
-        let ufvk = UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)?;
         let birthday = if let Some(height) = from_height {
             let state = lightwalletd::tree_state(client, BlockHeight::from(height)).await?;
             AccountBirthday::from_treestate(state, None).map_err(Error::wallet)?
@@ -253,6 +248,10 @@ impl Wallet {
         Ok(address.encode(&self.network))
     }
 
+    pub fn accounts(&self) -> Result<Vec<AccountUuid>, Error> {
+        Ok(self.db.get_account_ids()?)
+    }
+
     /// The first account derived from a seed, as opposed to an imported joint account.
     pub fn derived_account(&self) -> Result<Option<AccountUuid>, Error> {
         for id in self.db.get_account_ids()? {
@@ -293,15 +292,30 @@ impl Wallet {
         }
     }
 
-    /// Compares keys, not encodings: a key has an encoding per revision, so a stored key's need not
-    /// be `JointAccount::ufvk`'s.
     pub fn tracks_joint(&self, account: AccountUuid, joint: &JointAccount) -> Result<bool, Error> {
-        Ok(self.db.get_account(account)?.and_then(|account| {
-            account
-                .ufvk()
-                .and_then(|ufvk| ufvk.orchard())
-                .map(|fvk| fvk.to_bytes())
-        }) == Some(joint.fvk().to_bytes()))
+        Ok(self
+            .db
+            .get_account(account)?
+            .is_some_and(|account| is_joint(&account, joint)))
+    }
+
+    fn joint_ufvk(&self, joint: &JointAccount) -> Result<UnifiedFullViewingKey, Error> {
+        let encoded = joint.ufvk(self.network.network_type());
+        UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)
+    }
+
+    /// The account tracking `joint`, looked up by its incoming viewing key rather than by
+    /// decoding every account's key: an operations wallet holds an account per swap.
+    fn find_joint(
+        &self,
+        joint: &JointAccount,
+        ufvk: &UnifiedFullViewingKey,
+    ) -> Result<Option<AccountUuid>, Error> {
+        Ok(self
+            .db
+            .get_account_for_ufvk(ufvk)?
+            .filter(|account| is_joint(account, joint))
+            .map(|account| account.id()))
     }
 
     /// Stores a transaction sending everything in a joint account to `to`, authorized by the
@@ -528,6 +542,16 @@ fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Opti
         .find(|&activation| activation > target)?;
     let default = target + default_tx_expiry_delta(BranchId::for_height(network, target));
     Some(default.min(upgrade - 1))
+}
+
+/// Compares keys, not encodings: a key has an encoding per revision, so a stored key's need not
+/// be `JointAccount::ufvk`'s.
+fn is_joint(account: &impl Account, joint: &JointAccount) -> bool {
+    account
+        .ufvk()
+        .and_then(|ufvk| ufvk.orchard())
+        .map(|fvk| fvk.to_bytes())
+        == Some(joint.fvk().to_bytes())
 }
 
 fn sign_own_spends(pczt: Pczt, ask: &SpendAuthorizingKey) -> Result<Pczt, Error> {

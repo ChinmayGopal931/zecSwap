@@ -128,6 +128,9 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
 - A wallet with no accounts would scan ~300k blocks of Ironwood's last shard; `Wallet::sync` skips
   until an account exists. A CLI wallet that never synced fails its deposit with "Must scan blocks
   first": run `status` first.
+- `Wallet::sync` runs its own copy of `zcash_client_backend::sync::run` (`wallet/sync.rs`) that adds
+  only new subtree roots: the library's re-puts all ~1,900 mainnet roots each run, seconds of
+  hashing a sync. Diff the copy against the library's loop at every upgrade.
 - The CLI resumes the `swap.json` in its data dir, and one in an older format stops it
   (`missing field t0`): rename a finished one `swap.json.finished-<date>`.
 - Rust is pinned to 1.92, the Android SDK's Rust backend's. Hence alloy 1.8, as alloy 2 needs

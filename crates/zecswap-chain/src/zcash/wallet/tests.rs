@@ -173,6 +173,24 @@ fn an_imported_joint_account_is_recognised_by_its_key() {
 }
 
 #[test]
+fn a_joint_account_is_found_by_its_key_among_many() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork).unwrap();
+    let joints: Vec<_> = (0..4).map(|_| random_joint()).collect();
+    let accounts: Vec<_> = joints
+        .iter()
+        .map(|joint| import_at(&mut wallet, joint, 4_395_100))
+        .collect();
+    for (joint, account) in joints.iter().zip(accounts) {
+        let ufvk = wallet.joint_ufvk(joint).unwrap();
+        assert_eq!(wallet.find_joint(joint, &ufvk).unwrap(), Some(account));
+    }
+    let stranger = random_joint();
+    let ufvk = wallet.joint_ufvk(&stranger).unwrap();
+    assert_eq!(wallet.find_joint(&stranger, &ufvk).unwrap(), None);
+}
+
+#[test]
 fn one_summary_reads_every_accounts_funds() {
     let (_dir, mut wallet) = previous_swap(true);
     let accounts = [
