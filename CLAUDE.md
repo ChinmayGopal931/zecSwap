@@ -78,8 +78,15 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
 - **Fees.** On mainnet a reveal's fee cap is 5 gwei higher (`Network::reveal_headroom_wei`), so a
   surge can't strand it past its window; it still pays only the base fee and tip. Sends tip what
   the node suggests, at least `MIN_TIP_WEI`, under twice the next base fee (`evm::fees`); a public
-  send unmined three blocks on goes again at its nonce (`land_publicly`). Every send but a private
+  send unmined three blocks on goes again at its nonce (`landed_publicly`). Every send but a private
   reveal is simulated before it goes, and `evm/canonical.rs` reads only canonical ABI calldata.
+- **Send outcomes.** A contract call that fails says whether anything went out
+  (`Error::nothing_sent`): `WouldRevert` where the node ran its simulation and it reverts, `Unsent`
+  where no node took the transaction, `Late` for a reveal or a ready out of time. Once a node has
+  it, the error names the transaction (`Reverted`, `Unconfirmed`, `Dropped`). A ready on a
+  signature goes out only with its caller's margin left before its deadline and `t0`, judged
+  again in its account's turn (`ready_with_sig`). The notes a Railgun send spends are asked about
+  in one call (`spends_spent_notes`), and `balance_of_at` reads an inventory at a named block.
 - **Relayed steps.** Every relayer `503` has `Retry-After`; the client posts again until the chain
   shows the step (`User::relayed`). A wallet may hand a forward claim over early
   (`POST /v1/claim/hold`) once its deposit is out, for the relayer to send the moment the window
