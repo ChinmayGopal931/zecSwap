@@ -1512,6 +1512,13 @@ impl Settlement {
         };
         let call = call.from(account);
         let mut attempts = 1;
+        // A transaction of an earlier attempt that a node refused without making plain that it
+        // never took it: no later failure may then say that nothing went out.
+        let mut unclear = None;
+        let ended = |unclear: Option<B256>, error: Error| match unclear {
+            Some(transaction) if error.nothing_sent() => Error::Unconfirmed(transaction),
+            _ => error,
+        };
         loop {
             // Judged before its turn, so a call that would fail never holds the line up: by its
             // check first, and a reveal sent privately by that alone, as a simulation would show
@@ -1528,26 +1535,31 @@ impl Settlement {
                 },
                 None => simulated.await,
             };
-            // Nothing has gone out yet, nor does an attempt that fails send anything.
+            // Nothing has gone out yet, and an attempt that fails sent nothing unless it says so
+            // by naming its transaction.
             let failed = match judged {
                 Ok(()) => {
                     let _sending = self.sending.turn().await;
                     // Boxed: every send's future holds an attempt's, and requests nest several.
                     let attempt = self.attempt(call.as_ref().clone(), check.as_deref(), headroom);
                     match Box::pin(attempt).await {
-                        Ok(ended) => return ended,
-                        Err(late @ Error::Late(_)) => return Err(late),
+                        Ok(landed) => return landed,
+                        Err(late @ Error::Late(_)) => return Err(ended(unclear, late)),
+                        Err(Error::Unconfirmed(transaction)) => {
+                            unclear = Some(transaction);
+                            Error::Unconfirmed(transaction)
+                        }
                         Err(e) => unsent(e),
                     }
                 }
-                Err(late @ Error::Late(_)) => return Err(late),
+                Err(late @ Error::Late(_)) => return Err(ended(unclear, late)),
                 Err(e) => unsent(e),
             };
             // Usually an estimate made on a node that hasn't seen the transaction this one
             // depends on.
             if attempts == SEND_ATTEMPTS {
                 warn!(attempt = attempts, outcome = "send_failed", error = %failed, "transaction submission failed");
-                return Err(failed);
+                return Err(ended(unclear, failed));
             }
             warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %failed, "RPC rejected transaction submission");
             attempts += 1;
@@ -1635,10 +1647,10 @@ impl Settlement {
         let first = self.sign_next(priced(&tx, cap, tip), 0).await?;
         match self.provider.send_raw_transaction(&first.raw).await {
             Ok(_) => {}
-            // One it answers with an error, it passed on to no one, unless it had it already.
-            Err(RpcError::ErrorResp(e)) if !known(&e) => return Err(Error::Unsent(e.to_string())),
+            // One it refuses in so many words, it passed on to no one.
+            Err(RpcError::ErrorResp(e)) if refused(&e) => return Err(Error::Unsent(e.to_string())),
             Err(_) => {
-                warn!(transaction_hash = %first.hash, outcome = "unknown", "the node's answer was lost; the transaction may still land");
+                warn!(transaction_hash = %first.hash, outcome = "unknown", "the node's answer was lost or unclear; the transaction may still land");
             }
         }
         info!(transaction_hash = %first.hash, outcome = "submitted", "transaction submitted; awaiting receipt");
@@ -1771,11 +1783,17 @@ impl Settlement {
             Ok(_) => {
                 info!(%transaction_hash, outcome = "submitted", "transaction sent privately; awaiting its block");
             }
-            // One it answers with an error, it passed on to no one, unless it had it already.
-            Err(RpcError::ErrorResp(e)) if !known(&e) => {
+            // One it refuses in so many words, it passed on to no one.
+            Err(RpcError::ErrorResp(e)) if refused(&e) => {
                 return Err(Error::Unsent(
                     "the private RPC refused the transaction".into(),
                 ));
+            }
+            // Any other error answer, but that it holds the transaction already, is tried again,
+            // and not taken to mean that it went nowhere.
+            Err(RpcError::ErrorResp(e)) if !known(&e) => {
+                warn!(%transaction_hash, outcome = "unclear", "the private RPC answered the transaction with an error that does not say it was refused");
+                return Err(Error::Unconfirmed(transaction_hash));
             }
             Err(_) => {
                 warn!(%transaction_hash, outcome = "unknown", "the private RPC's answer was lost; the transaction may still land");
@@ -2000,6 +2018,32 @@ fn known(refusal: &ErrorPayload) -> bool {
     ]
     .iter()
     .any(|held| said.contains(held))
+}
+
+/// Whether a node's error answer to a transaction says in so many words that it did not take it:
+/// its nonce, fees, funds, gas or signature are wrong for it, or the caller is over its allowance.
+/// Any other error answer leaves the transaction possibly out.
+fn refused(refusal: &ErrorPayload) -> bool {
+    let said = refusal.message.to_ascii_lowercase();
+    refusal.code == 429
+        || [
+            "nonce too low",
+            "underpriced",
+            "insufficient funds",
+            "intrinsic gas too low",
+            "exceeds block gas limit",
+            "less than block base fee",
+            "higher than max fee per gas",
+            "exceeds the configured cap",
+            "invalid sender",
+            "invalid signature",
+            "invalid chain id",
+            "rate limit",
+            "too many requests",
+            "capacity",
+        ]
+        .iter()
+        .any(|refusing| said.contains(refusing))
 }
 
 /// What a simulation's failure says of the call it was made for, before anything is sent.
@@ -2354,8 +2398,19 @@ mod tests {
         ] {
             assert!(known(&refusal(held)), "{held}");
         }
-        for refused in ["nonce too low", "replacement transaction underpriced"] {
-            assert!(!known(&refusal(refused)), "{refused}");
+        for plain in ["nonce too low", "replacement transaction underpriced"] {
+            assert!(
+                !known(&refusal(plain)) && refused(&refusal(plain)),
+                "{plain}"
+            );
+        }
+        // Neither held nor plainly refused: possibly out.
+        for unclear in [
+            "internal error",
+            "upstream request timeout",
+            "already known",
+        ] {
+            assert!(!refused(&refusal(unclear)), "{unclear}");
         }
         let failed = |code, message| {
             TransportError::ErrorResp(ErrorPayload {
