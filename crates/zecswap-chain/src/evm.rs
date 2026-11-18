@@ -930,8 +930,18 @@ impl Settlement {
         calls: Vec<(Address, Vec<u8>)>,
         at: BlockId,
     ) -> Result<Vec<alloy::primitives::Bytes>, Error> {
+        self.aggregate_by(calls, at, BATCH).await
+    }
+
+    /// As `aggregate`, `most` reads to an `aggregate3`.
+    async fn aggregate_by(
+        &self,
+        calls: Vec<(Address, Vec<u8>)>,
+        at: BlockId,
+        most: usize,
+    ) -> Result<Vec<alloy::primitives::Bytes>, Error> {
         let mut answers = Vec::with_capacity(calls.len());
-        for batch in calls.chunks(BATCH) {
+        for batch in calls.chunks(most) {
             let calls = batch
                 .iter()
                 .map(|(target, data)| IMulticall3::Call3 {
