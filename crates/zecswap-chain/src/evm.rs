@@ -24,10 +24,11 @@ use alloy::providers::{
     DynProvider, MULTICALL3_ADDRESS, PendingTransactionBuilder, Provider, ProviderBuilder,
 };
 use alloy::rpc::client::ClientBuilder;
+use alloy::rpc::json_rpc::ErrorPayload;
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
-use alloy::transports::RpcError;
+use alloy::transports::{RpcError, TransportError};
 use tokio::sync::{Mutex, MutexGuard, Notify, OnceCell};
 use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
@@ -511,14 +512,41 @@ impl Private {
     }
 }
 
-/// A share a call reveals on a swap, whose window must still have `margin` seconds left when the
-/// call is broadcast.
+/// What must still hold, `margin` seconds from now, when a call's turn to be signed comes.
 #[derive(Clone, Debug)]
-struct Check {
-    id: B256,
-    terms: Terms,
-    reveal: Reveal,
-    margin: u64,
+enum Check {
+    /// The window of the share the call reveals on a swap.
+    Reveal {
+        id: B256,
+        terms: Box<Terms>,
+        reveal: Reveal,
+        margin: u64,
+    },
+    /// A ready's time: before its signature's `deadline`, and before `t0`.
+    Ready {
+        id: B256,
+        deadline: u64,
+        t0: u64,
+        margin: u64,
+    },
+}
+
+impl Check {
+    fn reveals(&self) -> bool {
+        matches!(self, Check::Reveal { .. })
+    }
+}
+
+/// A public send under way: its account, the call as each pricing of it is built from, the nonce
+/// they share, the fees and block of the latest, and every hash sent for the nonce.
+struct Sent {
+    account: Address,
+    tx: TransactionRequest,
+    nonce: u64,
+    cap: u128,
+    tip: u128,
+    priced_at: u64,
+    hashes: Vec<B256>,
 }
 
 /// The account's sends, one at a time. A turn that ends, whether or not its transaction went
@@ -930,8 +958,18 @@ impl Settlement {
         calls: Vec<(Address, Vec<u8>)>,
         at: BlockId,
     ) -> Result<Vec<alloy::primitives::Bytes>, Error> {
+        self.aggregate_by(calls, at, BATCH).await
+    }
+
+    /// As `aggregate`, `most` reads to an `aggregate3`.
+    async fn aggregate_by(
+        &self,
+        calls: Vec<(Address, Vec<u8>)>,
+        at: BlockId,
+        most: usize,
+    ) -> Result<Vec<alloy::primitives::Bytes>, Error> {
         let mut answers = Vec::with_capacity(calls.len());
-        for batch in calls.chunks(BATCH) {
+        for batch in calls.chunks(most) {
             let calls = batch
                 .iter()
                 .map(|(target, data)| IMulticall3::Call3 {
@@ -1099,9 +1137,21 @@ impl Settlement {
 
     /// What `owner` can withdraw from the contract: a maker's inventory or a user's payouts.
     pub async fn balance_of(&self, owner: Address, token: Address) -> Result<u128, Error> {
+        self.balance_of_at(owner, token, BlockId::latest()).await
+    }
+
+    /// The same as of block `at`: read at the block swaps were read at, an inventory shows
+    /// exactly the opens those swaps show.
+    pub async fn balance_of_at(
+        &self,
+        owner: Address,
+        token: Address,
+        at: BlockId,
+    ) -> Result<u128, Error> {
         let balance = self
             .contract
             .balanceOf(owner, token)
+            .block(at)
             .call()
             .await
             .map_err(Error::contract)?;
@@ -1177,6 +1227,9 @@ impl Settlement {
         }))
     }
 
+    /// Readies an escrow on its user's signature, good until `deadline`. It is sent only while
+    /// `margin` seconds are left before the deadline and before `t0`, judged before its turn and
+    /// again in it: one that waited its turn out would revert, at this account's cost.
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "ready_with_sig", chain = "evm"))]
     pub async fn ready_with_sig(
         &self,
@@ -1184,11 +1237,21 @@ impl Settlement {
         terms: &Terms,
         deadline: u64,
         signature: &[u8; 65],
+        margin: u64,
     ) -> Result<B256, Error> {
         let call =
             self.contract
                 .readyWithSig(id, terms_words(terms), deadline, signature.to_vec().into());
-        Ok(self.submit(call).await?.transaction_hash)
+        let check = Box::new(Check::Ready {
+            id,
+            deadline,
+            t0: terms.t0,
+            margin,
+        });
+        Ok(self
+            .submit_held(call, Some(check), 0)
+            .await?
+            .transaction_hash)
     }
 
     #[tracing::instrument(skip_all, fields(swap_id = %id, operation = "refund_payout", chain = "evm"))]
@@ -1424,9 +1487,9 @@ impl Settlement {
         terms: &Terms,
         reveal: Reveal,
     ) -> Result<TransactionReceipt, Error> {
-        let check = Box::new(Check {
+        let check = Box::new(Check::Reveal {
             id,
-            terms: terms.clone(),
+            terms: Box::new(terms.clone()),
             reveal,
             margin: self.reveal_margin,
         });
@@ -1434,8 +1497,10 @@ impl Settlement {
             .await
     }
 
-    /// Sends `call` in the account's turn, its fee cap `headroom` per gas higher, where `check`'s
-    /// window, if any, is read again before it is signed.
+    /// Sends `call` in the account's turn, its fee cap `headroom` per gas higher, where `check`,
+    /// if any, is judged again before it is signed. An error says whether anything went out
+    /// (`Error::nothing_sent`): every failure before a node took the transaction is `Late`,
+    /// `WouldRevert` or `Unsent`, and every one after names the transaction.
     async fn submit_held<P: Provider, D: CallDecoder>(
         &self,
         call: CallBuilder<P, D>,
@@ -1447,43 +1512,54 @@ impl Settlement {
         };
         let call = call.from(account);
         let mut attempts = 1;
+        // A transaction of an earlier attempt that a node refused without making plain that it
+        // never took it: no later failure may then say that nothing went out.
+        let mut unclear = None;
+        let ended = |unclear: Option<B256>, error: Error| match unclear {
+            Some(transaction) if error.nothing_sent() => Error::Unconfirmed(transaction),
+            _ => error,
+        };
         loop {
-            // Judged before its turn, so a call that would fail never holds the line up: a reveal
-            // by its window first, and sent privately by that alone, as a simulation would show
+            // Judged before its turn, so a call that would fail never holds the line up: by its
+            // check first, and a reveal sent privately by that alone, as a simulation would show
             // the node its share; any other call by a simulation.
             let simulated = async {
-                call.estimate_gas()
-                    .await
-                    .map(|_| ())
-                    .map_err(Error::contract)
+                let simulation = self.provider.estimate_gas(call.as_ref().clone()).await;
+                simulation.map(|_| ()).map_err(unsimulated)
             };
-            let judged = match &check {
-                Some(check) => match self.check_window(check).await {
-                    Ok(()) if self.private.is_none() => simulated.await,
-                    judged => judged,
+            let judged = match check.as_deref() {
+                Some(check) => match self.check(check).await {
+                    Ok(()) if check.reveals() && self.private.is_some() => Ok(()),
+                    Ok(()) => simulated.await,
+                    refused => refused,
                 },
                 None => simulated.await,
             };
+            // Nothing has gone out yet, and an attempt that fails sent nothing unless it says so
+            // by naming its transaction.
             let failed = match judged {
                 Ok(()) => {
                     let _sending = self.sending.turn().await;
                     // Boxed: every send's future holds an attempt's, and requests nest several.
                     let attempt = self.attempt(call.as_ref().clone(), check.as_deref(), headroom);
                     match Box::pin(attempt).await {
-                        Ok(ended) => return ended,
-                        Err(late @ Error::Late(_)) => return Err(late),
-                        Err(e) => e,
+                        Ok(landed) => return landed,
+                        Err(late @ Error::Late(_)) => return Err(ended(unclear, late)),
+                        Err(Error::Unconfirmed(transaction)) => {
+                            unclear = Some(transaction);
+                            Error::Unconfirmed(transaction)
+                        }
+                        Err(e) => unsent(e),
                     }
                 }
-                Err(late @ Error::Late(_)) => return Err(late),
-                Err(e) => e,
+                Err(late @ Error::Late(_)) => return Err(ended(unclear, late)),
+                Err(e) => unsent(e),
             };
             // Usually an estimate made on a node that hasn't seen the transaction this one
-            // depends on. If an earlier attempt did reach the network, the repeat is
-            // harmless: swap moves revert, and token moves stay within this account's own.
+            // depends on.
             if attempts == SEND_ATTEMPTS {
                 warn!(attempt = attempts, outcome = "send_failed", error = %failed, "transaction submission failed");
-                return Err(failed);
+                return Err(ended(unclear, failed));
             }
             warn!(attempt = attempts, max_attempts = SEND_ATTEMPTS, outcome = "retrying", error = %failed, "RPC rejected transaction submission");
             attempts += 1;
@@ -1491,8 +1567,8 @@ impl Settlement {
         }
     }
 
-    /// One attempt at `tx`, in the account's turn: how it ended once broadcast, or why it never
-    /// was.
+    /// One attempt at `tx`, in the account's turn: how it ended once a node took it, or why none
+    /// did.
     async fn attempt(
         &self,
         tx: TransactionRequest,
@@ -1500,42 +1576,57 @@ impl Settlement {
         headroom: u128,
     ) -> Result<Result<TransactionReceipt, Error>, Error> {
         if let Some(check) = check {
-            self.check_window(check).await?;
+            self.check(check).await?;
         }
         Ok(match &self.private {
-            None => self.land_publicly(tx, headroom).await,
+            None => match self.send_publicly(tx, headroom).await {
+                Ok(sent) => self.landed_publicly(sent, headroom).await,
+                Err(e) => Err(unsent(e)),
+            },
             Some(private) => {
-                let gas = check.map(|_| REVEAL_GAS);
+                let gas = check.filter(|check| check.reveals()).map(|_| REVEAL_GAS);
                 let (signed, until) = self.send_privately(private, tx, headroom, gas).await?;
                 self.landed_privately(private, &signed, until).await
             }
         })
     }
 
-    /// That `check`'s window is open and has its margin left, read in one block: a reveal that
-    /// waited for its turn may have run its window down.
-    async fn check_window(&self, check: &Check) -> Result<(), Error> {
-        let (window, head) = self
-            .reveal_window(check.id, &check.terms, check.reveal)
-            .await?;
-        if !window.leaves(head.timestamp.max(wall_now()), check.margin) {
-            warn!(swap_id = %check.id, reveal = check.reveal.name(), outcome = "late", "the reveal's window is shut or ends too soon to send it; nothing was sent");
-            return Err(Error::Late(check.reveal.name()));
+    /// That `check` holds with its margin left, by the later of the newest block's time and the
+    /// wall clock: a call that waited for its turn may have run its time down. A reveal's window
+    /// is read in one block.
+    async fn check(&self, check: &Check) -> Result<(), Error> {
+        match check {
+            Check::Reveal {
+                id,
+                terms,
+                reveal,
+                margin,
+            } => {
+                let (window, head) = self.reveal_window(*id, terms, *reveal).await?;
+                if !window.leaves(head.timestamp.max(wall_now()), *margin) {
+                    warn!(swap_id = %id, reveal = reveal.name(), outcome = "late", "the reveal's window is shut or ends too soon to send it; nothing was sent");
+                    return Err(Error::Late(reveal.name()));
+                }
+            }
+            Check::Ready {
+                id,
+                deadline,
+                t0,
+                margin,
+            } => {
+                let lands_by = self.now().await?.max(wall_now()).saturating_add(*margin);
+                if lands_by >= *t0 || lands_by > *deadline {
+                    warn!(swap_id = %id, outcome = "late", "the ready's deadline or t0 is too near to send it; nothing was sent");
+                    return Err(Error::Late("ready"));
+                }
+            }
         }
         Ok(())
     }
 
-    /// Signs `tx` at the account's next nonce and the fees now, broadcasts it, and holds the
-    /// account's turn until it mines: unmined for `REPRICE_BLOCKS` blocks, it goes again at the
-    /// same nonce at the fees then, at least an eighth over its last, as nodes ask of a
-    /// replacement. A send priced once can sit unmined for most of an hour in a surge, and a
-    /// cancel or refund must land inside its window. Every hash sent for the nonce is watched, as
-    /// any may be the one that mines.
-    async fn land_publicly(
-        &self,
-        tx: TransactionRequest,
-        headroom: u128,
-    ) -> Result<TransactionReceipt, Error> {
+    /// Signs `tx` at the account's next nonce and the fees now and broadcasts it: what went out.
+    /// An error if no node took it.
+    async fn send_publicly(&self, tx: TransactionRequest, headroom: u128) -> Result<Sent, Error> {
         let account = self
             .account
             .ok_or_else(|| Error::Config("a read-only connection cannot send".into()))?;
@@ -1543,44 +1634,59 @@ impl Settlement {
             .provider
             .estimate_gas(tx.clone())
             .await
-            .map_err(Error::contract)?;
+            .map_err(unsimulated)?;
         let tx = tx.with_chain_id(self.chain_id().await?).with_gas_limit(gas);
         let now = fees(&self.provider).await?;
-        let (mut cap, mut tip) = (now.max_fee_per_gas + headroom, now.max_priority_fee_per_gas);
-        let priced = |cap, tip| {
-            tx.clone()
-                .with_max_fee_per_gas(cap)
-                .with_max_priority_fee_per_gas(tip)
-        };
-        let first = self.sign_next(priced(cap, tip), 0).await?;
-        let nonce = first.nonce;
-        let mut sent = vec![first.hash];
-        match self.provider.send_raw_transaction(&first.raw).await {
-            Ok(_) => {}
-            // One it answers with an error, it passed on to no one.
-            Err(RpcError::ErrorResp(e)) => return Err(Error::Contract(e.to_string())),
-            Err(_) => {
-                warn!(transaction_hash = %first.hash, outcome = "unknown", "the node's answer was lost; the transaction may still land");
-            }
-        }
-        info!(transaction_hash = %first.hash, outcome = "submitted", "transaction submitted; awaiting receipt");
-        let started = Instant::now();
-        let mut priced_at = self
+        let (cap, tip) = (now.max_fee_per_gas + headroom, now.max_priority_fee_per_gas);
+        // Read before the broadcast: after it, no failure may leave the transaction unnamed.
+        let priced_at = self
             .provider
             .get_block_number()
             .await
             .map_err(Error::contract)?;
+        let first = self.sign_next(priced(&tx, cap, tip), 0).await?;
+        match self.provider.send_raw_transaction(&first.raw).await {
+            Ok(_) => {}
+            // One it refuses in so many words, it passed on to no one.
+            Err(RpcError::ErrorResp(e)) if refused(&e) => return Err(Error::Unsent(e.to_string())),
+            Err(_) => {
+                warn!(transaction_hash = %first.hash, outcome = "unknown", "the node's answer was lost or unclear; the transaction may still land");
+            }
+        }
+        info!(transaction_hash = %first.hash, outcome = "submitted", "transaction submitted; awaiting receipt");
+        Ok(Sent {
+            account,
+            tx,
+            nonce: first.nonce,
+            cap,
+            tip,
+            priced_at,
+            hashes: vec![first.hash],
+        })
+    }
+
+    /// Holds the account's turn until `sent` mines: unmined for `REPRICE_BLOCKS` blocks, it goes
+    /// again at the same nonce at the fees then, at least an eighth over its last, as nodes ask
+    /// of a replacement. A send priced once can sit unmined for most of an hour in a surge, and a
+    /// cancel or refund must land inside its window. Every hash sent for the nonce is watched, as
+    /// any may be the one that mines, and every error names one of them.
+    async fn landed_publicly(
+        &self,
+        mut sent: Sent,
+        headroom: u128,
+    ) -> Result<TransactionReceipt, Error> {
+        let started = Instant::now();
         let mut taken = 0;
         loop {
             tokio::time::sleep(self.provider.client().poll_interval()).await;
             // The nonce before the receipts: whichever of these took it shows its receipt then.
             let mined = self
                 .provider
-                .get_transaction_count(account)
+                .get_transaction_count(sent.account)
                 .latest()
                 .await
                 .unwrap_or_default();
-            for hash in &sent {
+            for hash in &sent.hashes {
                 if let Ok(Some(receipt)) = self.provider.get_transaction_receipt(*hash).await {
                     let transaction_hash = receipt.transaction_hash;
                     if receipt.status() {
@@ -1591,10 +1697,10 @@ impl Settlement {
                     return Err(Error::Reverted(transaction_hash));
                 }
             }
-            let last = *sent.last().expect("one was sent");
+            let last = *sent.hashes.last().expect("one was sent");
             // Another of the account's transactions took the nonce: none of these can land. Seen
             // on reads in a row, as a load-balanced RPC may answer receipts a block behind.
-            if mined > nonce {
+            if mined > sent.nonce {
                 taken += 1;
                 if taken == NONCE_TAKEN_READS {
                     warn!(transaction_hash = %last, outcome = "dropped", "another transaction took the nonce");
@@ -1610,25 +1716,28 @@ impl Settlement {
             let Ok(head) = self.provider.get_block_number().await else {
                 continue;
             };
-            if head < priced_at + REPRICE_BLOCKS {
+            if head < sent.priced_at + REPRICE_BLOCKS {
                 continue;
             }
             let Ok(now) = fees(&self.provider).await else {
                 continue;
             };
-            cap = (now.max_fee_per_gas + headroom).max(bumped(cap));
-            tip = now.max_priority_fee_per_gas.max(bumped(tip));
-            let again = self.sign_at(priced(cap, tip), nonce).await?;
+            sent.cap = (now.max_fee_per_gas + headroom).max(bumped(sent.cap));
+            sent.tip = now.max_priority_fee_per_gas.max(bumped(sent.tip));
+            let repriced = priced(&sent.tx, sent.cap, sent.tip);
+            let Ok(again) = self.sign_at(repriced, sent.nonce).await else {
+                return Err(Error::Unconfirmed(last));
+            };
             match self.provider.send_raw_transaction(&again.raw).await {
                 Ok(_) => {
-                    info!(transaction_hash = %again.hash, replaces = %last, max_fee_per_gas = cap, outcome = "repriced", "transaction unmined; sent again at the fees now")
+                    info!(transaction_hash = %again.hash, replaces = %last, max_fee_per_gas = sent.cap, outcome = "repriced", "transaction unmined; sent again at the fees now")
                 }
                 Err(e) => {
                     warn!(transaction_hash = %again.hash, outcome = "refused", "the node refused the repriced transaction: {e}")
                 }
             }
-            sent.push(again.hash);
-            priced_at = head;
+            sent.hashes.push(again.hash);
+            sent.priced_at = head;
         }
     }
 
@@ -1643,7 +1752,7 @@ impl Settlement {
         headroom: u128,
         gas: Option<u64>,
     ) -> Result<(Signed, u64), Error> {
-        let unavailable = |what: &str| Error::Contract(format!("{what} is unavailable"));
+        let unavailable = |what: &str| Error::Unsent(format!("{what} is unavailable"));
         let fees = fees(&self.provider).await?;
         let sent_at = self
             .provider
@@ -1652,11 +1761,15 @@ impl Settlement {
             .map_err(|_| unavailable("the latest block"))?;
         let gas = match gas {
             Some(gas) => gas,
-            None => self
-                .provider
-                .estimate_gas(tx.clone())
-                .await
-                .map_err(|_| unavailable("the simulation"))?,
+            None => {
+                self.provider
+                    .estimate_gas(tx.clone())
+                    .await
+                    .map_err(|e| match reverts(&e) {
+                        true => Error::WouldRevert("the transaction fails in simulation".into()),
+                        false => unavailable("the simulation"),
+                    })?
+            }
         };
         let tx = tx
             .with_chain_id(self.chain_id().await?)
@@ -1670,11 +1783,17 @@ impl Settlement {
             Ok(_) => {
                 info!(%transaction_hash, outcome = "submitted", "transaction sent privately; awaiting its block");
             }
-            // One it answers with an error, it passed on to no one.
-            Err(RpcError::ErrorResp(_)) => {
-                return Err(Error::Contract(
+            // One it refuses in so many words, it passed on to no one.
+            Err(RpcError::ErrorResp(e)) if refused(&e) => {
+                return Err(Error::Unsent(
                     "the private RPC refused the transaction".into(),
                 ));
+            }
+            // Any other error answer, but that it holds the transaction already, is tried again,
+            // and not taken to mean that it went nowhere.
+            Err(RpcError::ErrorResp(e)) if !known(&e) => {
+                warn!(%transaction_hash, outcome = "unclear", "the private RPC answered the transaction with an error that does not say it was refused");
+                return Err(Error::Unconfirmed(transaction_hash));
             }
             Err(_) => {
                 warn!(%transaction_hash, outcome = "unknown", "the private RPC's answer was lost; the transaction may still land");
@@ -1872,6 +1991,75 @@ const MIN_TIP_WEI: u128 = 20_000_000;
 /// A replacement's fee: an eighth over `fee`, past the tenth nodes ask of one.
 fn bumped(fee: u128) -> u128 {
     fee + fee / 8 + 1
+}
+
+fn priced(tx: &TransactionRequest, cap: u128, tip: u128) -> TransactionRequest {
+    tx.clone()
+        .with_max_fee_per_gas(cap)
+        .with_max_priority_fee_per_gas(tip)
+}
+
+/// Whether the node ran a simulation and it reverted, rather than failed to answer for it: the
+/// code nodes give a revert, or their word for it.
+fn reverts(error: &TransportError) -> bool {
+    error.as_error_resp().is_some_and(|refusal| {
+        refusal.code == 3 || refusal.message.to_ascii_lowercase().contains("revert")
+    })
+}
+
+/// Whether a node refusing a transaction says it holds it already: then it may land.
+fn known(refusal: &ErrorPayload) -> bool {
+    let said = refusal.message.to_ascii_lowercase();
+    [
+        "already known",
+        "alreadyknown",
+        "already imported",
+        "known transaction",
+    ]
+    .iter()
+    .any(|held| said.contains(held))
+}
+
+/// Whether a node's error answer to a transaction says in so many words that it did not take it:
+/// its nonce, fees, funds, gas or signature are wrong for it, or the caller is over its allowance.
+/// Any other error answer leaves the transaction possibly out.
+fn refused(refusal: &ErrorPayload) -> bool {
+    let said = refusal.message.to_ascii_lowercase();
+    refusal.code == 429
+        || [
+            "nonce too low",
+            "underpriced",
+            "insufficient funds",
+            "intrinsic gas too low",
+            "exceeds block gas limit",
+            "less than block base fee",
+            "higher than max fee per gas",
+            "exceeds the configured cap",
+            "invalid sender",
+            "invalid signature",
+            "invalid chain id",
+            "rate limit",
+            "too many requests",
+            "capacity",
+        ]
+        .iter()
+        .any(|refusing| said.contains(refusing))
+}
+
+/// What a simulation's failure says of the call it was made for, before anything is sent.
+fn unsimulated(error: TransportError) -> Error {
+    match reverts(&error) {
+        true => Error::WouldRevert(error.to_string()),
+        false => Error::Unsent(error.to_string()),
+    }
+}
+
+/// A failure before any node took a transaction, as a send reports it.
+fn unsent(error: Error) -> Error {
+    match error {
+        Error::Contract(why) => Error::Unsent(why),
+        other => other,
+    }
 }
 
 fn eip1559(base_fee: u128, suggested_tip: u128) -> Eip1559Estimation {
@@ -2194,6 +2382,49 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_node_that_holds_a_transaction_already_has_not_refused_it() {
+        let refusal = |message: &'static str| ErrorPayload {
+            code: -32000,
+            message: message.into(),
+            data: None,
+        };
+        for held in [
+            "already known",
+            "AlreadyKnown",
+            "transaction already imported",
+        ] {
+            assert!(known(&refusal(held)), "{held}");
+        }
+        for plain in ["nonce too low", "replacement transaction underpriced"] {
+            assert!(
+                !known(&refusal(plain)) && refused(&refusal(plain)),
+                "{plain}"
+            );
+        }
+        // Neither held nor plainly refused: possibly out.
+        for unclear in [
+            "internal error",
+            "upstream request timeout",
+            "already known",
+        ] {
+            assert!(!refused(&refusal(unclear)), "{unclear}");
+        }
+        let failed = |code, message| {
+            TransportError::ErrorResp(ErrorPayload {
+                code,
+                ..refusal(message)
+            })
+        };
+        assert!(reverts(&failed(3, "execution reverted")));
+        assert!(reverts(&failed(-32000, "Execution Reverted: NotOpen()")));
+        assert!(!reverts(&failed(
+            -32003,
+            "insufficient funds for gas * price + value"
+        )));
+        assert!(!reverts(&TransportError::NullResp));
     }
 
     #[test]

@@ -516,8 +516,29 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
         let deadline = maker.now().await.unwrap() + 60;
         if index == 0 {
             let signature = keys.auth.sign(&domain.ready(&id.0, deadline));
+            // With less than its margin left before its deadline, or before t0, a ready is
+            // never sent.
+            let sent = async || {
+                provider
+                    .get_transaction_count(relay_address)
+                    .pending()
+                    .await
+            };
+            let before = sent().await.unwrap();
+            let late = relay
+                .ready_with_sig(id, &escrow, deadline, &signature, 120)
+                .await;
+            assert!(matches!(late, Err(Error::Late("ready"))), "{late:?}");
+            let far = terms.t1;
+            let long_signed = keys.auth.sign(&domain.ready(&id.0, far));
+            let late = relay
+                .ready_with_sig(id, &escrow, far, &long_signed, 3_600)
+                .await;
+            assert!(matches!(&late, Err(Error::Late("ready"))), "{late:?}");
+            assert!(late.unwrap_err().nothing_sent());
+            assert_eq!(sent().await.unwrap(), before);
             relay
-                .ready_with_sig(id, &escrow, deadline, &signature)
+                .ready_with_sig(id, &escrow, deadline, &signature, 30)
                 .await
                 .unwrap();
             maker.claim(id, &escrow, &e).await.unwrap();
@@ -720,7 +741,7 @@ async fn the_windows_rust_judges_reveals_by_are_the_contracts() {
             let deadline = maker.now().await.unwrap() + 60;
             let signature = user.auth.sign(&domain.ready(&id.0, deadline));
             maker
-                .ready_with_sig(id, &open.terms(), deadline, &signature)
+                .ready_with_sig(id, &open.terms(), deadline, &signature, 0)
                 .await
                 .unwrap();
         }
@@ -970,6 +991,186 @@ async fn a_public_send_left_unmined_goes_again_at_the_fees_then() {
         .await
         .unwrap();
     assert_eq!(swap.unwrap().stage, Stage::Open);
+}
+
+/// A contract call that fails says whether anything went out. Nothing did where the node ran its
+/// simulation and it reverts, or could not be asked; once a node has the transaction, the error
+/// names it. And an inventory read at a block shows what that block held.
+#[tokio::test]
+async fn a_failed_send_says_whether_anything_went_out() {
+    use alloy::network::{EthereumWallet, TransactionBuilder};
+    use alloy::providers::{Provider, ProviderBuilder};
+    use alloy::rpc::types::TransactionRequest;
+    use zecswap_chain::evm::BlockId;
+
+    let Ok(anvil) = Anvil::new().try_spawn() else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("ZecSwap.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let account = key.address();
+    let token = deploy(&url, key.clone(), creation_code(&artifacts, "TestToken"))
+        .await
+        .unwrap();
+    let contract = deploy(&url, key.clone(), swap_code(&artifacts, Address::ZERO))
+        .await
+        .unwrap();
+    let maker = std::sync::Arc::new(Settlement::connect(&url, contract, key.clone()).unwrap());
+    maker.mint_test_token(token, account, 2).await.unwrap();
+    maker.add_inventory(token, 2).await.unwrap();
+    let now = maker.now().await.unwrap();
+    let terms = |nonce| Terms {
+        maker: account.into(),
+        token: token.into(),
+        amount: 1,
+        maker_share: derive_maker_share(&[9; 32], nonce).unwrap().public(),
+        user_share: derive_maker_share(&[8; 32], nonce).unwrap().public(),
+        user: [7; 20],
+        t0: now + 3_600,
+        t1: now + 7_200,
+        payout_note: [0; 32],
+    };
+    let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    let sent = async || {
+        chain
+            .get_transaction_count(account)
+            .pending()
+            .await
+            .unwrap()
+    };
+    let before = sent().await;
+
+    // No swap is there to ready, and nothing listens where the second connection asks.
+    let nowhere = {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", free.local_addr().unwrap())
+    };
+    let unreachable = Settlement::connect(&nowhere, contract, key.clone()).unwrap();
+    let first = terms(0);
+    let (reverts, unasked) = tokio::join!(
+        maker.ready(swap_id(account, &first.user_share), &first),
+        unreachable.open(&first),
+    );
+    assert!(
+        matches!(&reverts, Err(Error::WouldRevert(_))),
+        "{reverts:?}"
+    );
+    assert!(matches!(&unasked, Err(Error::Unsent(_))), "{unasked:?}");
+    assert!(reverts.unwrap_err().nothing_sent() && unasked.unwrap_err().nothing_sent());
+    assert_eq!(sent().await, before);
+
+    // The inventory as of the block before an open, and after it.
+    let earlier = maker.head().await.unwrap();
+    maker.open(&first).await.unwrap();
+    let held = |at| maker.balance_of_at(account, token, at);
+    assert_eq!(held(BlockId::hash(earlier.hash)).await.unwrap(), 2);
+    assert_eq!(held(BlockId::latest()).await.unwrap(), 1);
+    assert_eq!(maker.balance_of(account, token).await.unwrap(), 1);
+
+    // An open is out and unmined when another of the account's transactions takes its nonce.
+    let nonce = sent().await;
+    rpc(&url, "evm_setAutomine", serde_json::json!([false])).await;
+    let opening = tokio::spawn({
+        let (maker, second) = (maker.clone(), terms(1));
+        async move { maker.open(&second).await }
+    });
+    while sent().await == nonce {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let wallet = ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .wallet(EthereumWallet::from(key))
+        .connect_http(url.parse().unwrap());
+    let fee = 1_000_000_000_000u128;
+    let replacement = TransactionRequest::default()
+        .with_from(account)
+        .with_to(account)
+        .with_nonce(nonce)
+        .with_chain_id(maker.chain_id().await.unwrap())
+        .with_gas_limit(21_000)
+        .with_max_fee_per_gas(fee)
+        .with_max_priority_fee_per_gas(fee);
+    let _ = wallet.send_transaction(replacement).await.unwrap();
+    rpc(&url, "evm_mine", serde_json::json!([])).await;
+    let dropped = tokio::time::timeout(Duration::from_secs(60), opening)
+        .await
+        .expect("the open still waits for a nonce another transaction took")
+        .unwrap();
+    assert!(matches!(&dropped, Err(Error::Dropped(_))), "{dropped:?}");
+    assert!(!dropped.unwrap_err().nothing_sent());
+}
+
+/// Sent through a private RPC, a call that RPC answers with a refusal went nowhere, and one whose
+/// answer is lost may be out until the blocks it is tried for have passed.
+#[tokio::test]
+async fn a_private_send_says_whether_its_rpc_took_it() {
+    use alloy::providers::{Provider, ProviderBuilder};
+
+    let (Ok(anvil), Ok(other)) = (
+        Anvil::new().block_time(1).try_spawn(),
+        Anvil::new().chain_id(999).try_spawn(),
+    ) else {
+        eprintln!("skipped: anvil is not installed");
+        return;
+    };
+    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contracts/out");
+    if !artifacts.join("ZecSwap.sol").exists() {
+        eprintln!("skipped: run `forge build` in contracts/");
+        return;
+    }
+    let url = anvil.endpoint();
+    let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+    let account = key.address();
+    let token = deploy(&url, key.clone(), creation_code(&artifacts, "TestToken"))
+        .await
+        .unwrap();
+    let contract = deploy(&url, key.clone(), swap_code(&artifacts, Address::ZERO))
+        .await
+        .unwrap();
+    let funded = Settlement::connect(&url, contract, key.clone()).unwrap();
+    funded.mint_test_token(token, account, 1).await.unwrap();
+    funded.add_inventory(token, 1).await.unwrap();
+    let now = funded.now().await.unwrap();
+    let terms = Terms {
+        maker: account.into(),
+        token: token.into(),
+        amount: 1,
+        maker_share: derive_maker_share(&[9; 32], 0).unwrap().public(),
+        user_share: derive_maker_share(&[8; 32], 0).unwrap().public(),
+        user: [7; 20],
+        t0: now + 3_600,
+        t1: now + 7_200,
+        payout_note: [0; 32],
+    };
+    let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
+    let before = chain.get_transaction_count(account).await.unwrap();
+
+    // A node of another chain refuses the transaction outright.
+    let mut refused = Settlement::connect(&url, contract, key.clone()).unwrap();
+    refused.broadcast_privately(&other.endpoint()).unwrap();
+    let opened = refused.open(&terms).await;
+    assert!(matches!(&opened, Err(Error::Unsent(_))), "{opened:?}");
+    assert!(opened.unwrap_err().nothing_sent());
+
+    // Nothing answers: the transaction counts as out for the block it is tried for, and a margin.
+    let nowhere = {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/?blockRange=1", free.local_addr().unwrap())
+    };
+    let mut lost = Settlement::connect(&url, contract, key).unwrap();
+    lost.broadcast_privately(&nowhere).unwrap();
+    let opened = tokio::time::timeout(Duration::from_secs(60), lost.open(&terms))
+        .await
+        .expect("it waited past the blocks its private RPC tries it for");
+    assert!(matches!(&opened, Err(Error::Dropped(_))), "{opened:?}");
+    assert!(!opened.unwrap_err().nothing_sent());
+    assert_eq!(chain.get_transaction_count(account).await.unwrap(), before);
 }
 
 /// A windows client reads its windows from the contract, and finds none on the lock contract

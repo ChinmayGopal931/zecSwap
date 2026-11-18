@@ -13,6 +13,7 @@ use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol;
+use alloy::sol_types::SolCall;
 use alloy::transports::RpcError;
 use zecswap_railgun::{Keys, OutputCiphertext, ShieldNote};
 
@@ -331,16 +332,36 @@ impl Transact {
 }
 
 impl Settlement {
-    /// Whether a note `transact` spends is spent already.
+    /// Whether a note `transact` spends is spent already: every note it spends asked about in
+    /// one call where Multicall3 is deployed, else one a note.
     pub async fn spends_spent_notes(&self, transact: &Transact) -> Result<bool, Error> {
-        let railgun = IRailgunSmartWallet::new(transact.railgun, &self.provider);
-        for (tree, nullifier) in transact.nullifiers() {
-            if railgun
-                .nullifiers(U256::from(tree), nullifier)
-                .call()
-                .await
-                .map_err(|_| Error::Contract("Railgun's nullifiers are unavailable".into()))?
-            {
+        let unavailable = || Error::Contract("Railgun's nullifiers are unavailable".into());
+        let spent = |tree: u16, nullifier| IRailgunSmartWallet::nullifiersCall {
+            treeNumber: U256::from(tree),
+            nullifier,
+        };
+        if !self.multicall_deployed().await.map_err(|_| unavailable())? {
+            let railgun = IRailgunSmartWallet::new(transact.railgun, &self.provider);
+            for (tree, nullifier) in transact.nullifiers() {
+                let read = railgun.call_builder(&spent(tree, nullifier)).call().await;
+                if read.map_err(|_| unavailable())? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        let calls = transact
+            .nullifiers()
+            .into_iter()
+            .map(|(tree, nullifier)| (transact.railgun, spent(tree, nullifier).abi_encode()))
+            .collect();
+        let answers = self
+            .aggregate_by(calls, BlockId::latest(), MAX_TRANSACTIONS * MAX_NULLIFIERS)
+            .await
+            .map_err(|_| unavailable())?;
+        for answer in answers {
+            let read = IRailgunSmartWallet::nullifiersCall::abi_decode_returns(&answer);
+            if read.map_err(|_| unavailable())? {
                 return Ok(true);
             }
         }
@@ -597,38 +618,44 @@ pub(super) mod tests {
     /// A `transact` call of one Railgun transaction spending one note, which unshields `token` if
     /// `unshield` is 1. Its proof and notes are placeholders: decoding checks a call's form.
     fn transact(chain_id: u64, unshield: u8, token: TokenData) -> Vec<u8> {
+        spending(chain_id, unshield, token, &[vec![B256::repeat_byte(1)]])
+    }
+
+    /// The same, of a Railgun transaction for each of `spends`, spending those notes.
+    fn spending(chain_id: u64, unshield: u8, token: TokenData, spends: &[Vec<B256>]) -> Vec<u8> {
         let point = || G1Point {
             x: U256::ZERO,
             y: U256::ZERO,
         };
+        let transaction = |nullifiers: &Vec<B256>| Transaction {
+            proof: SnarkProof {
+                a: point(),
+                b: G2Point {
+                    x: [U256::ZERO; 2],
+                    y: [U256::ZERO; 2],
+                },
+                c: point(),
+            },
+            merkleRoot: B256::ZERO,
+            nullifiers: nullifiers.clone(),
+            commitments: vec![B256::repeat_byte(2)],
+            boundParams: BoundParams {
+                treeNumber: 0,
+                minGasPrice: U72::ZERO,
+                unshield,
+                chainID: chain_id,
+                adaptContract: Address::ZERO,
+                adaptParams: B256::ZERO,
+                commitmentCiphertext: vec![],
+            },
+            unshieldPreimage: Preimage {
+                npk: B256::ZERO,
+                token: token.clone(),
+                value: U120::from(unshield),
+            },
+        };
         IRailgunSmartWallet::transactCall {
-            _transactions: vec![Transaction {
-                proof: SnarkProof {
-                    a: point(),
-                    b: G2Point {
-                        x: [U256::ZERO; 2],
-                        y: [U256::ZERO; 2],
-                    },
-                    c: point(),
-                },
-                merkleRoot: B256::ZERO,
-                nullifiers: vec![B256::repeat_byte(1)],
-                commitments: vec![B256::repeat_byte(2)],
-                boundParams: BoundParams {
-                    treeNumber: 0,
-                    minGasPrice: U72::ZERO,
-                    unshield,
-                    chainID: chain_id,
-                    adaptContract: Address::ZERO,
-                    adaptParams: B256::ZERO,
-                    commitmentCiphertext: vec![],
-                },
-                unshieldPreimage: Preimage {
-                    npk: B256::ZERO,
-                    token,
-                    value: U120::from(unshield),
-                },
-            }],
+            _transactions: spends.iter().map(transaction).collect(),
         }
         .abi_encode()
     }
@@ -704,6 +731,74 @@ pub(super) mod tests {
             POLICY.decode(1, POLICY.railgun, 0, data.into()),
             Err(SendError::Rejected("noncanonical transact calldata"))
         ));
+    }
+
+    /// The notes of the largest call a relayer takes are asked about in one request where
+    /// Multicall3 is deployed, with the answer that asking one at a time gives.
+    #[tokio::test]
+    async fn every_note_a_call_spends_is_asked_about_in_one_request() {
+        use alloy::providers::MULTICALL3_ADDRESS;
+        use alloy::providers::bindings::IMulticall3;
+
+        let Ok(anvil) = Anvil::new().try_spawn() else {
+            eprintln!("skipped: anvil is not installed");
+            return;
+        };
+        let url = anvil.endpoint();
+        let key = PrivateKeySigner::from(anvil.keys()[0].clone());
+        let funded = Settlement::connect(&url, Address::repeat_byte(1), key.clone()).unwrap();
+        let set = async |method: &'static str, params: serde_json::Value| {
+            funded
+                .provider
+                .raw_request::<_, serde_json::Value>(method.into(), params)
+                .await
+                .unwrap();
+        };
+        // Answers any call with the storage word its second argument names, as Railgun's
+        // `nullifiers(tree, nullifier)` answers whether a note is spent.
+        let railgun = POLICY.railgun;
+        let code = "0x6024355460005260206000f3";
+        set("anvil_setCode", serde_json::json!([railgun, code])).await;
+        let note = |index: usize| B256::from(U256::from(1_000 + index));
+        let spends: Vec<Vec<B256>> = (0..MAX_TRANSACTIONS)
+            .map(|tx| {
+                (0..MAX_NULLIFIERS)
+                    .map(|n| note(tx * MAX_NULLIFIERS + n))
+                    .collect()
+            })
+            .collect();
+        let notes = MAX_TRANSACTIONS * MAX_NULLIFIERS;
+        let data = spending(1, 0, erc20_token(POLICY.token), &spends);
+        let transact = POLICY.decode(1, railgun, 0, data.into()).unwrap();
+        let calls = |chain: &Settlement| {
+            let usage = chain.meter().usage();
+            usage.requests.get("eth_call").copied().unwrap_or(0)
+        };
+
+        let single = Settlement::read_only(&url, Address::repeat_byte(1)).unwrap();
+        assert!(!single.spends_spent_notes(&transact).await.unwrap());
+        assert_eq!(calls(&single), notes as u64, "no Multicall3: a call a note");
+
+        let deployed = crate::evm::deploy(&url, key, IMulticall3::BYTECODE.to_vec())
+            .await
+            .unwrap();
+        let code = funded.provider.get_code_at(deployed).await.unwrap();
+        set(
+            "anvil_setCode",
+            serde_json::json!([MULTICALL3_ADDRESS, code]),
+        )
+        .await;
+        let batched = Settlement::read_only(&url, Address::repeat_byte(1)).unwrap();
+        assert!(!batched.spends_spent_notes(&transact).await.unwrap());
+        assert_eq!(calls(&batched), 1);
+
+        // The last note it spends is spent.
+        let spent = serde_json::json!([railgun, note(notes - 1), B256::from(U256::from(1))]);
+        set("anvil_setStorageAt", spent).await;
+        assert!(single.spends_spent_notes(&transact).await.unwrap());
+        assert!(batched.spends_spent_notes(&transact).await.unwrap());
+        assert_eq!(calls(&batched), 2, "one request, whatever the notes");
+        assert_eq!(batched.meter().usage().failed, 0);
     }
 
     #[tokio::test]
