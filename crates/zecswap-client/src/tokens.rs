@@ -473,12 +473,12 @@ pub(crate) mod tests {
         let accept = |id: u8| {
             let api = api.clone();
             let id = B256::repeat_byte(id);
-            async move { api.accept(id, id, &acceptance()).await }
+            async move { api.accept(id, 0, false, id, &acceptance()).await }
         };
         let sent = || fake.sent.lock().unwrap().clone();
 
         accept(1).await.unwrap();
-        let refused = api.accept(REFUSED, REFUSED, &acceptance()).await;
+        let refused = api.accept(REFUSED, 0, false, REFUSED, &acceptance()).await;
         assert!(refused.unwrap_err().to_string().contains("400"));
         assert!(
             !api.collect_token(B256::repeat_byte(1)).await.unwrap(),
@@ -529,7 +529,9 @@ pub(crate) mod tests {
         let api = MakerApi::new(url)
             .unwrap()
             .with_tokens(Arc::new(fresh.unwrap()));
-        let refused = api.accept(B256::ZERO, B256::ZERO, &acceptance()).await;
+        let refused = api
+            .accept(B256::ZERO, 0, false, B256::ZERO, &acceptance())
+            .await;
         let refused = refused.unwrap_err().to_string();
         assert!(refused.contains("does not sign"), "{refused}");
         assert!(elsewhere.sent.lock().unwrap().is_empty());

@@ -35,25 +35,8 @@ impl SweepIntent {
 
     /// The Orchard receiver a sweep to `address` pays, if it is a unified address on `network`.
     pub fn recipient(address: &str, network: NetworkType) -> Result<Address, Error> {
-        let (actual_network, _, address) = unified::Address::decode(address)
-            .map_err(|_| policy("sweep destination must be a unified address"))?;
-        // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
-        if !address.metadata_items().is_empty() {
-            return Err(policy("sweep destination must not carry address metadata"));
-        }
-        if actual_network != network {
-            return Err(policy("sweep destination is on another network"));
-        }
-        address
-            .items()
-            .into_iter()
-            .find_map(|receiver| match receiver {
-                unified::Receiver::Orchard(bytes) => {
-                    Address::from_raw_address_bytes(&bytes).into_option()
-                }
-                _ => None,
-            })
-            .ok_or_else(|| policy("sweep destination needs an Orchard receiver"))
+        orchard_receiver(address, network, false)
+            .map_err(|wrong| policy(&format!("sweep destination {wrong}")))
     }
 
     fn validate(&self) -> Result<(), Error> {
@@ -163,6 +146,41 @@ struct Totals {
 
 fn policy(message: &str) -> Error {
     Error::SweepIntent(message.into())
+}
+
+/// The Orchard receiver of `address`, if it is a unified address on `network` with no other
+/// receiver, so that a wallet paying it has no pool to choose; else what is wrong with it.
+pub fn orchard_only(address: &str, network: NetworkType) -> Result<Address, &'static str> {
+    orchard_receiver(address, network, true)
+}
+
+fn orchard_receiver(
+    address: &str,
+    network: NetworkType,
+    alone: bool,
+) -> Result<Address, &'static str> {
+    let (actual_network, _, address) =
+        unified::Address::decode(address).map_err(|_| "must be a unified address")?;
+    // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
+    if !address.metadata_items().is_empty() {
+        return Err("must not carry address metadata");
+    }
+    if actual_network != network {
+        return Err("is on another network");
+    }
+    let receivers = address.items();
+    if alone && receivers.len() != 1 {
+        return Err("must have an Orchard receiver and no other");
+    }
+    receivers
+        .into_iter()
+        .find_map(|receiver| match receiver {
+            unified::Receiver::Orchard(bytes) => {
+                Address::from_raw_address_bytes(&bytes).into_option()
+            }
+            _ => None,
+        })
+        .ok_or("needs an Orchard receiver")
 }
 
 fn verify_ciphertext(action: &orchard::pczt::Action, pool: ValuePool) -> Result<(), Error> {

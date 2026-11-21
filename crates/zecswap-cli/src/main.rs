@@ -74,6 +74,10 @@ enum Command {
         /// The most the relayer may keep, in token base units.
         #[arg(long, default_value_t = 2_000_000)]
         max_fee: u128,
+        /// The most the maker may ask before it opens the swap, in zatoshis: its gas for the
+        /// open, kept whether or not a deposit follows. A quote asking more is refused.
+        #[arg(long, default_value_t = 500_000)]
+        max_open_fee: u64,
         /// Spend Privacy Pass tokens from this issuer where the maker takes them.
         #[arg(long, env = "ZECSWAP_ISSUER_URL")]
         issuer: Option<String>,
@@ -207,6 +211,7 @@ async fn main() -> Result<()> {
             units,
             relayer,
             max_fee,
+            max_open_fee,
             issuer,
             device,
         } => {
@@ -238,6 +243,7 @@ async fn main() -> Result<()> {
                 units,
                 payee,
                 tokens,
+                max_open_fee,
             };
             swap::run(&mut ctx, args).await
         }

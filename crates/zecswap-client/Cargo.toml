@@ -28,4 +28,5 @@ axum = "0.8"
 hex = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+zcash_address.workspace = true
 zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }
