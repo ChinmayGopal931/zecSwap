@@ -36,6 +36,7 @@ use zcash_protocol::consensus::{BlockHeight, BranchId, Network, Parameters, UPGR
 use zcash_protocol::value::{BalanceError, Zatoshis};
 use zcash_protocol::{ShieldedPool, TxId};
 use zecswap_core::{JointAccount, SpendKey, SweepIntent, sign_pczt};
+use zip32::DiversifierIndex;
 
 use super::cache::MemoryBlockCache;
 use super::lightwalletd::{self, Lightwalletd};
@@ -45,6 +46,7 @@ use crate::Error;
 mod sync;
 
 const JOINT_KEY_SOURCE: &str = "zecswap";
+const INVENTORY: &str = "reverse swap inventory";
 const SYNC_BATCH_SIZE: u32 = 1_000;
 const ORCHARD_POOLS: [ShieldedPool; 2] = [ShieldedPool::Orchard, ShieldedPool::Ironwood];
 
@@ -72,6 +74,9 @@ pub struct ProvedPayment {
 
 pub struct Wallet {
     db: Db,
+    /// A read-only connection of its own, the library keeping its to itself: reads the views
+    /// the library exposes over the wallet's database, for what its calls don't tell.
+    views: rusqlite::Connection,
     network: Network,
     blocks: MemoryBlockCache,
     confirmations: ConfirmationsPolicy,
@@ -82,12 +87,19 @@ pub struct Wallet {
 impl Wallet {
     /// Opens a wallet that spends its own notes after 3 confirmations, and others' after 10.
     pub fn open(path: impl AsRef<Path>, network: Network) -> Result<Self, Error> {
+        let path = path.as_ref();
         let mut db = WalletDb::for_path(path, network, SystemClock, UnwrapErr(SysRng))
             .map_err(Error::wallet)?;
         init_wallet_db(&mut db, None)
             .map_err(|e| Error::Wallet(format!("migrating wallet: {e}")))?;
+        let views = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(Error::wallet)?;
         Ok(Self {
             db,
+            views,
             network,
             blocks: MemoryBlockCache::default(),
             confirmations: ConfirmationsPolicy::default(),
@@ -266,7 +278,8 @@ impl Wallet {
         Ok(self.db.get_account_ids()?)
     }
 
-    /// The first account derived from a seed, as opposed to an imported joint account.
+    /// The seed-derived account of a wallet that holds one seed's, as opposed to an imported
+    /// joint account: the first found. A wallet of several seeds asks `seed_account`.
     pub fn derived_account(&self) -> Result<Option<AccountUuid>, Error> {
         for id in self.db.get_account_ids()? {
             let account = self.db.get_account(id)?;
@@ -280,30 +293,96 @@ impl Wallet {
         Ok(None)
     }
 
+    /// The account `seed` derives, created at the chain tip where the wallet has none. The wallet
+    /// may hold other seeds' accounts.
+    pub async fn seed_account(
+        &mut self,
+        client: &mut Lightwalletd,
+        seed: &[u8],
+        name: &str,
+    ) -> Result<(AccountUuid, UnifiedSpendingKey), Error> {
+        let key = self.seed_key(seed)?;
+        match self.account_of(&key)? {
+            Some(account) => Ok((account, key)),
+            None => self.create_account(client, seed, name).await,
+        }
+    }
+
+    /// The maker's ZEC inventory, the account `seed` derives. A wallet whose inventory is
+    /// another seed's is refused: a second one would leave the first's funds out of sight.
     pub async fn inventory_account(
         &mut self,
         client: &mut Lightwalletd,
         seed: &[u8],
     ) -> Result<(AccountUuid, UnifiedSpendingKey), Error> {
-        let key = UnifiedSpendingKey::from_seed(&self.network, seed, zip32::AccountId::ZERO)
-            .map_err(Error::wallet)?;
-        if let Some(id) = self.derived_account()? {
-            let account = self
-                .db
-                .get_account(id)?
-                .ok_or_else(|| Error::Wallet("inventory account is missing".into()))?;
-            if account.ufvk().map(|ufvk| ufvk.encode(&self.network))
-                != Some(key.to_unified_full_viewing_key().encode(&self.network))
-            {
-                return Err(Error::Wallet(
-                    "inventory seed does not match the wallet".into(),
-                ));
-            }
-            Ok((id, key))
-        } else {
-            self.create_account(client, seed, "reverse swap inventory")
-                .await
+        let key = self.seed_key(seed)?;
+        match self.account_of(&key)? {
+            Some(account) => Ok((account, key)),
+            None if self.has_account_named(INVENTORY)? => Err(Error::Wallet(
+                "inventory seed does not match the wallet".into(),
+            )),
+            None => self.create_account(client, seed, INVENTORY).await,
         }
+    }
+
+    /// The key of a seed's first account, the one `create_account` makes for it.
+    fn seed_key(&self, seed: &[u8]) -> Result<UnifiedSpendingKey, Error> {
+        UnifiedSpendingKey::from_seed(&self.network, seed, zip32::AccountId::ZERO)
+            .map_err(Error::wallet)
+    }
+
+    fn account_of(&self, key: &UnifiedSpendingKey) -> Result<Option<AccountUuid>, Error> {
+        Ok(self
+            .db
+            .get_account_for_ufvk(&key.to_unified_full_viewing_key())?
+            .map(|account| account.id()))
+    }
+
+    fn has_account_named(&self, name: &str) -> Result<bool, Error> {
+        for id in self.db.get_account_ids()? {
+            let account = self.db.get_account(id)?;
+            if account.is_some_and(|account| account.name() == Some(name)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Zatoshis `account` has received in mined transactions at its address of each of
+    /// `indices` (diversifier indices), in their order: at any depth, in either Orchard-protocol
+    /// pool, spent since or not.
+    pub fn received_at(&self, account: AccountUuid, indices: &[u64]) -> Result<Vec<u64>, Error> {
+        if indices.is_empty() {
+            return Ok(Vec::new());
+        }
+        // No call of the library's tells which address a note came to. `v_tx_outputs`, the view
+        // it exposes for reading, does: the scanner works out a received note's diversifier
+        // index from the note itself, so an address the wallet never gave out is recorded like
+        // any other. Matched by that index, not the address's text, which the view gives with
+        // every receiver the key has. Pools 3 and 4 are Orchard and Ironwood.
+        let mut received = self
+            .views
+            .prepare_cached(
+                "SELECT diversifier_index_be, SUM(value) FROM v_tx_outputs
+                 WHERE to_account_uuid = ?1 AND tx_mined_height IS NOT NULL
+                   AND output_pool IN (3, 4) AND diversifier_index_be IS NOT NULL
+                 GROUP BY diversifier_index_be",
+            )
+            .map_err(Error::wallet)?;
+        let by_index: HashMap<Vec<u8>, u64> = received
+            .query_map([account.expose_uuid().as_bytes().as_slice()], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .and_then(Iterator::collect)
+            .map_err(Error::wallet)?;
+        Ok(indices
+            .iter()
+            .map(|&index| {
+                let mut big_endian = *DiversifierIndex::from(index).as_bytes();
+                big_endian.reverse();
+                by_index.get(big_endian.as_slice()).copied().unwrap_or(0)
+            })
+            .collect())
     }
 
     pub fn tracks_joint(&self, account: AccountUuid, joint: &JointAccount) -> Result<bool, Error> {
@@ -681,6 +760,22 @@ fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Opti
         .find(|&activation| activation > target)?;
     let default = target + default_tx_expiry_delta(BranchId::for_height(network, target));
     Some(default.min(upgrade - 1))
+}
+
+/// The key's Orchard-only unified address at a diversifier index, under which
+/// `Wallet::received_at` reports what its account is paid there. Needs no wallet.
+pub fn address_at(
+    key: &UnifiedFullViewingKey,
+    network: Network,
+    index: u64,
+) -> Result<String, Error> {
+    Ok(key
+        .address(
+            DiversifierIndex::from(index),
+            UnifiedAddressRequest::ORCHARD,
+        )
+        .map_err(Error::wallet)?
+        .encode(&network))
 }
 
 /// Compares keys, not encodings: a key has an encoding per revision, so a stored key's need not
