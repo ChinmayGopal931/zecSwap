@@ -27,9 +27,9 @@ const BUSY_WAIT: Duration = Duration::from_secs(30);
 /// where the maker names no wait, and the least it waits where it does.
 const FEE_WAIT: Duration = Duration::from_secs(5);
 const FEE_WAIT_MIN: Duration = Duration::from_secs(1);
-/// The least an accept waits from its second wait on. A gateway lets each caller a few accepts
-/// a minute through, six as deployed, and holds one past them back half a minute, which a quote
-/// near its end may not have.
+/// The least an accept waits from its second wait on. A gateway may let each caller only a few
+/// accepts a minute through and hold one past them back a while, which a quote near its end may
+/// not have.
 const FEE_PACE: Duration = Duration::from_secs(12);
 
 /// A service's answer other than success.

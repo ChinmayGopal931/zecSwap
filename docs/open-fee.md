@@ -66,15 +66,14 @@ Post the accept only once the fee is mined. Then:
 - **`402`, `feeRequired`.** The maker has not seen the fee yet. Wait what `Retry-After` asks (the
   reference client waits at least a second, and five where the maker names no wait) and post the
   same accept again, until `expiresAt` by the wallet's clock. After that stop: the quote is gone,
-  and the fee with it. From the second wait on, wait at least 12 seconds: a gateway lets each
-  caller a few accepts a minute through, and holds one past them back half a minute, which a
+  and the fee with it. From the second wait on, wait at least 12 seconds: a gateway may let
+  each caller only a few accepts a minute through and hold one past them back a while, which a
   quote near its end may not have.
 - **Any other `4xx`.** The accept is turned down and nothing will open this quote's swap. A fee
   paid for it is lost.
 - **A `5xx`, or no answer.** The accept may have opened the swap. Post it again: an accept
   repeated with the same keys answers with the same swap. Never pay again. Wait what
-  `Retry-After` asks first, which from a gateway holding a caller back is half a minute, and
-  12 seconds where none is named. Once `expiresAt` has passed, read the contract instead: the
+  `Retry-After` asks first, and 12 seconds where none is named. Once `expiresAt` has passed, read the contract instead: the
   swap's id follows from the maker's address and the wallet's own share, and the chain shows
   whether it opened.
 
