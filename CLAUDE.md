@@ -107,7 +107,10 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
   wallet's Railgun balance on one EIP-3009 `receiveWithAuthorization`, from an account of its own,
   for a floor plus `feeBps`.
 - **Sweeps** build with `OvkPolicy::Discard` (`Wallet::sweep`): both sides hold the joint account's
-  viewing key. The app must sweep to a never-used address each time.
+  viewing key. The app must sweep to a never-used address each time. A sweep spends every note
+  of its account, and one that would pay the network over `SWEEP_FEE_CEILING` (64 notes' worth)
+  is refused before its proof (`Error::SweepFee`); `Wallet::sweep_fee` says what one would pay
+  with nothing proved.
 - **Payments proved ahead.** `Wallet::prove_payment` proves a payment unsigned and unstored, its
   notes held from every other payment (the backend's output locks) for some blocks;
   `send_proved` stores it, `release` gives it up, and one held too long is released, never sent.

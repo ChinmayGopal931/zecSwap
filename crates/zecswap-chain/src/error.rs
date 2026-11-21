@@ -14,6 +14,10 @@ pub enum Error {
     Database(#[from] zcash_client_sqlite::error::SqliteClientError),
     #[error("wallet: {0}")]
     Wallet(String),
+    /// A joint account holds more notes than one sweep may pay the network for. Nothing was
+    /// proved.
+    #[error("a sweep would pay the network {fee} zatoshis, over the {ceiling} one may")]
+    SweepFee { fee: u64, ceiling: u64 },
     #[error("settlement contract: {0}")]
     Contract(String),
     #[error("transaction {0} reverted")]
