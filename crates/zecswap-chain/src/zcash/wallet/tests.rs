@@ -1,7 +1,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
 
-use incrementalmerkletree::Position;
 use incrementalmerkletree::frontier::Frontier;
 use orchard::builder::BundleType;
 use orchard::bundle::BundleVersion;
@@ -18,6 +17,7 @@ use zcash_client_backend::data_api::chain::{
 use zcash_client_backend::proto::compact_formats::{
     ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx,
 };
+use zcash_keys::address::Address;
 use zcash_primitives::block::BlockHash;
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade};
 use zcash_protocol::memo::MemoBytes;
@@ -27,6 +27,7 @@ use super::*;
 
 const TIP: u32 = 4_395_130;
 const DEPOSIT: u64 = 1_000_000;
+const FEE: u64 = 40_000;
 
 /// One prover for every test, so the circuit's keys are built once.
 static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
@@ -283,75 +284,108 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
     assert!(!wallet.is_confirmed(TxId::from_bytes([2; 32])).unwrap());
 }
 
-/// `count` chained blocks from `tip`, the first holding an Ironwood deposit of `DEPOSIT` to `to`,
-/// as lightwalletd serves them, and the chain's state after the block at each index.
-fn deposit_blocks(
+/// `count` chained blocks from `tip` as lightwalletd serves them, each `(block, to, zatoshis)` of
+/// `outputs` an Ironwood payment in the block at that index, and the chain's state after the
+/// block at each index.
+fn blocks_paying(
     tip: u32,
-    to: orchard::Address,
     count: u8,
+    outputs: Vec<(u8, orchard::Address, u64)>,
 ) -> (Vec<CompactBlock>, impl Fn(u8) -> ChainState) {
     let version = BundleVersion::ironwood_v3();
-    let mut builder = orchard::builder::Builder::new(
-        BundleType::DEFAULT,
-        version,
-        version.default_flags(),
-        Anchor::empty_tree(),
-    )
-    .unwrap();
-    builder
-        .add_output(
-            None,
-            to,
-            NoteValue::from_raw(DEPOSIT),
-            MemoBytes::empty().into_bytes(),
-        )
-        .unwrap();
-    let (bundle, meta): (Bundle<_, i64>, _) =
-        builder.build(&mut UnwrapErr(SysRng)).unwrap().unwrap();
-    let action = &bundle.actions()[meta.output_action_index(0).unwrap()];
-    let note = action.encrypted_note();
-    let deposit = CompactTx {
-        txid: vec![9; 32],
-        ironwood_actions: vec![CompactOrchardAction {
-            nullifier: action.nullifier().to_bytes().to_vec(),
-            cmx: action.cmx().to_bytes().to_vec(),
-            ephemeral_key: note.epk_bytes.to_vec(),
-            ciphertext: note.enc_ciphertext.0[..COMPACT_NOTE_SIZE].to_vec(),
-        }],
-        ..Default::default()
-    };
-    let blocks = (0..count)
-        .map(|i| CompactBlock {
-            height: u64::from(tip + u32::from(i)),
-            hash: vec![i + 1; 32],
-            prev_hash: vec![i; 32],
-            vtx: if i == 0 {
-                vec![deposit.clone()]
-            } else {
-                vec![]
-            },
-            chain_metadata: Some(ChainMetadata {
-                ironwood_commitment_tree_size: 1,
+    let mut tree = Frontier::empty();
+    let mut size = 0;
+    let (blocks, trees): (Vec<_>, Vec<_>) = (0..count)
+        .map(|i| {
+            let paid = outputs.iter().enumerate().filter(|(_, o)| o.0 == i);
+            let vtx = paid
+                .map(|(n, &(_, to, zatoshis))| {
+                    let mut builder = orchard::builder::Builder::new(
+                        BundleType::DEFAULT,
+                        version,
+                        version.default_flags(),
+                        Anchor::empty_tree(),
+                    )
+                    .unwrap();
+                    builder
+                        .add_output(
+                            None,
+                            to,
+                            NoteValue::from_raw(zatoshis),
+                            MemoBytes::empty().into_bytes(),
+                        )
+                        .unwrap();
+                    let (bundle, meta): (Bundle<_, i64>, _) =
+                        builder.build(&mut UnwrapErr(SysRng)).unwrap().unwrap();
+                    let action = &bundle.actions()[meta.output_action_index(0).unwrap()];
+                    let note = action.encrypted_note();
+                    tree.append(MerkleHashOrchard::from_cmx(action.cmx()));
+                    size += 1;
+                    CompactTx {
+                        txid: vec![9 + n as u8; 32],
+                        ironwood_actions: vec![CompactOrchardAction {
+                            nullifier: action.nullifier().to_bytes().to_vec(),
+                            cmx: action.cmx().to_bytes().to_vec(),
+                            ephemeral_key: note.epk_bytes.to_vec(),
+                            ciphertext: note.enc_ciphertext.0[..COMPACT_NOTE_SIZE].to_vec(),
+                        }],
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            let block = CompactBlock {
+                height: u64::from(tip + u32::from(i)),
+                hash: vec![i + 1; 32],
+                prev_hash: vec![i; 32],
+                vtx,
+                chain_metadata: Some(ChainMetadata {
+                    ironwood_commitment_tree_size: size,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
+            };
+            (block, tree.clone())
         })
-        .collect();
-    let deposit = MerkleHashOrchard::from_cmx(action.cmx());
+        .unzip();
     let state = move |i: u8| {
         ChainState::new(
             BlockHeight::from_u32(tip + u32::from(i)),
             BlockHash([i + 1; 32]),
             Frontier::empty(),
             Frontier::empty(),
-            Frontier::from_parts(Position::from(0), deposit, vec![]).unwrap(),
+            trees[usize::from(i)].clone(),
         )
     };
     (blocks, state)
 }
 
-/// A wallet on `network` whose account `deposit_blocks` pays at `tip`, with `count` blocks cached
-/// from `tip` and the first two scanned.
+/// A seed's first account as `create_account` makes it, born at `birthday`.
+fn derive_at(
+    wallet: &mut Wallet,
+    seed: &[u8],
+    name: &str,
+    birthday: u32,
+) -> (AccountUuid, UnifiedSpendingKey) {
+    let birthday = AccountBirthday::from_parts(
+        ChainState::empty(BlockHeight::from_u32(birthday - 1), BlockHash([0; 32])),
+        None,
+    );
+    wallet
+        .db
+        .create_account(name, &SecretVec::new(seed.to_vec()), &birthday, None)
+        .unwrap()
+}
+
+/// The Orchard receiver of a unified address.
+fn orchard_receiver(wallet: &Wallet, address: &str) -> orchard::Address {
+    match Address::decode(&wallet.network, address) {
+        Some(Address::Unified(address)) => *address.orchard().unwrap(),
+        _ => panic!("{address} is not a unified address"),
+    }
+}
+
+/// A wallet on `network` with `count` blocks cached from `tip` that pay its accounts, the first
+/// two scanned.
 struct Funded {
     _dir: TempDir,
     wallet: Wallet,
@@ -361,19 +395,36 @@ struct Funded {
 }
 
 impl Funded {
-    /// Funds the account `add` makes, at the address it gives.
+    /// Funds the account `add` makes with `DEPOSIT` at `tip`, at the address it gives.
     async fn new(
         network: Network,
         tip: u32,
         count: u8,
         add: impl FnOnce(&mut Wallet) -> (AccountUuid, orchard::Address),
     ) -> Self {
+        let funded = Self::paying(network, tip, count, |wallet| {
+            let (account, to) = add(wallet);
+            (account, vec![(0, to, DEPOSIT)])
+        })
+        .await;
+        assert_eq!(funded.spendable(), DEPOSIT);
+        funded
+    }
+
+    /// Makes the accounts `add` does, the one it gives the wallet's own, and the blocks that
+    /// pay what it lists (`blocks_paying`).
+    async fn paying(
+        network: Network,
+        tip: u32,
+        count: u8,
+        add: impl FnOnce(&mut Wallet) -> (AccountUuid, Vec<(u8, orchard::Address, u64)>),
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), network)
             .unwrap()
             .with_confirmations(NonZeroU32::new(1).unwrap());
-        let (account, to) = add(&mut wallet);
-        let (blocks, state) = deposit_blocks(tip, to, count);
+        let (account, outputs) = add(&mut wallet);
+        let (blocks, state) = blocks_paying(tip, count, outputs);
         wallet.blocks.insert(blocks).await.unwrap();
         let mut funded = Self {
             _dir: dir,
@@ -383,7 +434,6 @@ impl Funded {
             state: Box::new(state),
         };
         funded.scan(tip + 1, 0, 2);
-        assert_eq!(funded.spendable(), DEPOSIT);
         funded
     }
 
@@ -410,14 +460,7 @@ impl Funded {
     async fn derived(network: Network, tip: u32, count: u8) -> (Self, UnifiedSpendingKey) {
         let mut key = None;
         let funded = Self::new(network, tip, count, |wallet| {
-            let birthday = AccountBirthday::from_parts(
-                ChainState::empty(BlockHeight::from_u32(tip - 1), BlockHash([0; 32])),
-                None,
-            );
-            let (account, usk) = wallet
-                .db
-                .create_account("inventory", &SecretVec::new(vec![7; 32]), &birthday, None)
-                .unwrap();
+            let (account, usk) = derive_at(wallet, &[7; 32], INVENTORY, tip);
             let fvk = usk.to_unified_full_viewing_key();
             let to = fvk.orchard().unwrap().address_at(0u32, Scope::External);
             key = Some(usk);
@@ -577,6 +620,146 @@ async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     let txid = funded.wallet.send_proved(held, &usk).unwrap();
     assert_eq!(funded.spendable(), 0);
     assert_eq!(funded.paid(txid, &home), DEPOSIT / 2);
+}
+
+/// At the indices the wallet picks for its own fresh addresses and at ones named to it, far
+/// ones included, and for no other key.
+#[test]
+fn an_address_derived_from_the_key_alone_is_the_wallets_own_for_that_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork).unwrap();
+    let (account, key) = derive_at(&mut wallet, &[8; 32], "fees", TIP);
+    let key = key.to_unified_full_viewing_key();
+    let stranger = derive_at(&mut wallet, &[9; 32], "another", TIP)
+        .1
+        .to_unified_full_viewing_key();
+    let request = UnifiedAddressRequest::ORCHARD;
+    let mut own: Vec<_> = (0..3)
+        .map(|_| {
+            let next = wallet.db.get_next_available_address(account, request);
+            let (address, index) = next.unwrap().unwrap();
+            (u64::try_from(index).unwrap(), address)
+        })
+        .collect();
+    for index in [4_207, u64::from(u32::MAX) + 3] {
+        let named = wallet
+            .db
+            .get_address_for_index(account, index.into(), request);
+        own.push((index, named.unwrap().unwrap()));
+    }
+    for (index, address) in own {
+        let address = address.encode(&wallet.network);
+        assert_eq!(address_at(&key, wallet.network, index).unwrap(), address);
+        assert_ne!(
+            address_at(&stranger, wallet.network, index).unwrap(),
+            address
+        );
+    }
+}
+
+/// A payment to an address derived from the key alone, which the wallet never gave out, is
+/// reported under that address's index and no other, for its account alone, and only while its
+/// transaction is mined: a reorganisation that drops its block leaves the note in the wallet
+/// with nothing reported, until it is mined again. Spending the note takes nothing back.
+#[tokio::test]
+async fn a_payment_to_a_derived_address_is_reported_under_its_index_while_mined() {
+    const INDEX: u64 = 4_207;
+    let mut fees = None;
+    let mut funded = Funded::paying(Network::TestNetwork, TIP, 2, |wallet| {
+        let (account, key) = derive_at(wallet, &[8; 32], "fees", TIP);
+        let fee_address =
+            address_at(&key.to_unified_full_viewing_key(), wallet.network, INDEX).unwrap();
+        fees = Some((account, key));
+        let (inventory, key) = derive_at(wallet, &[7; 32], INVENTORY, TIP);
+        let fvk = key.to_unified_full_viewing_key();
+        let deposit = fvk.orchard().unwrap().address_at(0u32, Scope::External);
+        let outputs = vec![
+            (0, deposit, DEPOSIT),
+            (1, orchard_receiver(wallet, &fee_address), FEE),
+        ];
+        (inventory, outputs)
+    })
+    .await;
+    let ((fees, fee_key), inventory) = (fees.unwrap(), funded.account);
+    let received = |funded: &Funded, account, indices: &[u64]| {
+        funded.wallet.received_at(account, indices).unwrap()
+    };
+    assert_eq!(
+        received(&funded, fees, &[INDEX - 1, INDEX, INDEX + 1, INDEX]),
+        [0, FEE, 0, FEE]
+    );
+    assert_eq!(received(&funded, inventory, &[INDEX, 0]), [0, DEPOSIT]);
+    assert_eq!(received(&funded, fees, &[]), [0; 0]);
+
+    // The fee's block, the second, is reorganised away.
+    funded
+        .wallet
+        .db
+        .truncate_to_height(BlockHeight::from_u32(TIP))
+        .unwrap();
+    let unmined: u32 = funded
+        .wallet
+        .views
+        .query_row(
+            "SELECT COUNT(*) FROM v_tx_outputs WHERE tx_mined_height IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unmined, 1);
+    assert_eq!(received(&funded, fees, &[INDEX]), [0]);
+    assert_eq!(received(&funded, inventory, &[0]), [DEPOSIT]);
+
+    funded.scan(TIP + 1, 1, 1);
+    assert_eq!(received(&funded, fees, &[INDEX]), [FEE]);
+
+    let home = random_joint()
+        .unified_address(funded.wallet.network.network_type())
+        .parse()
+        .unwrap();
+    funded
+        .wallet
+        .pay(&PROVER, fees, &fee_key, &[(home, FEE / 4)])
+        .unwrap();
+    assert_eq!(funded.wallet.funds(fees).unwrap().spendable, 0);
+    assert_eq!(received(&funded, fees, &[INDEX]), [FEE]);
+}
+
+/// Each seed's account is found by its key in a wallet that holds both, where the first derived
+/// account found used to be taken for the inventory, whichever seed's it was; a seed that is not
+/// the inventory's is still refused, and makes no account.
+#[tokio::test]
+async fn the_inventory_account_is_found_by_its_seed_among_other_seeds_accounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork).unwrap();
+    let (fees, _) = derive_at(&mut wallet, &[8; 32], "fees", TIP);
+    let (inventory, key) = derive_at(&mut wallet, &[7; 32], INVENTORY, TIP);
+    // Never dialled: an account the wallet has is found without the chain.
+    let mut client = lightwalletd::connect_lazy("http://127.0.0.1:9").unwrap();
+
+    let (found, found_key) = wallet
+        .inventory_account(&mut client, &[7; 32])
+        .await
+        .unwrap();
+    assert_eq!(found, inventory);
+    let encoded = |key: &UnifiedSpendingKey| {
+        key.to_unified_full_viewing_key()
+            .encode(&Network::TestNetwork)
+    };
+    assert_eq!(encoded(&found_key), encoded(&key));
+    let (found, _) = wallet
+        .seed_account(&mut client, &[8; 32], "fees")
+        .await
+        .unwrap();
+    assert_eq!(found, fees);
+
+    let refused = wallet.inventory_account(&mut client, &[9; 32]).await;
+    assert!(
+        matches!(&refused, Err(Error::Wallet(e)) if e == "inventory seed does not match the wallet"),
+        "{:?}",
+        refused.map(|(account, _)| account)
+    );
+    assert_eq!(wallet.accounts().unwrap().len(), 2);
 }
 
 /// Only an expiry that would outlive a scheduled upgrade stops before it, and nothing stops one

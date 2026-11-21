@@ -2,7 +2,7 @@
 //! answers the Android port is checked against.
 
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
-use zecswap::ops::{Swap, railgun_address};
+use zecswap::ops::{Swap, check_open_fee, railgun_address};
 use zecswap_core::{Domain, Payout, PublicShare, ShareProof, SwapContext, derive_maker_share};
 use zecswap_railgun::{Keys as RailgunKeys, ShieldCiphertext, ShieldNote};
 
@@ -312,6 +312,27 @@ fn accept_refuses_a_maker_proof_for_another_quote() {
         &proof,
     );
     assert!(refused.unwrap_err().starts_with("the maker's share proof"));
+}
+
+#[test]
+fn an_open_fee_is_paid_only_within_its_cap_to_an_orchard_address_of_the_network() {
+    // A deposit address is as a maker's fee address is: a unified address, Orchard alone.
+    let address = &swap().deposit_account(&maker_share()).unwrap()[0];
+    assert_eq!(check_open_fee(false, address, 40_000, 40_000), Ok(()));
+    for (mainnet, address, zat, wrong) in [
+        (false, address.as_str(), 40_001, "outside the 40000 allowed"),
+        (false, address.as_str(), 0, "outside the 40000 allowed"),
+        (true, address.as_str(), 40_000, "is on another network"),
+        (
+            false,
+            "tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU",
+            40_000,
+            "must be a unified address",
+        ),
+    ] {
+        let refused = check_open_fee(mainnet, address, zat, 40_000).unwrap_err();
+        assert!(refused.contains(wrong), "{refused}");
+    }
 }
 
 #[test]

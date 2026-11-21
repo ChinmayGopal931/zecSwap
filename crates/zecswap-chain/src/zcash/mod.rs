@@ -5,8 +5,8 @@ mod wallet;
 
 pub use lightwalletd::{Lightwalletd, connect, connect_lazy};
 pub use prover::Prover;
-pub use wallet::{Funds, ProvedPayment, Wallet};
+pub use wallet::{Funds, ProvedPayment, Wallet, address_at};
 pub use zcash_client_sqlite::AccountUuid;
-pub use zcash_keys::keys::UnifiedSpendingKey;
+pub use zcash_keys::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
 pub use zcash_protocol::TxId;
 pub use zcash_protocol::consensus::Network;

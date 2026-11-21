@@ -27,7 +27,7 @@ pub use joint::{JointAccount, SpendKey, ViewingKeys};
 pub use seed::{UserSwapKeys, derive_maker_share, derive_user_keys};
 pub use share::{PublicShare, SecretShare, ShareProof};
 pub use signer::{sign_pczt, sign_pczt_bytes};
-pub use sweep::SweepIntent;
+pub use sweep::{SweepIntent, orchard_only};
 pub use terms::Terms;
 pub use transcript::{Payout, SwapContext};
 pub use zcash_protocol::consensus::NetworkType;

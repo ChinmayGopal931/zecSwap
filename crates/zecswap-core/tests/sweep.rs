@@ -33,7 +33,7 @@ use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::memo::MemoBytes;
 use zcash_protocol::value::Zatoshis;
 use zecswap_core::{
-    Error, JointAccount, SecretShare, SpendKey, SweepIntent, ViewingKeys, sign_pczt,
+    Error, JointAccount, SecretShare, SpendKey, SweepIntent, ViewingKeys, orchard_only, sign_pczt,
     sign_pczt_bytes,
 };
 
@@ -323,6 +323,44 @@ fn sweep_destination_takes_either_revision_but_refuses_metadata() {
     }
     let expiring = destination_with(Revision::R2, Some(MetadataItem::ExpiryHeight(5_000_000)));
     assert!(matches!(expiring, Err(Error::SweepIntent(_))));
+}
+
+#[test]
+fn an_orchard_only_address_has_that_receiver_alone_on_its_network() {
+    let orchard = unified::Receiver::Orchard(destination().to_raw_address_bytes());
+    let address = |receivers: Vec<unified::Receiver>| {
+        let items = receivers.into_iter().map(Uitem::Data).collect();
+        unified::Address::try_from_items(Revision::R0, items)
+            .unwrap()
+            .encode(&NetworkType::Test)
+    };
+    let alone = address(vec![orchard.clone()]);
+    assert_eq!(orchard_only(&alone, NetworkType::Test), Ok(destination()));
+    assert_eq!(
+        orchard_only(&alone, NetworkType::Main),
+        Err("is on another network")
+    );
+
+    // A sweep signs for the Orchard receiver itself, so others beside it do no harm there; a
+    // wallet paying the address could choose the transparent one.
+    let with_transparent = address(vec![orchard, unified::Receiver::P2pkh([7; 20])]);
+    assert_eq!(
+        SweepIntent::recipient(&with_transparent, NetworkType::Test),
+        Ok(destination())
+    );
+    assert_eq!(
+        orchard_only(&with_transparent, NetworkType::Test),
+        Err("must have an Orchard receiver and no other")
+    );
+    let sapling = address(vec![unified::Receiver::Sapling([9; 43])]);
+    assert_eq!(
+        orchard_only(&sapling, NetworkType::Test),
+        Err("needs an Orchard receiver")
+    );
+    assert_eq!(
+        orchard_only("tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU", NetworkType::Test),
+        Err("must be a unified address")
+    );
 }
 
 #[test]

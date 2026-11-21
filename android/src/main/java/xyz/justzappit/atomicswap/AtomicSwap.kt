@@ -84,6 +84,17 @@ object AtomicSwap {
         )
     }
 
+    /**
+     * Checks the [fee] a quote asks before its swap opens: at most [maxZat], to a unified address of the wallet's
+     * network with an Orchard receiver alone. Pay it only once this passes, and accept once it is mined
+     * (`docs/open-fee.md`).
+     */
+    fun checkOpenFee(
+        mainnet: Boolean,
+        fee: OpenFee,
+        maxZat: Long,
+    ) = AtomicSwapNative.checkOpenFee(mainnet, fee.address, fee.zat, maxZat)
+
     /** From the maker share as the contract records it, never as a quote reports it. */
     fun depositAccount(
         key: SwapKey,
@@ -224,6 +235,12 @@ class Acceptance(
     val userShare: ByteArray,
     val userProof: ByteArray,
     val viewingKeys: ByteArray,
+)
+
+/** A quote's `openFee`: what the wallet pays the maker, in one shielded payment, before the swap opens. */
+data class OpenFee(
+    val zat: Long,
+    val address: String,
 )
 
 /** Where the ZEC goes, and the viewing key that watches it for a refund. */

@@ -12,6 +12,7 @@ use zecswap_api::relayer::{
 };
 use zecswap_api::service::{ErrorCode, ErrorResponse};
 use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status, TICKET_HEADER};
+use zecswap_chain::evm::wall_now;
 
 use crate::tokens::Tokens;
 
@@ -22,6 +23,14 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 const BUSY_PATIENCE: Duration = Duration::from_secs(90);
 /// The longest `Retry-After` waited for: one asking longer is an outage, not a queue.
 const BUSY_WAIT: Duration = Duration::from_secs(30);
+/// How long an accept waits before asking again whether the maker has seen its quote's open fee,
+/// where the maker names no wait, and the least it waits where it does.
+const FEE_WAIT: Duration = Duration::from_secs(5);
+const FEE_WAIT_MIN: Duration = Duration::from_secs(1);
+/// The least an accept waits from its second wait on. A gateway may let each caller only a few
+/// accepts a minute through and hold one past them back a while, which a quote near its end may
+/// not have.
+const FEE_PACE: Duration = Duration::from_secs(12);
 
 /// A service's answer other than success.
 #[derive(Debug)]
@@ -37,6 +46,13 @@ impl ServiceError {
     pub fn refused(&self) -> bool {
         self.status.is_client_error()
     }
+
+    /// The code the service gave its answer, if it is one of the services' own.
+    pub fn code(&self) -> Option<ErrorCode> {
+        serde_json::from_str::<ErrorResponse>(&self.body)
+            .ok()
+            .map(|error| error.code)
+    }
 }
 
 impl std::fmt::Display for ServiceError {
@@ -50,6 +66,21 @@ impl std::fmt::Display for ServiceError {
 }
 
 impl std::error::Error for ServiceError {}
+
+/// A quote expired with the maker never having seen its open fee. Whatever was paid for it is
+/// the maker's, and only a new quote opens a swap.
+#[derive(Debug)]
+pub struct FeeNotHonoured;
+
+impl std::fmt::Display for FeeNotHonoured {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the quote expired before the maker saw its open fee: a fee paid for it is lost",
+        )
+    }
+}
+
+impl std::error::Error for FeeNotHonoured {}
 
 /// Whether `error` is a service's refusal, after which nothing it was asked for was sent.
 pub(crate) fn refused(error: &anyhow::Error) -> bool {
@@ -92,7 +123,8 @@ impl MakerApi {
         acceptance: &Acceptance,
     ) -> Result<Accepted> {
         let path = format!("/v1/reverse/quote/{quote_id}/accept");
-        self.0.accept(&path, swap_id, acceptance).await
+        let response = self.0.accept(&path, swap_id, acceptance).await?;
+        self.0.read(response).await
     }
 
     pub async fn reverse_status(&self, swap_id: B256) -> Result<zecswap_api::reverse::Status> {
@@ -129,15 +161,43 @@ impl MakerApi {
         self.0.post("/v1/quote", &request).await
     }
 
-    /// Accepts the quote that opens `swap_id`.
+    /// Accepts the quote that opens `swap_id`. While the maker answers that the quote's open fee
+    /// has not reached it, the accept is posted again as the maker asks, until the quote expires
+    /// at `expires_at`: `FeeNotHonoured` then. With the fee `paid`, a busy answer is waited out
+    /// the same way, where giving the accept up would give the fee up with it.
     pub(crate) async fn accept(
         &self,
         quote_id: B256,
+        expires_at: u64,
+        paid: bool,
         swap_id: B256,
         acceptance: &Acceptance,
     ) -> Result<Accepted> {
         let path = format!("/v1/quote/{quote_id}/accept");
-        self.0.accept(&path, swap_id, acceptance).await
+        let mut pace = FEE_WAIT_MIN;
+        loop {
+            let response = self.0.accept(&path, swap_id, acceptance).await?;
+            let busy = paid && response.status() == StatusCode::SERVICE_UNAVAILABLE;
+            if !busy && response.status() != StatusCode::PAYMENT_REQUIRED {
+                return self.0.read(response).await;
+            }
+            let asked = retry_after(&response);
+            let refusal = self.0.failure(response).await?;
+            if !busy && refusal.code() != Some(ErrorCode::FeeRequired) {
+                return Err(refusal.into());
+            }
+            let left = Duration::from_secs(expires_at.saturating_sub(wall_now()));
+            let wait = asked.unwrap_or(FEE_WAIT).clamp(pace, BUSY_WAIT);
+            pace = FEE_PACE;
+            tokio::time::sleep(wait.min(left)).await;
+            if wall_now() >= expires_at {
+                return Err(if busy {
+                    refusal.into()
+                } else {
+                    FeeNotHonoured.into()
+                });
+            }
+        }
     }
 }
 
@@ -354,7 +414,12 @@ impl Endpoint {
     }
 
     /// Posts an accept: asked for a token, it pays with one and asks for it back.
-    async fn accept(&self, path: &str, swap_id: B256, acceptance: &Acceptance) -> Result<Accepted> {
+    async fn accept(
+        &self,
+        path: &str,
+        swap_id: B256,
+        acceptance: &Acceptance,
+    ) -> Result<reqwest::Response> {
         let url = format!("{}{path}", self.url);
         let mut response = self.send(|| self.http.post(&url).json(acceptance)).await?;
         if let Some(tokens) = &self.tokens {
@@ -386,7 +451,7 @@ impl Endpoint {
                 response = sent?;
             }
         }
-        self.read(response).await
+        Ok(response)
     }
 
     fn tokens(&self) -> Result<&Tokens> {
@@ -445,16 +510,19 @@ impl Endpoint {
     }
 
     async fn read<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
-        let status = response.status();
-        if status.is_success() {
+        if response.status().is_success() {
             return Ok(response.json().await?);
         }
-        Err(ServiceError {
+        Err(self.failure(response).await?.into())
+    }
+
+    /// An answer other than success, as the error it is.
+    async fn failure(&self, response: reqwest::Response) -> Result<ServiceError> {
+        Ok(ServiceError {
             service: self.name,
-            status,
+            status: response.status(),
             body: response.text().await?,
-        }
-        .into())
+        })
     }
 }
 

@@ -41,6 +41,8 @@ internal object AtomicSwapNative {
         makerProof: ByteArray,
     ): ByteArray
 
+    @JvmStatic external fun checkOpenFee(mainnet: Boolean, address: String, zat: Long, maxZat: Long)
+
     @JvmStatic external fun depositAccount(
         seed: ByteArray,
         mainnet: Boolean,
