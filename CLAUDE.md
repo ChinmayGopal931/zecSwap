@@ -75,7 +75,8 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
   client refuses a swap whose `t1` follows `t0` by under twice `CLAIM_MARGIN`.
 - **Protect.** Reveals that go out privately go through Flashbots Protect: `evm::check_keeps_secrets`
   refuses any URL but Protect's default endpoint with `hint=hash` and its few safe parameters. A
-  private reveal is never simulated (fixed `REVEAL_GAS`).
+  private reveal is never simulated (fixed `REVEAL_GAS`); `Settlement::reveal_need` says what its
+  account must hold for a node to take one.
 - **Fees.** On mainnet a reveal's fee cap is 5 gwei higher (`Network::reveal_headroom_wei`), so a
   surge can't strand it past its window; it still pays only the base fee and tip. Sends tip what
   the node suggests, at least `MIN_TIP_WEI`, under twice the next base fee (`evm::fees`); a public

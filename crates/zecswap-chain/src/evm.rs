@@ -1407,6 +1407,13 @@ impl Settlement {
         Ok(fees(&self.provider).await?.max_fee_per_gas)
     }
 
+    /// The ETH a reveal must find in its account to be sent now: its gas limit at its fee cap,
+    /// headroom included. One burns less, but no node takes it from an account with less.
+    pub async fn reveal_need(&self) -> Result<u128, Error> {
+        let cap = self.max_fee_per_gas().await?;
+        Ok(u128::from(REVEAL_GAS).saturating_mul(cap.saturating_add(self.reveal_headroom)))
+    }
+
     /// Lets this account's reveals, the claims and refunds that carry a share, pay `wei` more per
     /// gas than its other sends may.
     pub fn set_reveal_headroom(&mut self, wei: u128) {
