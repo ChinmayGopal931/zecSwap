@@ -322,6 +322,7 @@ fn blocks_paying(
                     tree.append(MerkleHashOrchard::from_cmx(action.cmx()));
                     size += 1;
                     CompactTx {
+                        index: n as u64,
                         txid: vec![9 + n as u8; 32],
                         ironwood_actions: vec![CompactOrchardAction {
                             nullifier: action.nullifier().to_bytes().to_vec(),
@@ -771,4 +772,52 @@ fn an_expiry_stops_before_an_upgrade_only_when_it_would_outlive_it() {
     assert_eq!(expiry_before_upgrade(&mainnet, nu7 - 100), Some(nu7 - 60));
     assert_eq!(expiry_before_upgrade(&mainnet, nu7 - 1), Some(nu7 - 1));
     assert_eq!(expiry_before_upgrade(&mainnet, nu7), None);
+}
+
+/// Whoever pays a joint account chooses how many notes it is paid in, and a sweep spends them
+/// all. One of 64 pays the most a sweep may; one more and the sweep is refused before anything
+/// is proved, where it once cost a proof at every try and was refused by its own signer after.
+/// What a sweep would pay is there to ask first, with nothing proved either.
+#[tokio::test]
+async fn a_joint_account_paid_in_too_many_notes_is_refused_its_sweep_before_any_proof() {
+    let (e, z) = (
+        SecretShare::random(UnwrapErr(SysRng)),
+        SecretShare::random(UnwrapErr(SysRng)),
+    );
+    let viewing = ViewingKeys::random(UnwrapErr(SysRng));
+    let joint = JointAccount::derive(&e.public(), &z.public(), &viewing).unwrap();
+    let key = joint.spend_key(&e, &z).unwrap();
+    let joint = &joint;
+    let paid_in = |notes: usize| {
+        Funded::paying(Network::TestNetwork, TIP, 2, move |wallet| {
+            let account = import_at(wallet, joint, TIP);
+            (account, vec![(0, joint.deposit_address(), 10_000); notes])
+        })
+    };
+    let home = random_joint();
+    let to = home
+        .unified_address(Network::TestNetwork.network_type())
+        .parse()
+        .unwrap();
+
+    let mut most = paid_in(64).await;
+    let fee = most.wallet.sweep_fee(most.account, &to).unwrap();
+    assert_eq!(fee, SWEEP_FEE_CEILING);
+
+    let mut over = paid_in(65).await;
+    let fee = over.wallet.sweep_fee(over.account, &to).unwrap();
+    assert_eq!(fee, SWEEP_FEE_CEILING + 5_000);
+    let refused = over.wallet.sweep(&PROVER, over.account, &key, &to);
+    assert!(
+        matches!(
+            refused,
+            Err(crate::Error::SweepFee {
+                fee: 325_000,
+                ceiling: SWEEP_FEE_CEILING
+            })
+        ),
+        "{refused:?}"
+    );
+    // Refused, it holds nothing: the notes are there for a sweep that fits.
+    assert_eq!(over.spendable(), 650_000);
 }

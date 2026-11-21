@@ -49,6 +49,9 @@ const JOINT_KEY_SOURCE: &str = "zecswap";
 const INVENTORY: &str = "reverse swap inventory";
 const SYNC_BATCH_SIZE: u32 = 1_000;
 const ORCHARD_POOLS: [ShieldedPool; 2] = [ShieldedPool::Orchard, ShieldedPool::Ironwood];
+/// The most a sweep pays the network, 64 notes' worth under ZIP 317. A sweep spends every note
+/// of its account, each sent by whoever chose to, so the bound is on what it is asked to prove.
+pub const SWEEP_FEE_CEILING: u64 = 320_000;
 
 type Db = WalletDb<rusqlite::Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
@@ -411,8 +414,17 @@ impl Wallet {
             .map(|account| account.id()))
     }
 
+    /// What sweeping `account` to `to` would pay the network, as it stands. Nothing is proved,
+    /// so this is cheap to ask before a deposit is taken as paid.
+    pub fn sweep_fee(&mut self, account: AccountUuid, to: &ZcashAddress) -> Result<u64, Error> {
+        let proposal = self.propose_sweep(account, to)?;
+        Ok(proposal.steps().head.balance().fee_required().into())
+    }
+
     /// Stores a transaction sending everything in a joint account to `to`, authorized by the
-    /// combined key; `broadcast` sends it.
+    /// combined key; `broadcast` sends it. One that would pay over `SWEEP_FEE_CEILING` is refused,
+    /// `Error::SweepFee`, before its proof: an account paid in that many notes would otherwise
+    /// cost a proof at every try and never be swept.
     pub fn sweep(
         &mut self,
         prover: &Prover,
@@ -420,6 +432,39 @@ impl Wallet {
         key: &SpendKey,
         to: &ZcashAddress,
     ) -> Result<TxId, Error> {
+        let proposal = self.propose_sweep(account, to)?;
+        let fee = u64::from(proposal.steps().head.balance().fee_required());
+        if fee > SWEEP_FEE_CEILING {
+            return Err(Error::SweepFee {
+                fee,
+                ceiling: SWEEP_FEE_CEILING,
+            });
+        }
+        let minimum = proposal
+            .steps()
+            .head
+            .transaction_request()
+            .total()
+            .map_err(Error::wallet)?
+            .ok_or_else(|| Error::Wallet("sweep amount is missing".into()))?;
+        let intent = SweepIntent::from_address(
+            &to.to_string(),
+            self.network.network_type(),
+            minimum.into(),
+            SWEEP_FEE_CEILING,
+        )?;
+        let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key), &intent)?);
+        // Both sides hold the joint viewing key: its outgoing key would show each side where
+        // the other's sweep went.
+        self.store_proposal(prover, account, &proposal, OvkPolicy::Discard, sign)
+    }
+
+    /// One transaction sending everything `account` can spend to `to`.
+    fn propose_sweep(
+        &mut self,
+        account: AccountUuid,
+        to: &ZcashAddress,
+    ) -> Result<Proposal<StandardFeeRule, ReceivedNoteId>, Error> {
         let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
             &mut self.db,
             &self.network,
@@ -437,23 +482,7 @@ impl Wallet {
         if proposal.steps().len() != 1 {
             return Err(Error::Wallet("a sweep must fit one transaction".into()));
         }
-        let minimum = proposal
-            .steps()
-            .head
-            .transaction_request()
-            .total()
-            .map_err(Error::wallet)?
-            .ok_or_else(|| Error::Wallet("sweep amount is missing".into()))?;
-        let intent = SweepIntent::from_address(
-            &to.to_string(),
-            self.network.network_type(),
-            minimum.into(),
-            320_000,
-        )?;
-        let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key), &intent)?);
-        // Both sides hold the joint viewing key: its outgoing key would show each side where
-        // the other's sweep went.
-        self.store_proposal(prover, account, &proposal, OvkPolicy::Discard, sign)
+        Ok(proposal)
     }
 
     /// Stores a transaction paying every `(address, zatoshis)` from a seed-derived account;

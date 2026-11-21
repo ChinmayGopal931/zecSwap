@@ -75,7 +75,8 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
   client refuses a swap whose `t1` follows `t0` by under twice `CLAIM_MARGIN`.
 - **Protect.** Reveals that go out privately go through Flashbots Protect: `evm::check_keeps_secrets`
   refuses any URL but Protect's default endpoint with `hint=hash` and its few safe parameters. A
-  private reveal is never simulated (fixed `REVEAL_GAS`).
+  private reveal is never simulated (fixed `REVEAL_GAS`); `Settlement::reveal_need` says what its
+  account must hold for a node to take one.
 - **Fees.** On mainnet a reveal's fee cap is 5 gwei higher (`Network::reveal_headroom_wei`), so a
   surge can't strand it past its window; it still pays only the base fee and tip. Sends tip what
   the node suggests, at least `MIN_TIP_WEI`, under twice the next base fee (`evm::fees`); a public
@@ -107,7 +108,10 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
   wallet's Railgun balance on one EIP-3009 `receiveWithAuthorization`, from an account of its own,
   for a floor plus `feeBps`.
 - **Sweeps** build with `OvkPolicy::Discard` (`Wallet::sweep`): both sides hold the joint account's
-  viewing key. The app must sweep to a never-used address each time.
+  viewing key. The app must sweep to a never-used address each time. A sweep spends every note
+  of its account, and one that would pay the network over `SWEEP_FEE_CEILING` (64 notes' worth)
+  is refused before its proof (`Error::SweepFee`); `Wallet::sweep_fee` says what one would pay
+  with nothing proved.
 - **Payments proved ahead.** `Wallet::prove_payment` proves a payment unsigned and unstored, its
   notes held from every other payment (the backend's output locks) for some blocks;
   `send_proved` stores it, `release` gives it up, and one held too long is released, never sent.
