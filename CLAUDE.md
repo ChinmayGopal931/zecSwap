@@ -12,7 +12,8 @@ This repo is the protocol and the user's side: the contracts, the crates wallets
 docs wallets follow. The maker, the relayer and the token issuer are services kept elsewhere.
 Nothing here depends on them, and a wallet takes nothing from them on trust.
 
-Design docs: `docs/reverse-flow.md`, `docs/deposits.md`, `docs/railgun-sends.md`, `docs/tokens.md`.
+Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `docs/railgun-sends.md`,
+`docs/tokens.md`.
 
 ## Layout
 
@@ -22,7 +23,7 @@ Design docs: `docs/reverse-flow.md`, `docs/deposits.md`, `docs/railgun-sends.md`
 | `crates/zecswap-railgun` | Railgun keys and `0zk` addresses from the seed, the shield notes payouts go to, fee notes as their receiver reads them; `engine/` checks them against Railgun's engine and wallet SDK (Node: `check.cjs`, `balance.cjs`, `send.cjs`) |
 | `crates/zecswap-chain` | Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the Ethereum client (`evm`: settlement and sends, `judge.rs` for claims, reverse refunds and readies, `deposits.rs`, `railgun.rs`, `funding`) |
 | `crates/zecswap-api` | The maker's and relayer's wire types (serde), shared with wallets; the Kotlin port's spec |
-| `crates/zecswap-client` | The user side, step by step (open, verify on-chain, deposit, claim or refund), forward and reverse (`reverse.rs`), and a wallet's deposits (`Depositor`): the reference the apps mirror |
+| `crates/zecswap-client` | The user side, step by step (quote, pay the open fee where one is asked, accept, verify on-chain, deposit, claim or refund), forward and reverse (`reverse.rs`), and a wallet's deposits (`Depositor`): the reference the apps mirror |
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
@@ -91,6 +92,13 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
   shows the step (`User::relayed`). A wallet may hand a forward claim over early
   (`POST /v1/claim/hold`) once its deposit is out, for the relayer to send the moment the window
   opens: the relayer then holds the share long before the claim, a trust the design accepts.
+- **Open fee.** Where the maker asks one, a forward quote names a fee in ZEC and an address of
+  its own (`docs/open-fee.md`): the wallet pays it before accepting, and the maker opens the swap
+  only once it is mined. The client refuses a fee over its caller's cap (none, unless
+  `with_max_open_fee`) or payable outside Orchard, pays only with `OPEN_FEE_MARGIN` of the quote
+  left, and posts its accept again through `feeRequired` until the quote expires
+  (`FeeNotHonoured`). The CLI saves the quote before it pays and the payment before it sends. The
+  fee is the maker's whatever follows; the deposit still waits for the contract.
 - **Tokens.** Where the maker asks for them, each accept spends a Privacy Pass token, handed back
   once the user pays in, so a device walks away from at most `tokens_per_day` swaps a day
   (`docs/tokens.md`).
@@ -143,8 +151,8 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
 - `Wallet::sync` runs its own copy of `zcash_client_backend::sync::run` (`wallet/sync.rs`) that adds
   only new subtree roots: the library's re-puts all ~1,900 mainnet roots each run, seconds of
   hashing a sync. Diff the copy against the library's loop at every upgrade.
-- The CLI resumes the `swap.json` in its data dir, and one in an older format stops it
-  (`missing field t0`): rename a finished one `swap.json.finished-<date>`.
+- The CLI resumes the `swap.json` in its data dir, and one in another version's format stops it
+  (`swap.json is another version's`): rename a finished one `swap.json.finished-<date>`.
 - Rust is pinned to 1.92, the Android SDK's Rust backend's. Hence alloy 1.8, as alloy 2 needs
   Rust 1.94.1; alloy-core (`alloy-primitives`, `alloy-sol-type-parser`) runs at 1.7. `cargo update`
   stays within the pin (resolver 3), but takes later `rsa` pre-releases as compatible, and they
