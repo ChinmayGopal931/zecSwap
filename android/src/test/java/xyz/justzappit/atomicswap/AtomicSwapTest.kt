@@ -185,6 +185,19 @@ class AtomicSwapTest {
     }
 
     @Test
+    fun openFee() {
+        val address = AtomicSwap.depositAccount(key, makerShare).address
+        AtomicSwap.checkOpenFee(mainnet = false, OpenFee(40_000, address), maxZat = 40_000)
+        for ((mainnet, fee) in listOf(
+            false to OpenFee(40_001, address),
+            true to OpenFee(40_000, address),
+            false to OpenFee(40_000, "tmEZhbWHTpdKMw5it8YDspUXSMGQyFwovpU"),
+        )) {
+            assertThrows(AtomicSwapException::class.java) { AtomicSwap.checkOpenFee(mainnet, fee, maxZat = 40_000) }
+        }
+    }
+
+    @Test
     fun signatures() {
         assertEquals(
             "0xc2a0a598fc3027f949c2a3f3fadb3e988a74effa69e09efc86d3db0e89904dfc" +

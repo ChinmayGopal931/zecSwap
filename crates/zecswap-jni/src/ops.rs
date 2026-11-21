@@ -265,6 +265,20 @@ pub fn deposit_note(
     Ok(note_bytes(&note))
 }
 
+/// Checks the fee a quote asks before its swap opens (`docs/open-fee.md`): no more than `max_zat`
+/// zatoshis, to a unified address of the network with an Orchard receiver alone. A wallet pays
+/// the fee only once this passes.
+pub fn check_open_fee(mainnet: bool, address: &str, zat: u64, max_zat: u64) -> Result<()> {
+    if zat == 0 || zat > max_zat {
+        return Err(format!(
+            "the maker asks an open fee of {zat} zat, outside the {max_zat} allowed"
+        ));
+    }
+    zecswap_core::orchard_only(address, network(mainnet))
+        .map(drop)
+        .map_err(|wrong| format!("the open fee's address {wrong}"))
+}
+
 /// The `0zk` address of the Railgun wallet the mnemonic of `seed` opens in Railgun's own wallets.
 pub fn railgun_address(seed: &[u8]) -> Result<String> {
     Ok(railgun(seed)?.address())

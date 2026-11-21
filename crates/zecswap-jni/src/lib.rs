@@ -218,6 +218,26 @@ pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_accept<'l
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_checkOpenFee<'local>(
+    mut env: JNIEnv<'local>,
+    _: JClass<'local>,
+    mainnet: jboolean,
+    address: JString<'local>,
+    zat: jlong,
+    max_zat: jlong,
+) {
+    run(&mut env, |env| {
+        let address: String = env.get_string(&address).map_err(jni_error)?.into();
+        ops::check_open_fee(
+            mainnet != JNI_FALSE,
+            &address,
+            unsigned(zat, "an open fee")?,
+            unsigned(max_zat, "an open fee's cap")?,
+        )
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_xyz_justzappit_atomicswap_AtomicSwapNative_depositAccount<'local>(
     mut env: JNIEnv<'local>,
     _: JClass<'local>,
