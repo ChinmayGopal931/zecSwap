@@ -15,6 +15,9 @@ pub enum ErrorCode {
     MethodNotAllowed,
     /// Spend a token from the issuer the `WWW-Authenticate` challenge names (RFC 9577).
     TokenRequired,
+    /// The quote's `openFee` is not in a mined transaction as the maker sees the chain: pay it,
+    /// or wait for it and accept again.
+    FeeRequired,
     /// A note the transaction spends is spent, or a transaction already sent spends it.
     AlreadySpent,
     /// A deposit's authorization is used, or another of its address's is on its way.

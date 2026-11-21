@@ -54,6 +54,22 @@ pub struct Quote {
         skip_serializing_if = "Option::is_none"
     )]
     pub network_cost: Option<u128>,
+    /// What the wallet pays before the maker opens the swap, where the maker asks for it. The
+    /// accept of a quote with one is refused, `feeRequired`, until it is paid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_fee: Option<OpenFee>,
+}
+
+/// The fee a forward swap pays ahead: the gas the maker spends opening the swap and, if no
+/// deposit follows, cancelling it. It is the maker's from the moment it is paid, whatever
+/// becomes of the swap, and is never part of the deposit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFee {
+    /// Zatoshis, in one shielded payment, mined before the quote expires.
+    pub zat: u64,
+    /// The unified address it is paid to, this quote's alone.
+    pub address: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -254,5 +270,53 @@ pub(crate) mod optional_decimal {
         Option::<String>::deserialize(d)?
             .map(|value| value.parse().map_err(D::Error::custom))
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use zecswap_core::derive_maker_share;
+
+    use super::*;
+    use crate::service::ErrorCode;
+
+    /// The names wallets' ports read. A maker that asks no fee says nothing of one, as makers
+    /// did before there was one, and a wallet reads such a quote as free of it.
+    #[test]
+    fn a_quote_names_its_open_fee_only_where_the_maker_asks_one() {
+        let quote = Quote {
+            quote_id: B256::repeat_byte(5),
+            maker: Address::repeat_byte(1),
+            maker_share: derive_maker_share(&[9; 32], 0).unwrap().public(),
+            maker_proof: ShareProof::from_bytes([0; 64]),
+            chain_id: 11_155_111,
+            contract: Address::repeat_byte(0x11),
+            token: Address::repeat_byte(3),
+            amount: 1_000_000,
+            deposit_zat: 100_000,
+            expires_at: 1_790_000_000,
+            network_cost: None,
+            open_fee: None,
+        };
+        let free = serde_json::to_value(&quote).unwrap();
+        assert_eq!(free.get("openFee"), None);
+        assert_eq!(
+            serde_json::from_value::<Quote>(free.clone())
+                .unwrap()
+                .open_fee,
+            None
+        );
+
+        let mut asking = free;
+        asking["openFee"] = json!({"zat": 41_234, "address": "utest1fee"});
+        let fee = OpenFee {
+            zat: 41_234,
+            address: "utest1fee".into(),
+        };
+        let read: Quote = serde_json::from_value(asking.clone()).unwrap();
+        assert_eq!(read.open_fee, Some(fee));
+        assert_eq!(serde_json::to_value(&read).unwrap(), asking);
+        assert_eq!(json!(ErrorCode::FeeRequired), "feeRequired");
     }
 }
