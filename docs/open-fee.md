@@ -16,7 +16,9 @@ shows the USDC locked. Reverse swaps have no such fee: there the user funds firs
 3. Persist the swap's index and the quote. Build one shielded payment of `zat` to `address`,
    with an empty memo, persist its transaction id, and only then send it. A reply-to address,
    or anything else in a memo, would tell the maker which wallet paid.
-4. Wait until the wallet's own sync shows the payment mined.
+4. Wait until the wallet's own sync shows the payment mined. While no block has it and the quote
+   has its 60 seconds left, send the same payment again every half minute: a node can take a
+   payment and drop it, and the quote ends meanwhile.
 5. Accept, `POST /v1/quote/{quoteId}/accept`, as before. Until the maker has seen the fee in a
    mined transaction it answers `402` with `code: "feeRequired"` and a `Retry-After`: wait as
    asked and post the same accept again ([below](#accepting)). Once it has seen the fee, the

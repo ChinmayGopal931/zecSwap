@@ -22,6 +22,9 @@ const NEXT_INDEX: &str = "next-swap-index.json";
 const CHAIN_POLL: Duration = Duration::from_secs(15);
 /// An open fee has only its quote's few minutes to be mined in.
 const FEE_POLL: Duration = Duration::from_secs(5);
+/// The polls an open fee in no block is given before it is sent again: half a minute. A node can
+/// take a payment and drop it, and the quote ends meanwhile.
+const FEE_RESEND: u32 = 6;
 /// What a payment of one note and its change pays the network under ZIP 317.
 const PAYMENT_FEE: u64 = 10_000;
 
@@ -259,7 +262,8 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
         },
     };
     if let Some(txid) = fee {
-        let mut sent = false;
+        // The polls since this run last sent the payment, or decided not to.
+        let mut waited = None;
         while !wallet.mined(txid).await? {
             if wall_now() >= quoted.quote.expires_at {
                 let unmined = anyhow::anyhow!(
@@ -267,21 +271,29 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
                 );
                 return Err(end(wallet.store(), run, unmined));
             }
-            if !sent {
-                // The time left is judged again: building the payment can outlast what it was
-                // built within, and a resumed run comes back at any time.
+            if waited.is_none_or(|polls| polls >= FEE_RESEND) {
+                // The time left is judged again each time: building the payment can outlast
+                // what it was built within, and a resumed run comes back at any time.
                 match quoted.fee_due(wall_now()) {
-                    // Sent again by a resumed run, whose first send may never have left.
+                    // Sent again by a resumed run, whose first send may never have left, and
+                    // by this one while no block has it.
                     Ok(_) => {
                         wallet.send(txid).await?;
-                        println!("  open fee sent in {txid}; waiting for it to be mined");
+                        match waited {
+                            None => {
+                                println!("  open fee sent in {txid}; waiting for it to be mined")
+                            }
+                            Some(_) => println!("  open fee sent again"),
+                        }
                     }
+                    Err(_) if waited.is_some() => {}
                     // What an earlier run sent may still be mined in time.
                     Err(e) if resumed => println!("  not sending the open fee again: {e:#}"),
                     Err(e) => return Err(end(wallet.store(), run, e.context("nothing was paid"))),
                 }
-                sent = true;
+                waited = Some(0);
             }
+            waited = waited.map(|polls| polls + 1);
             tokio::time::sleep(FEE_POLL).await;
         }
     }
@@ -504,6 +516,8 @@ mod tests {
         sent: Vec<TxId>,
         /// Sends still to fail, as for a run cut off between saving its payment and sending it.
         failing_sends: u32,
+        /// Sends of a payment the network takes and drops before one reaches a block.
+        dropped: usize,
         blocks_away: Option<u32>,
         held: u64,
         /// How long building a payment takes, by the wall clock a quote's life is judged by.
@@ -519,6 +533,7 @@ mod tests {
                 paid: Vec::new(),
                 sent: Vec::new(),
                 failing_sends: 0,
+                dropped: 0,
                 blocks_away,
                 held: u64::MAX,
                 building: Duration::ZERO,
@@ -562,7 +577,7 @@ mod tests {
             let Some(blocks_away) = &mut self.blocks_away else {
                 return Ok(false);
             };
-            if !self.sent.contains(&txid) {
+            if self.sent.iter().filter(|sent| **sent == txid).count() <= self.dropped {
                 return Ok(false);
             }
             let mined = *blocks_away == 0;
@@ -609,6 +624,18 @@ mod tests {
         assert_eq!(again.swap_id, swap.swap_id);
         assert_eq!((maker.quotes.get(), maker.accepts.get()), (1, 1));
         assert_eq!((wallet.paid.len(), wallet.sent.len()), (1, 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_payment_the_network_dropped_is_sent_again_and_its_swap_opens() {
+        let maker = Maker::new(600, true, []);
+        let mut wallet = Wallet::new(Some(0));
+        wallet.dropped = 1;
+        let swap = run(&mut wallet, &maker).await.unwrap();
+        let fee = TxId::from_bytes([1; 32]);
+        assert_eq!(wallet.sent, [fee, fee], "the same payment, sent twice");
+        assert_eq!(wallet.paid.len(), 1, "and built once");
+        assert_eq!((swap.index, maker.accepts.get()), (0, 1));
     }
 
     #[tokio::test(start_paused = true)]
