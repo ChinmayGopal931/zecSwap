@@ -102,14 +102,16 @@ doesn't take their word for anything: it checks every term against the contract 
 | `crates/zecswap-tokens` | Privacy Pass tokens: fetching, spending and checking them |
 | `crates/zecswap-jni` | The Android bindings, built as `libzecswap.so` |
 | `crates/zecswap-cli` | A testnet wallet and swap CLI |
+| `crates/zecswap-sim` | Whole swaps simulated from one seed: the real client against a simulated chain, maker and relayer |
 
 ## Build and test
 
 You need Rust (pinned in `rust-toolchain.toml`) and [Foundry](https://getfoundry.sh).
 
 ```sh
-(cd contracts && forge build && forge test)   # build the contracts, then their unit, fuzz and invariant tests
-cargo test --workspace                        # crypto, the audit's cases, Ironwood spends with real proofs, and EVM tests on local anvils
+(cd contracts && forge build && forge test)   # build the contracts, then their stateful invariants and known answers
+cargo test --workspace                        # the swap simulation, the audit's cases, and known answers from Railgun's engine, ethers and the RFC
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_seed   # hunt: each seed is one whole swap under its own faults
 cargo build --release -p zecswap-core --example evm_vectors
 (cd contracts && FOUNDRY_PROFILE=ffi forge test)   # Pallas.sol fuzzed against the Rust implementation
 ```

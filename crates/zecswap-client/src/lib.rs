@@ -4,6 +4,8 @@ mod tokens;
 mod user;
 
 pub use api::{Broadcast, Deposited, FeeNotHonoured, MakerApi, RelayerApi, ServiceError};
+#[cfg(feature = "sim")]
+pub use api::{Exchange, Wire};
 pub use deposits::{Deposit, DepositDeployment, Depositor, FeeCap};
 pub use tokens::{Attest, Tokens, Unattested};
 pub use user::{

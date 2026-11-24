@@ -1,8 +1,9 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
 use tokio::sync::OnceCell;
+use tokio::time::Instant;
 use zecswap_api::Network;
 use zecswap_api::relayer::{DepositTerms, Note, RescueDeposit, ShieldDeposit, deposit_fee};
 use zecswap_chain::evm::deposits::{Deployment, Used};
@@ -437,6 +438,10 @@ fn validity(terms: &DepositTerms) -> u64 {
 }
 
 fn now() -> u64 {
+    #[cfg(feature = "sim")]
+    if let Some(now) = zecswap_chain::evm::simulated_wall() {
+        return now;
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock is after 1970")

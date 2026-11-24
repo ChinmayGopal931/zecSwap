@@ -1,0 +1,43 @@
+[package]
+name = "zecswap-sim"
+description = "Deterministic simulation of whole swaps: the real client against a simulated chain, maker and relayer, from one seed"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+alloy = { version = "1.8", default-features = false, features = [
+    "consensus",
+    "contract",
+    "eips",
+    "json-rpc",
+    "k256",
+    "network",
+    "providers",
+    "rpc-types",
+    "signer-local",
+    "sol-types",
+    "std",
+] }
+anyhow = "1"
+http = "1"
+rand_chacha = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+revm = { version = "43", default-features = false, features = [
+    "optional_balance_check",
+    "optional_no_base_fee",
+    "portable",
+    "secp256k1",
+    "std",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "test-util", "time"] }
+tower-service = "0.3"
+zecswap-api = { path = "../zecswap-api" }
+zecswap-chain = { path = "../zecswap-chain", features = ["sim"] }
+zecswap-client = { path = "../zecswap-client", features = ["sim"] }
+zecswap-core = { path = "../zecswap-core" }
+zecswap-railgun = { path = "../zecswap-railgun" }

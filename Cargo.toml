@@ -25,3 +25,9 @@ codegen-units = 1
 
 [profile.test.package."*"]
 opt-level = 3
+
+[profile.test.package.zecswap-sim]
+opt-level = 1
+
+[profile.test.package.zecswap-railgun]
+opt-level = 3

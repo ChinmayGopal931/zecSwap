@@ -1,9 +1,10 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 use zecswap_api::relayer::{self, Claim, Sent};
 use zecswap_api::{Acceptance, Network, OpenFee, Quote};
 use zecswap_chain::evm::judge::{self, Go, READY_DEPTH, Refusal};

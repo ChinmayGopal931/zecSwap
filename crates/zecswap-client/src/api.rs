@@ -73,12 +73,26 @@ pub(crate) fn refused(error: &anyhow::Error) -> bool {
         .is_some_and(ServiceError::refused)
 }
 
+#[cfg(feature = "sim")]
+pub type Exchange =
+    std::pin::Pin<Box<dyn Future<Output = reqwest::Result<reqwest::Response>> + Send>>;
+
+#[cfg(feature = "sim")]
+pub trait Wire: Send + Sync {
+    fn exchange(&self, request: reqwest::Request) -> Exchange;
+}
+
 #[derive(Clone)]
 pub struct MakerApi(Endpoint);
 
 impl MakerApi {
     pub fn new(url: impl Into<String>) -> Result<Self> {
         Endpoint::new("maker", url).map(Self)
+    }
+
+    #[cfg(feature = "sim")]
+    pub fn over(url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        Self(Endpoint::over("maker", url, wire))
     }
 
     pub fn with_tokens(mut self, tokens: Arc<Tokens>) -> Self {
@@ -203,6 +217,11 @@ impl RelayerApi {
         Endpoint::new("relayer", url).map(Self)
     }
 
+    #[cfg(feature = "sim")]
+    pub fn over(url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        Self(Endpoint::over("relayer", url, wire))
+    }
+
     pub async fn shield_deposit(&self, request: &ShieldDeposit) -> Deposited {
         self.deposit("/v1/deposits/shield", request).await
     }
@@ -301,7 +320,7 @@ impl RelayerApi {
 
     pub async fn railgun_transact(&self, request: &RailgunTransact) -> Broadcast {
         let url = format!("{}/v1/railgun/transact", self.0.url);
-        let response = match self.0.http.post(url).json(request).send().await {
+        let response = match self.0.exchange(self.0.http.post(url).json(request)).await {
             Ok(response) => response,
             Err(e) => return Broadcast::Retry(e.to_string()),
         };
@@ -347,6 +366,8 @@ struct Endpoint {
     http: reqwest::Client,
     url: String,
     tokens: Option<Arc<Tokens>>,
+    #[cfg(feature = "sim")]
+    wire: Option<Arc<dyn Wire>>,
 }
 
 impl Endpoint {
@@ -356,7 +377,32 @@ impl Endpoint {
             http: reqwest::Client::builder().timeout(TIMEOUT).build()?,
             url: url.into(),
             tokens: None,
+            #[cfg(feature = "sim")]
+            wire: None,
         })
+    }
+
+    #[cfg(feature = "sim")]
+    fn over(name: &'static str, url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        Self {
+            name,
+            http: HTTP.get_or_init(reqwest::Client::new).clone(),
+            url: url.into(),
+            tokens: None,
+            wire: Some(wire),
+        }
+    }
+
+    async fn exchange(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        #[cfg(feature = "sim")]
+        if let Some(wire) = &self.wire {
+            return wire.exchange(request.build()?).await;
+        }
+        request.send().await
     }
 
     async fn accept(
@@ -435,7 +481,7 @@ impl Endpoint {
     ) -> reqwest::Result<reqwest::Response> {
         let mut waited = Duration::ZERO;
         loop {
-            let response = request().send().await?;
+            let response = self.exchange(request()).await?;
             let wait = (response.status() == StatusCode::SERVICE_UNAVAILABLE)
                 .then(|| retry_after(&response))
                 .flatten()

@@ -23,5 +23,8 @@ zecswap-railgun = { path = "../zecswap-railgun" }
 zecswap-tokens = { path = "../zecswap-tokens" }
 zeroize.workspace = true
 
+[features]
+sim = ["zecswap-chain/sim"]
+
 [dev-dependencies]
 hex = "0.4"

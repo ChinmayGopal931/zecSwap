@@ -1,0 +1,14 @@
+32 catches a deposit made with too little time before t0
+35 catches an open fee paid over the cap
+39 catches a claim sent in the maker's hour after t1
+44 catches a claim sent in the maker's hour after t1
+45 catches a deposit to terms the maker changed
+49 catches an open fee paid over the cap
+56 catches a claim sent with no margin before t1
+79 catches a claim on a ready a reorg can still drop
+81 catches a claim on a ready a reorg can still drop
+88 catches a deposit to terms the maker changed
+92 catches a claim sent with no margin before t1
+105 catches a claim on a ready a reorg can still drop
+110 catches a claim on a ready a reorg can still drop
+129 catches a claim sent with no margin before t1

@@ -10,7 +10,7 @@ pub use meter::{RpcMeter, RpcReport, RpcUsage, endpoint, log_usage};
 use railgun::Signed;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy::contract::{CallBuilder, CallDecoder};
 use alloy::eips::{BlockNumberOrTag, Encodable2718};
@@ -28,6 +28,7 @@ use alloy::sol;
 use alloy::sol_types::{SolCall, SolEvent};
 use alloy::transports::{RpcError, TransportError};
 use tokio::sync::{Mutex, MutexGuard, Notify, OnceCell};
+use tokio::time::Instant;
 use tracing::{info, warn};
 use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
@@ -351,9 +352,35 @@ impl Windows {
 }
 
 pub fn wall_now() -> u64 {
+    #[cfg(feature = "sim")]
+    if let Some(now) = simulated_wall() {
+        return now;
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+#[cfg(feature = "sim")]
+thread_local! {
+    static SIMULATED_WALL: std::cell::Cell<Option<(i64, Instant)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(feature = "sim")]
+pub fn simulate_wall(epoch: Option<i64>) -> Option<i64> {
+    let before = SIMULATED_WALL.get().map(|(epoch, _)| epoch);
+    let started = SIMULATED_WALL.get().map(|(_, started)| started);
+    SIMULATED_WALL.set(epoch.map(|epoch| (epoch, started.unwrap_or_else(Instant::now))));
+    before
+}
+
+#[cfg(feature = "sim")]
+pub fn simulated_wall() -> Option<u64> {
+    SIMULATED_WALL.get().map(|(epoch, started)| {
+        let elapsed = i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX);
+        u64::try_from(epoch.saturating_add(elapsed)).unwrap_or(0)
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -555,6 +582,37 @@ impl Settlement {
             windows: OnceCell::new(),
             reveal_headroom: 0,
         }
+    }
+
+    #[cfg(feature = "sim")]
+    pub fn over(
+        transport: alloy::transports::BoxTransport,
+        contract: Address,
+        signer: Option<PrivateKeySigner>,
+    ) -> Self {
+        let meter = RpcMeter::default();
+        let account = signer.map(|signer| (signer.address(), EthereumWallet::from(signer)));
+        let wallet = account.as_ref().map(|(_, wallet)| wallet.clone());
+        let client = ClientBuilder::default()
+            .layer(meter.layer())
+            .transport(transport, false);
+        Self::new(provider_over(client, wallet), contract, account, &meter)
+    }
+
+    #[cfg(feature = "sim")]
+    pub fn broadcast_privately_over(
+        &mut self,
+        transport: alloy::transports::BoxTransport,
+        blocks: u64,
+    ) {
+        let client = ClientBuilder::default()
+            .layer(RpcMeter::default().layer())
+            .transport(transport, false);
+        self.private = Some(Private {
+            provider: provider_over(client, None),
+            blocks,
+            least_nonce: AtomicU64::new(0),
+        });
     }
 
     pub fn broadcast_privately(&mut self, rpc_url: &str) -> Result<(), Error> {
@@ -1864,20 +1922,27 @@ fn signing_provider(
     let client = ClientBuilder::default()
         .layer(meter.layer())
         .http_with_client(http, url);
+    Ok(provider_over(client, wallet))
+}
+
+fn provider_over(
+    client: alloy::rpc::client::RpcClient,
+    wallet: Option<EthereumWallet>,
+) -> DynProvider {
     let Some(wallet) = wallet else {
-        return Ok(ProviderBuilder::new()
+        return ProviderBuilder::new()
             .disable_recommended_fillers()
             .connect_client(client)
-            .erased());
+            .erased();
     };
-    Ok(ProviderBuilder::new()
+    ProviderBuilder::new()
         .disable_recommended_fillers()
         .with_gas_estimation()
         .with_simple_nonce_management()
         .fetch_chain_id()
         .wallet(wallet)
         .connect_client(client)
-        .erased())
+        .erased()
 }
 
 async fn confirmed(

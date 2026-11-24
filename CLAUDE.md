@@ -27,14 +27,19 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract, for migration tests), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests incl. `test/fork` and Rust-made vectors in `test/vectors`; `test/utils/TestToken.sol` is testnet's tUSD |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `regressions.txt` holds seeds that once failed |
+| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
 | `scripts/` | `build-android.sh` (the Android libraries), `deploy-contract.sh` (a mainnet contract) |
 
 ## Commands
 
 ```sh
-cargo test --workspace                                  # offline tests, plus EVM tests on local anvils (needs `forge build`)
+cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_seed            # hunt: ~0.3 s a seed; a range, or seeds by comma
+ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --ignored --nocapture   # one seed's plan, verdict and every event
+ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --ignored --nocapture   # one line a seed: what was planned, how it ended
+scripts/sim-mutants.py 0..150                           # breaks seven client rules in turn, in place, and names the seeds that catch each; a run cut short is undone by the next
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
 (cd contracts && FOUNDRY_PROFILE=soak forge test --no-match-path 'test/{fork,ffi}/*')  # ~1 h: 4096×256 stateful runs, 65536 fuzz runs; the coverage corpus in cache/ carries over
@@ -52,7 +57,61 @@ ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [from-block]   # a wallet's
 RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block]   # the same on Ethereum
 ```
 
-## How it behaves (all tested)
+## Testing
+
+No hand-written example tests (Conventions). These stand in for them:
+
+- **The simulation** (`crates/zecswap-sim`). One seed is one whole forward swap: the real `User` and
+  `Settlement` against a simulated Ethereum (the real contracts in an in-process EVM, behind the
+  JSON-RPC a node speaks), a simulated maker, relayer and Zcash ledger, on one thread and a paused
+  clock. The seed picks the plan (`Plan::from_seed`): the route (Railgun or an account), public or
+  private reveals, the open fee and its cap, what the maker does (honest, never readies, vanishes,
+  cancels early, keeps the fee, opens less, opens to another note, lies about its deadlines, opens
+  far ahead), a relayer that skips payouts, and the faults: reorgs aimed at blocks that just mined,
+  missed slots, delayed and lost transactions, fee swings, node reads that fail, stall or lag a
+  block, HTTP answers that are busy, hang or get lost either way, a wallet killed and restarted,
+  one that comes back minutes either side of `t0` or `t1`, one that stalls until seconds either
+  side of the last moment it may deposit or claim, a skewed device clock. A fifth of seeds run in
+  calm weather, where the swap must end as its maker's behaviour dictates; a tenth press the claim
+  margin (a public claim seconds before `t1` on a chain that delays), and a tenth the ready depth
+  (a two-block reorg behind every transaction).
+- **What it checks.** Every block: the windows the client judges by are the contract's, the two
+  sides never may reveal at once, and the user's share is never public while the maker may still
+  refund. At the end: no open fee over the cap, outside Orchard or built twice; no deposit to terms
+  the user didn't agree or with under `MIN_TIME_TO_T0` left; a claimed swap carries the user's
+  share and paid the user's note or account in full; a refunded one was swept back; a deposit is
+  never left stuck once the weather has cleared. The same seed gives the same trace.
+- **Working with it.** A failing seed prints its plan and last events: replay it with
+  `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt`, which every
+  `cargo test` replays. A new behaviour is tested by a new fault, maker behaviour or check there,
+  never by an example test. Faults stay within what the design assumes (reorgs two deep, a reveal
+  landing inside `CLAIM_MARGIN`): past that a seed fails by design, not by a bug.
+- **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client (the ready depth, the
+  claim margin, the deposit deadline, the terms check, the fee cap, the claim window's start, the
+  maker's hour after `t1`) and fails if no seed notices. `regressions.txt` also lists seeds that
+  caught each, so every `cargo test` would. A change to `Plan::from_seed` or to a fault reshuffles
+  what each seed does: run the script again and replace those seeds.
+- **Its seams**, compiled only with the `sim` feature of chain and client: `evm::simulate_wall`
+  (the wall clock, per task with `world::Skewed`), `Settlement::over` and
+  `broadcast_privately_over` (an alloy transport in place of a URL), `MakerApi::over` and
+  `RelayerApi::over` (a `Wire` in place of the network). Waits measure with tokio's clock, so a
+  paused runtime moves them. Not seeded: the OS randomness in the client's proofs, which no
+  decision depends on. A whole-workspace build turns the feature on for every crate, inert until
+  one of these is called; a `-p` build, as the scripts and `cargo run -p zecswap-cli` make, leaves
+  it out.
+- **Not simulated yet**, and so without tests beyond the known answers: reverse swaps
+  (`ReverseUser::ready` wants a real `Wallet`), deposits (`Depositor`), tokens, the Zcash wallet
+  and lightwalletd client, PCZT signing's refusals, the relayer-side request checks
+  (`evm/funding.rs`, `evm/canonical.rs`, the policies in `evm/railgun.rs` and `evm/deposits.rs`),
+  the CLI's own resume logic (the simulation's wallet mirrors it) and the JNI bindings.
+- **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
+  deposit addresses, the Privacy Pass RFC's token, the contract's hashes, Railgun's SDK funding
+  vector, the audit's 97 window cases (`windows_spec.rs`), librustzcash's NU7 heights and circuit,
+  the Android port's vectors (`zecswap-jni/tests`), and in Foundry `test/Vectors.t.sol`.
+- **The contract**: Foundry's stateful invariants (`test/*.invariants.t.sol`), the fork tests and
+  the Rust-against-Solidity fuzzing (`test/ffi`).
+
+## How it behaves
 
 - **Windows.** At every moment at most one side may reveal, by the clock and the stage
   (`docs/reverse-flow.md`, Terms and the contract). Forward: the user claims once ready, or from
@@ -172,8 +231,12 @@ RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [from-block
 
 - Commits: a single-line lowercase conventional subject with a scope (`fix(client): …`), no
   Claude/Anthropic attribution anywhere, and explicit paths when staging (no `git add -A`).
-- Code: sparse comments (only non-obvious whys), no duplication, finish what you touch, keep
-  clippy and fmt clean.
+- Code: no comments, no duplication, finish what you touch, keep clippy and fmt clean. The only
+  comments are the CLI's help text (clap reads `///` in `zecswap-cli/src/main.rs`), SPDX lines, and
+  those of the deployed contract sources (`contracts/src`, `test/deployed`, `TestToken.sol`), whose
+  text the compiler hashes into the bytecode: change nothing there but the logic you mean to.
+- Tests: no hand-written example tests. A behaviour goes into the simulation (Testing); a format
+  shared with an outside implementation gets a known answer from it.
 
 Maintainers keep deployment notes outside the repo, in the gitignored `docs/local/`:
 @docs/local/agent-notes.md
