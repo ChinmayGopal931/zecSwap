@@ -3,8 +3,6 @@ use bech32::{Bech32m, Hrp};
 use crate::keys::Receiver;
 
 const VERSION: u8 = 1;
-/// Railgun's network id for "all chains", `ff…ff`, XORed with `"railgun\0"` as its addresses
-/// store every network id.
 const ALL_CHAINS: [u8; 8] = {
     let mut id = [0xff; 8];
     let railgun = b"railgun";
@@ -16,7 +14,6 @@ const ALL_CHAINS: [u8; 8] = {
     id
 };
 
-/// The bech32m `0zk` address: version, master public key, network id, viewing public key.
 pub(crate) fn encode(receiver: &Receiver) -> String {
     let mut data = Vec::with_capacity(73);
     data.push(VERSION);

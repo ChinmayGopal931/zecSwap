@@ -8,8 +8,6 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# pczt's transparent support links bip32 0.6 and secp256k1 0.33 already; deposit keys take
-# its backend rather than a second curve stack.
 bip32 = { version = "0.6", default-features = false, features = ["secp256k1-ffi"] }
 blake2b_simd.workspace = true
 ff.workspace = true

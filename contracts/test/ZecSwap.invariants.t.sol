@@ -9,23 +9,14 @@ import {MockRailgun} from "./utils/MockRailgun.sol";
 import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
-/// Drives random interleavings of every action on forward swaps and reverse escrows, for two makers
-/// and two tokens, with either token or Railgun paused at times, and records any departure from the
-/// spec. The spec is written from the English rules alone, never from the contract's code: each
-/// action's outcome is decided before it is sent, and what each account holds follows from the
-/// actions that landed.
 contract SwapHandler is Test {
     struct Record {
         bytes32 id;
         bool forward;
         ZecSwap.Terms terms;
-        /// The share a claim reveals: the user's forward, the ZEC maker's in reverse.
         uint256 claimShare;
-        /// The share a refund reveals: the maker's forward, the escrowing user's in reverse.
         uint256 refundShare;
-        /// The key that signs for the swap's Railgun note and its rescues.
         uint256 signer;
-        /// The note a forward claim or a reverse refund pays into Railgun; zero pays an account.
         bytes32 note;
         ZecSwap.Stage stage;
         bool paidOut;
@@ -40,7 +31,6 @@ contract SwapHandler is Test {
         PaidOut
     }
 
-    /// Few enough at once that random picks keep landing on swaps in a window worth testing.
     uint256 internal constant MAX_LIVE = 4;
     uint256 internal constant MAX_SWAPS = 12;
     uint256 internal constant MIN_WINDOW = 1 hours;
@@ -65,9 +55,7 @@ contract SwapHandler is Test {
     address public immutable relayer = makeAddr("relayer");
     address public immutable adapt = makeAddr("relay-adapt");
     address public immutable recipient = makeAddr("recipient");
-    /// The forward Railgun user's key, which signs its payouts and rescues.
     address public immutable auth;
-    /// The escrowing user's key in reverse, which signs its opens, readies, refund payouts and rescues.
     address public immutable escrower;
     address public immutable stranger;
     uint256 internal immutable authKey;
@@ -82,11 +70,8 @@ contract SwapHandler is Test {
     mapping(bytes32 id => ZecSwap.Stage) internal settledAs;
     mapping(address account => uint256) internal keyOf;
 
-    /// What each account may withdraw, by the rules.
     mapping(address account => mapping(address token => uint256)) public credited;
-    /// Locked in live swaps.
     mapping(address token => uint256) public escrowed;
-    /// Claimed forward Railgun swaps and refunded reverse escrows not yet paid out.
     mapping(address token => uint256) public owedToRailgun;
     mapping(address token => uint256) public minted;
 
@@ -130,7 +115,6 @@ contract SwapHandler is Test {
         }
     }
 
-    /// An account withdraws part of what it was credited, or (`tooMuch`) more than all of it.
     function withdraw(uint8 who, uint8 tokenSeed, uint256 amount, bool tooMuch) external {
         address account = accountAt(who);
         TestToken token = tokens[tokenSeed % 2];
@@ -151,8 +135,6 @@ contract SwapHandler is Test {
         }
     }
 
-    /// A forward open, its deadlines up to a second short of what `open` must leave. An open never
-    /// moves a token, so a paused one doesn't stop it.
     function openForward(
         uint8 makerSeed,
         uint8 tokenSeed,
@@ -189,7 +171,6 @@ contract SwapHandler is Test {
         }
     }
 
-    /// A reverse escrow funded by Relay Adapt, signed by its user or (`honest` false) by someone else.
     function openReverse(
         uint8 makerSeed,
         uint8 tokenSeed,
@@ -220,10 +201,6 @@ contract SwapHandler is Test {
         }
     }
 
-    /// A ready, half the time of a swap that may be made ready. `how`: 1 the other way, the maker's
-    /// signature forward and the escrowing user's own call in reverse; 2 a stranger's call; 3 a
-    /// signature sent after its deadline; 4 a stranger's signature; otherwise the rightful way, the
-    /// maker's call forward and the escrowing user's signature in reverse.
     function ready(uint256 i, uint8 how) external {
         if (records.length == 0) return;
         Record storage r = pickHalfFor(i, Want.Readyable);
@@ -233,7 +210,6 @@ contract SwapHandler is Test {
         bool ok;
         if (how >= 3 || (r.forward ? how == 1 : how == 0)) {
             uint64 deadline = uint64(how == 3 ? block.timestamp - 1 : block.timestamp + 5 minutes);
-            // Who readies a swap is its `terms.maker`: the maker forward, the escrowing user in reverse.
             bytes memory sig = sign(
                 how == 4 ? strangerKey : keyOf[r.terms.maker],
                 keccak256(abi.encode(READY_TYPEHASH, r.id, deadline))
@@ -252,9 +228,6 @@ contract SwapHandler is Test {
         observe(r);
     }
 
-    /// A claim at the current time, by anyone, with its share or (`honest` false) the other side's,
-    /// half the time of a swap in its claim's window. Its success must match the window exactly,
-    /// paused token or Railgun or not.
     function claim(uint256 i, bool honest) external {
         if (records.length == 0) return;
         Record storage r = pickHalfFor(i, Want.Claimable);
@@ -281,10 +254,6 @@ contract SwapHandler is Test {
         observe(r);
     }
 
-    /// The payout a relayer sends of a forward claim, or of a reverse refund, preferably of a swap
-    /// that owes one. `how`: 1 to another note; 2 signed by someone else; 3 through the other
-    /// direction's function; otherwise as signed, to the committed note. The fee leaves something
-    /// to shield.
     function payout(uint256 i, uint8 how, uint128 fee) external {
         if (records.length == 0) return;
         Record storage r = pickFor(i, Want.Owing);
@@ -311,8 +280,6 @@ contract SwapHandler is Test {
         observe(r);
     }
 
-    /// Railgun sends a held note back to the vault it was shielded from, preferably a paid-out
-    /// swap's; anyone may send tokens to any swap's vault, too.
     function returnToVault(uint256 i, uint64 amount) external {
         if (records.length == 0) return;
         Record storage r = pickFor(i, Want.PaidOut);
@@ -321,9 +288,6 @@ contract SwapHandler is Test {
         minted[r.terms.token] += amount;
     }
 
-    /// A rescue of what came back to a vault, preferably a paid-out one, to a fresh note. `how`: 1
-    /// signed by someone else; 2 under another nonce than the next; 3 after its deadline; otherwise
-    /// as signed. The fee leaves something to shield of whatever the vault holds.
     function rescue(uint256 i, uint8 how, uint128 fee) external {
         if (records.length == 0) return;
         Record storage r = pickFor(i, Want.PaidOut);
@@ -348,7 +312,6 @@ contract SwapHandler is Test {
         observe(r);
     }
 
-    /// Pauses (one time in eight) or resumes a token or Railgun.
     function pause(uint8 what, uint8 odds) external {
         bool on = odds % 8 == 0;
         what %= 3;
@@ -356,14 +319,10 @@ contract SwapHandler is Test {
         else tokens[what].setPaused(on);
     }
 
-    /// Mostly up to 90 minutes a step, so runs cross each window's edges; one step in eight up to
-    /// 30 hours, so they reach the late window's end, a day past `t1`, too.
     function warp(uint32 by) external {
         vm.warp(block.timestamp + bound(by, 1, by % 8 == 0 ? 30 hours : 90 minutes));
     }
 
-    /// Jumps to the second before, of or after the next of a swap's `t0`, `t1` and late window's end
-    /// still ahead: where its windows change hands.
     function warpToEdge(uint256 i, uint8 offset) external {
         if (records.length == 0) return;
         ZecSwap.Terms storage t = pick(i).terms;
@@ -376,12 +335,6 @@ contract SwapHandler is Test {
             }
         }
     }
-
-    // The windows, from the rules. Forward: the user may claim a ready swap until t1, an unready
-    // one from t0 until t1, and either from t1 + LATE_WINDOW for good; its maker may cancel an
-    // unready swap before t0 and refund either from t1 for LATE_WINDOW. Reverse: the ZEC maker may
-    // claim a ready escrow until t1; its user may refund an unready one at any time, and either one
-    // from t1 for good.
 
     function claimable(Record storage r) internal view returns (bool) {
         if (!live(r.stage)) return false;
@@ -396,8 +349,6 @@ contract SwapHandler is Test {
         if (block.timestamp >= r.terms.t1) return block.timestamp < r.terms.t1 + LATE_WINDOW;
         return r.stage == ZecSwap.Stage.Open && block.timestamp < r.terms.t0;
     }
-
-    // What the invariants read.
 
     function count() external view returns (uint256) {
         return records.length;
@@ -415,8 +366,6 @@ contract SwapHandler is Test {
         return refundable(records[i]);
     }
 
-    /// Every account the escrow may credit: the makers, the forward account user, and the keys that
-    /// only sign, which it never should.
     function accountAt(uint256 i) public view returns (address) {
         i %= ACCOUNTS;
         if (i < 2) return makers[i];
@@ -429,9 +378,6 @@ contract SwapHandler is Test {
         }
     }
 
-    // Plumbing.
-
-    /// The maker deposits `amount` it has just been paid; whether the deposit landed.
     function fundInventory(address maker, TestToken token, uint256 amount) internal returns (bool ok) {
         token.mint(maker, amount);
         minted[address(token)] += amount;
@@ -442,7 +388,6 @@ contract SwapHandler is Test {
         } catch {}
     }
 
-    /// Relay Adapt's part: unshield the amount, approve exactly it and open; whether the open landed.
     function fundReverse(ZecSwap.ReverseOpen memory o, bytes memory sig) internal returns (bool ok) {
         TestToken(o.token).mint(adapt, o.amount);
         minted[o.token] += o.amount;
@@ -479,8 +424,6 @@ contract SwapHandler is Test {
         r.stage = ZecSwap.Stage.Open;
     }
 
-    /// A claim credits the user forward (or holds a Railgun swap's amount for its payout) and the ZEC
-    /// maker in reverse; a refund credits the maker forward and holds a reverse refund for Railgun.
     function settle(Record storage r, ZecSwap.Stage stage) internal {
         r.stage = stage;
         address token = r.terms.token;
@@ -529,8 +472,6 @@ contract SwapHandler is Test {
         } catch {}
     }
 
-    /// Whether the last shield is the only new one: from `vault`, to the note `seed` names, of
-    /// `value` less Railgun's fee, leaving the vault empty.
     function shieldedFrom(address vault, uint256 shields, uint256 seed, uint256 value)
         internal
         view
@@ -544,7 +485,6 @@ contract SwapHandler is Test {
             && TestToken(note.token).balanceOf(vault) == 0;
     }
 
-    /// `t0` and `t1` up to a second short of what an open must leave, and whether they leave it.
     function deadlines(uint32 t0Delay, uint32 window)
         internal
         view
@@ -568,7 +508,6 @@ contract SwapHandler is Test {
         return records[i % records.length];
     }
 
-    /// The first swap from `i` on that `want` describes, or `i`'s.
     function pickFor(uint256 i, Want want) internal view returns (Record storage) {
         i %= records.length;
         for (uint256 k; k < records.length; ++k) {
@@ -577,7 +516,6 @@ contract SwapHandler is Test {
         return pick(i);
     }
 
-    /// `pickFor` for even `i`, any swap for odd: so the steps that are refused still get tried.
     function pickHalfFor(uint256 i, Want want) internal view returns (Record storage) {
         return i % 2 == 0 ? pickFor(i / 2, want) : pick(i / 2);
     }
@@ -591,7 +529,6 @@ contract SwapHandler is Test {
             && r.stage == (r.forward ? ZecSwap.Stage.Claimed : ZecSwap.Stage.Refunded);
     }
 
-    /// Whether another swap may open: few enough live, and keys left for the run.
     function full() internal view returns (bool) {
         if (records.length == MAX_SWAPS) return true;
         uint256 open;
@@ -601,7 +538,6 @@ contract SwapHandler is Test {
         return open == MAX_LIVE;
     }
 
-    /// One of the `faults` faults `how` names, an eighth of the time each; otherwise none.
     function fault(uint8 how, uint8 faults) internal pure returns (uint8) {
         how %= 8;
         return how > faults ? 0 : how;
@@ -611,18 +547,14 @@ contract SwapHandler is Test {
         return stage == ZecSwap.Stage.Open || stage == ZecSwap.Stage.Ready;
     }
 
-    /// `a - b`, or zero: after a departure the model follows what landed without reverting the call
-    /// that flagged it.
     function less(uint256 a, uint256 b) internal pure returns (uint256) {
         return a > b ? a - b : 0;
     }
 
-    /// The share that tells a swap's note from the others': the user's own share in either direction.
     function noteSeed(Record storage r) internal view returns (uint256) {
         return r.forward ? r.claimShare : r.refundShare;
     }
 
-    /// A note's commitment as wallets compute it: the ABI encoding of its `npk` and ciphertext, hashed.
     function commitment(uint256 seed) internal pure returns (bytes32) {
         return keccak256(abi.encode(npkOf(seed), cipherOf(seed)));
     }
@@ -686,8 +618,6 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         assertFalse(handler.settlementChanged());
     }
 
-    /// Every open, ready, deposit and withdrawal lands exactly when the rules allow it, and every
-    /// swap is in the stage, and paid out or not, that the actions which landed put it in.
     function invariant_everyStepFollowsTheRules() public view {
         assertFalse(handler.stepDeparted(), "an open or a ready departed from the rules");
         assertFalse(handler.inventoryDeparted(), "a deposit or a withdrawal departed from the rules");
@@ -699,8 +629,6 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         }
     }
 
-    /// A reveal sent in its window lands whenever it is mined in that window, whatever anyone else
-    /// sent before it, and with the token or Railgun paused.
     function invariant_aRevealInItsWindowNeverFails() public view {
         assertFalse(handler.revealInWindowFailed());
     }
@@ -709,20 +637,14 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         assertFalse(handler.revealOutsideWindowSucceeded());
     }
 
-    /// A payout, a reverse refund's payout and a rescue each reach only the note its party signed
-    /// for (the one committed at open, for the first two), with what the vault held less the
-    /// signed fee, and only when the rules allow it.
     function invariant_tokensLeaveOnlyForSignedNotes() public view {
         assertFalse(handler.payoutMissedItsNote());
     }
 
-    /// What a swap owes Railgun can always be paid out, and what comes back to its vault always
-    /// rescued: nothing but the payout and the rescue themselves spend them.
     function invariant_whatIsOwedToRailgunCanAlwaysLeave() public view {
         assertFalse(handler.payoutRefused());
     }
 
-    /// An open swap has revealed nothing; a settled one holds exactly its winner's share.
     function invariant_theSecretIsTheWinnersShare() public view {
         for (uint256 i; i < handler.count(); ++i) {
             SwapHandler.Record memory r = handler.recordAt(i);
@@ -733,8 +655,6 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         }
     }
 
-    /// What replaces the lock design's turns: at every instant exactly one side of a live swap or
-    /// escrow may reveal, tried with the true shares and undone, so nobody is raced or stranded.
     function invariant_exactlyOneSideMayRevealOnEveryLiveSwap() public {
         for (uint256 i; i < handler.count(); ++i) {
             SwapHandler.Record memory r = handler.recordAt(i);
@@ -756,8 +676,6 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         }
     }
 
-    /// Every token the escrow holds is credited to an account, locked in a live swap or owed to
-    /// Railgun, and every token minted is somewhere.
     function invariant_tokensAreConserved() public view {
         for (uint256 k; k < 2; ++k) {
             TestToken token = handler.tokens(k);
@@ -776,8 +694,6 @@ contract ZecSwapInvariantTest is SpendAuthVectors {
         }
     }
 
-    /// Each account holds exactly what the rules credited it: inventory never moves between
-    /// makers, and a Railgun swap's claim or a reverse refund is held for Railgun, never credited.
     function invariant_eachAccountHoldsWhatTheRulesCreditIt() public view {
         for (uint256 k; k < 2; ++k) {
             address t = address(handler.tokens(k));

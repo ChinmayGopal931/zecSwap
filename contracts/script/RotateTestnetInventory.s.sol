@@ -5,7 +5,6 @@ import {Script} from "forge-std/Script.sol";
 import {ZecSwap} from "../src/ZecSwap.sol";
 import {IERC20} from "../src/Token.sol";
 
-/// Move the stopped testnet maker's available inventory; never touches locked swaps.
 contract RotateTestnetInventory is Script {
     function run() external {
         require(block.chainid == 11155111, "Sepolia only");
@@ -19,7 +18,6 @@ contract RotateTestnetInventory is Script {
         require(
             next.MIN_WINDOW() != 0 && next.LATE_WINDOW() != 0, "the new deployment is not a windows contract"
         );
-        // The previous deployment may be the lock contract, which has no windows to compare.
         (bool windows, bytes memory minWindow) =
             address(previous).staticcall(abi.encodeWithSignature("MIN_WINDOW()"));
         if (windows) {

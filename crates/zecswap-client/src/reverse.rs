@@ -24,21 +24,14 @@ pub struct ReverseSwap {
     pub index: u32,
     pub quote: Quote,
     pub swap_id: B256,
-    /// The ticket the maker answered the accept with, once accepted.
     #[serde(default)]
     pub ticket: Option<String>,
-    /// The latest deadline of a ready this user signed: until the chain is past it, or past `t0`,
-    /// that ready may still land, and would revert a refund sent meanwhile with the user's share
-    /// public, the maker's to claim with.
     #[serde(default)]
     pub ready_signed_until: Option<u64>,
-    /// A refund was asked for: no ready is ever signed after it.
     #[serde(default)]
     pub refunding: bool,
 }
 
-/// A user with a wallet seed, which its swaps' keys derive from, refunded into the Railgun wallet
-/// of its Railgun seed.
 pub struct ReverseUser {
     seed: Zeroizing<Vec<u8>>,
     railgun: RailgunKeys,
@@ -74,7 +67,6 @@ impl ReverseUser {
         }
     }
 
-    /// Persist this result and the spent index before accepting or funding it.
     pub async fn quote(&self, index: u32, units: u32) -> Result<ReverseSwap> {
         let (chain_id, railgun) = (
             self.settlement.chain_id().await?,
@@ -103,7 +95,6 @@ impl ReverseUser {
         Ok(swap)
     }
 
-    /// Persist `swap` again once accepted: it then holds the swap's ticket.
     pub async fn accept(&self, swap: &mut ReverseSwap) -> Result<()> {
         self.verify_quote(swap).await?;
         let keys = self.keys(swap.index)?;
@@ -134,12 +125,10 @@ impl ReverseUser {
         Ok(())
     }
 
-    /// As `User::collect_token`: the token handed back once the escrow is funded.
     pub async fn collect_token(&self, swap: &ReverseSwap) -> Result<bool> {
         self.maker.collect_reverse_token(swap.swap_id).await
     }
 
-    /// Import before funding and persist the account/birthday so an interrupted scan resumes.
     pub async fn watch_deposit(
         &self,
         swap: &ReverseSwap,
@@ -156,7 +145,6 @@ impl ReverseUser {
             .await?)
     }
 
-    /// First authorization: approve + open, inside one successful Relay Adapt transaction.
     pub async fn funding_calls(&self, swap: &ReverseSwap) -> Result<[(Address, Vec<u8>); 2]> {
         self.verify_quote(swap).await?;
         ensure!(
@@ -183,10 +171,6 @@ impl ReverseUser {
         ))
     }
 
-    /// Second authorization: only after an independent sync of this swap's joint account, and
-    /// never once a refund was asked for. The signature's deadline goes into `swap`, and `save`
-    /// persists it, before the signature is handed out: a ready that may still land holds any
-    /// refund back.
     pub async fn ready(
         &self,
         swap: &mut ReverseSwap,
@@ -244,8 +228,6 @@ impl ReverseUser {
         Ok(())
     }
 
-    /// The escrow as the chain has it; an error unless it holds the quoted terms and refunds
-    /// to the quoted note.
     pub async fn state(&self, swap: &ReverseSwap) -> Result<OnChainSwap> {
         self.verify_quote(swap).await?;
         let chain = self
@@ -265,7 +247,6 @@ impl ReverseUser {
         Ok(chain)
     }
 
-    /// What `openReverse` commits the escrow to, from the quote and our share.
     pub fn terms(&self, swap: &ReverseSwap) -> Result<Terms> {
         let keys = self.keys(swap.index)?;
         Ok(swap.quote.open(keys.share.public()).terms())
@@ -283,10 +264,6 @@ impl ReverseUser {
         )?)
     }
 
-    /// Refunds the escrow into the committed note: an unready one once no ready signature of
-    /// ours can land, a ready one from `t1`, judged on the escrow and the newest block read as of
-    /// one block. Asking for it goes into `swap`, which `save` persists, before the share goes
-    /// out: no ready is signed after it. Retry after each chain update.
     pub async fn refund(
         &self,
         swap: &mut ReverseSwap,
@@ -396,8 +373,6 @@ impl ReverseUser {
             swap.swap_id == reverse_swap_id(quote.user, &quote.terms.maker_share),
             "wrong reverse swap id"
         );
-        // Escrows on the lock contract deployed before follow its rules, not ours; and one funded
-        // at its deadline must still leave the contract's minimum window before t0.
         let windows = self
             .settlement
             .windows()

@@ -1,10 +1,3 @@
-//! Split-key primitives for atomic swaps of shielded ZEC against an EVM contract.
-//!
-//! The deposit address's spend authorizing key is `±(e + z)`: the maker holds `e`, the
-//! user holds `z`. The settlement contract verifies whichever half is revealed against its
-//! public share on Pallas, so a party only ever learns both halves after the contract has
-//! paid its counterparty.
-
 mod auth;
 mod curve;
 mod deposit;

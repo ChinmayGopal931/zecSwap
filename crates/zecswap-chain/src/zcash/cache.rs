@@ -8,7 +8,6 @@ use zcash_client_backend::data_api::scanning::ScanRange;
 use zcash_client_backend::proto::compact_formats::CompactBlock;
 use zcash_protocol::consensus::BlockHeight;
 
-/// Holds downloaded compact blocks only between download and scan.
 #[derive(Default)]
 pub(crate) struct MemoryBlockCache(Mutex<BTreeMap<BlockHeight, CompactBlock>>);
 

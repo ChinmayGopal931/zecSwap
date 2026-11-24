@@ -9,7 +9,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Error, curve};
 
-/// One half of a joint spend authorizing key: the maker's `e` or the user's `z`.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SecretShare([u8; 32]);
 
@@ -22,7 +21,6 @@ impl SecretShare {
         }
     }
 
-    /// Parses the big-endian `uint256` that `claim` or `refund` reveals.
     pub fn from_be_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
         curve::scalar_from_evm(bytes)
             .ok_or(Error::InvalidScalar)
@@ -49,7 +47,6 @@ impl SecretShare {
         pallas::Scalar::from_repr(self.0).expect("constructed from a canonical scalar")
     }
 
-    /// A RedPallas signature under this share is a Schnorr proof of knowledge of it.
     pub(crate) fn prove<R: CryptoRng>(&self, message: &[u8], rng: R) -> ShareProof {
         let key = redpallas::SigningKey::<SpendAuth>::try_from(self.0)
             .expect("constructed from a canonical scalar");
@@ -63,12 +60,10 @@ impl fmt::Debug for SecretShare {
     }
 }
 
-/// `[share]·SpendAuthG`: the maker's `E` or the user's `Z`. Never the identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublicShare(pallas::Affine);
 
 impl PublicShare {
-    /// Parses big-endian affine `(x, y)` words, the layout the contract stores.
     pub fn from_affine_bytes(bytes: &[u8; 64]) -> Result<Self, Error> {
         curve::point_from_evm(bytes).map(Self)
     }

@@ -1,10 +1,3 @@
-//! Railgun's V2 contracts as a relayer calls them. Relay Adapt funds reverse escrows
-//! (`funding`); the smart wallet's own `transact` carries a user's private send or withdrawal,
-//! which a relayer sends as the user's broadcaster: the user proves it with a fee note to the
-//! relayer's 0zk address as its first output, and the relayer pays the gas. The ABI is
-//! @railgun-community/engine 9.8.0's (abi/V2/RelayAdapt.json, abi/V2.1/RailgunSmartWallet.json);
-//! both contracts take the same `Transaction`.
-
 use alloy::consensus::{Transaction as _, TxEnvelope};
 use alloy::eips::{BlockId, Decodable2718};
 use alloy::network::TransactionBuilder;
@@ -21,31 +14,24 @@ use super::canonical::{self, Malformed, Shape};
 use super::{Address, B256, IErc20, Settlement, U256};
 use crate::Error;
 
-/// The most calldata a relayer takes for one Railgun call.
 pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;
-/// The most Railgun transactions one call may carry.
 pub const MAX_TRANSACTIONS: usize = 16;
-/// Railgun's circuits spend at most 13 notes into at most 13 (the engine's `railgun-txid.js`).
 const MAX_NULLIFIERS: usize = 13;
 const MAX_COMMITMENTS: usize = 13;
-/// V2 wallets write a 16-byte IV and 46 bytes of sender data
-/// (`Memo.createEncryptedNoteAnnotationDataV2`).
 const MAX_ANNOTATION_BYTES: usize = 62;
-/// A memo is its sender's text, which the SDK doesn't limit; the app's wallets write none.
 const MAX_MEMO_BYTES: usize = 1024;
 
 const CIPHERTEXT: Shape = Shape::Tuple(&[
-    Shape::Words(6), // ciphertext, the blinded viewing keys
+    Shape::Words(6),
     Shape::Bytes(MAX_ANNOTATION_BYTES),
     Shape::Bytes(MAX_MEMO_BYTES),
 ]);
-/// A `Transaction`, with no more output ciphertexts than outputs.
 pub(super) const TRANSACTION: Shape = Shape::Tuple(&[
-    Shape::Words(9), // proof, merkleRoot
+    Shape::Words(9),
     Shape::Array(&Shape::Words(1), MAX_NULLIFIERS),
     Shape::Capping(&Shape::Words(1), MAX_COMMITMENTS),
-    Shape::Tuple(&[Shape::Words(6), Shape::Capped(&CIPHERTEXT)]), // boundParams
-    Shape::Words(5),                                              // unshieldPreimage
+    Shape::Tuple(&[Shape::Words(6), Shape::Capped(&CIPHERTEXT)]),
+    Shape::Words(5),
 ]);
 const TRANSACT: &[Shape] = &[Shape::Array(&TRANSACTION, MAX_TRANSACTIONS)];
 
@@ -99,14 +85,10 @@ sol! {
     }
 }
 
-/// What a relayer takes as the broadcaster of plain `transact` calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SendPolicy {
-    /// Railgun's proxy on the relayer's chain, which every send calls.
     pub railgun: Address,
-    /// The token the relayer's fee is paid in.
     pub token: Address,
-    /// Token base units a call's fee notes must pay the relayer in all.
     pub fee: u128,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u128,
@@ -114,33 +96,23 @@ pub struct SendPolicy {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
-    /// Nothing from this proof was sent, and nothing will be.
     #[error("{0}")]
     Rejected(&'static str),
-    /// A note it spends is spent already.
     #[error("these notes are already spent")]
     Spent,
-    /// Nothing was sent, but it may go later, as it is.
     #[error("{}", .0.reason())]
     Later(Later),
-    /// Nothing was sent: the chain could not be read, or the transaction not recorded.
     #[error(transparent)]
     Chain(#[from] Error),
-    /// The transaction was signed and recorded, and its broadcast failed: it may still land.
     #[error("the broadcast of {0} failed; it may still land")]
     Unknown(B256),
-    /// The transaction was signed and recorded, and the private RPC it went to turned it down: it
-    /// can't land.
     #[error("the private RPC refused {0}")]
     Refused(B256),
 }
 
-/// Why a send that may go as it is waits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Later {
-    /// The network's gas price is above the relayer's cap.
     GasPrice,
-    /// The sending account holds too little ETH for the gas: until it is topped up.
     Eth,
 }
 
@@ -155,8 +127,6 @@ impl Later {
 
 type Result<T, E = SendError> = std::result::Result<T, E>;
 
-/// A `transact` call that passed every check needing neither keys nor the chain. Only
-/// `SendPolicy::decode` makes one; it is sent as the original bytes.
 pub struct Transact {
     chain_id: u64,
     railgun: Address,
@@ -165,7 +135,6 @@ pub struct Transact {
     min_gas_price: u128,
 }
 
-/// A transaction signed and ready to broadcast, as a relayer records it beforehand.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Signed {
     pub hash: B256,
@@ -174,8 +143,6 @@ pub struct Signed {
 }
 
 impl Signed {
-    /// The call it makes: its destination, ETH value and calldata; none for bytes that are not a
-    /// signed transaction with a destination.
     pub fn call(&self) -> Option<(Address, u128, Bytes)> {
         let envelope = TxEnvelope::decode_2718(&mut self.raw.as_ref()).ok()?;
         Some((
@@ -194,21 +161,14 @@ impl Signed {
     }
 }
 
-/// What the chain knows of a transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Pending,
-    Mined {
-        succeeded: bool,
-    },
-    /// Neither mined nor pending on the node: never received, or dropped.
+    Mined { succeeded: bool },
     Unknown,
 }
 
 impl SendPolicy {
-    /// Checks the envelope, the canonical encoding and each Railgun transaction's binding: it
-    /// spends notes, on this chain, with no adapt contract (only those may call `transact`
-    /// directly), and unshields at most normally, the relayer's token alone.
     pub fn decode(&self, chain_id: u64, to: Address, value: u128, data: Bytes) -> Result<Transact> {
         require(
             to == self.railgun && value == 0,
@@ -247,8 +207,6 @@ impl SendPolicy {
                 bound.unshield <= 1,
                 "redirected unshields are not supported",
             )?;
-            // Railgun pays a withdrawal out through the token's own `transfer`, which a token
-            // anyone wrote can make revert after the simulation passed.
             require(
                 bound.unshield == 0 || erc20(&tx.unshieldPreimage.token, self.token),
                 "a withdrawal must pay out the relayer's token",
@@ -264,8 +222,6 @@ impl SendPolicy {
         })
     }
 
-    /// Whether `transact` pays this relayer's fee, at least, and its proofs leave the gas price
-    /// within the cap: Railgun reverts below each proof's minimum. The fee it pays, if so.
     pub fn check(&self, transact: &Transact, keys: &Keys) -> Result<u128> {
         require(
             transact.min_gas_price <= self.max_gas_price_wei,
@@ -281,12 +237,10 @@ impl SendPolicy {
 }
 
 impl Transact {
-    /// The calldata's hash: the same bytes are the same send.
     pub fn id(&self) -> B256 {
         keccak256(&self.data)
     }
 
-    /// Every note it spends, as Railgun records them: by tree and nullifier.
     pub fn nullifiers(&self) -> Vec<(u16, B256)> {
         self.transactions
             .iter()
@@ -299,8 +253,6 @@ impl Transact {
             .collect()
     }
 
-    /// What it pays out of Railgun to a public address, in base units of the token it unshields:
-    /// a withdrawal's amount, before Railgun's own fee; none for a private send.
     pub fn unshielded(&self) -> Option<u128> {
         self.transactions
             .iter()
@@ -309,9 +261,6 @@ impl Transact {
             .reduce(u128::saturating_add)
     }
 
-    /// What it pays the wallet of `keys` in `token`, read as Railgun's public broadcasters read
-    /// their fees: the first output of each Railgun transaction, where wallets put the fee note,
-    /// counted if it opens as the note committed to.
     pub fn fee_paid(&self, keys: &Keys, token: Address) -> u128 {
         self.transactions
             .iter()
@@ -332,8 +281,6 @@ impl Transact {
 }
 
 impl Settlement {
-    /// Whether a note `transact` spends is spent already: every note it spends asked about in
-    /// one call where Multicall3 is deployed, else one a note.
     pub async fn spends_spent_notes(&self, transact: &Transact) -> Result<bool, Error> {
         let unavailable = || Error::Contract("Railgun's nullifiers are unavailable".into());
         let spent = |tree: u16, nullifier| IRailgunSmartWallet::nullifiersCall {
@@ -368,11 +315,6 @@ impl Settlement {
         Ok(false)
     }
 
-    /// Sends `transact` as its broadcaster. It is simulated on the pending state at the network's
-    /// gas price or the proofs' minimum, whichever is higher, within the policy's caps and this
-    /// account's ETH, and sent only if its fee `covers` the gas it is estimated to burn at that
-    /// price; then signed, handed to `record`, and broadcast once. No retries: a failed broadcast's
-    /// outcome is unknown, and what `record` kept says what to look for.
     pub async fn send_transact(
         &self,
         policy: &SendPolicy,
@@ -411,8 +353,6 @@ impl Settlement {
             .with_chain_id(transact.chain_id)
             .with_gas_limit(policy.max_gas_limit)
             .with_gas_price(gas_price);
-        // The simulation runs Railgun's own checks: the proofs, their roots and nullifiers, the
-        // gas price. Never surface the node's errors: they can carry the calldata.
         let estimate = match self
             .provider
             .estimate_gas(tx.clone())
@@ -456,8 +396,6 @@ impl Settlement {
         }
     }
 
-    /// Shields `value` of `token` from this account to `note`, as a public wallet funds a
-    /// Railgun balance.
     pub async fn shield(
         &self,
         token: Address,
@@ -513,8 +451,6 @@ impl Settlement {
         )
     }
 
-    /// Whether this account's `nonce` was taken by a transaction mined at least `depth` blocks
-    /// ago: a signed transaction the node doesn't know with that nonce can never land.
     pub async fn nonce_taken(&self, nonce: u64, depth: u64) -> Result<bool, Error> {
         let account = self
             .account
@@ -537,8 +473,6 @@ impl Settlement {
         Ok(count > nonce)
     }
 
-    /// How many of this account's transactions are mined, and how many it has sent, those still
-    /// waiting to be mined included.
     pub async fn nonces(&self) -> Result<(u64, u64), Error> {
         let account = self
             .account
@@ -550,8 +484,6 @@ impl Settlement {
         Ok((mined, sent))
     }
 
-    /// Broadcasts `signed` again if its nonce is still the account's next: it then replaces
-    /// nothing. Whether it was broadcast.
     pub async fn rebroadcast(&self, signed: &Signed) -> Result<bool, Error> {
         let account = self
             .account
@@ -615,13 +547,10 @@ pub(super) mod tests {
         }
     }
 
-    /// A `transact` call of one Railgun transaction spending one note, which unshields `token` if
-    /// `unshield` is 1. Its proof and notes are placeholders: decoding checks a call's form.
     fn transact(chain_id: u64, unshield: u8, token: TokenData) -> Vec<u8> {
         spending(chain_id, unshield, token, &[vec![B256::repeat_byte(1)]])
     }
 
-    /// The same, of a Railgun transaction for each of `spends`, spending those notes.
     fn spending(chain_id: u64, unshield: u8, token: TokenData, spends: &[Vec<B256>]) -> Vec<u8> {
         let point = || G1Point {
             x: U256::ZERO,
@@ -667,7 +596,6 @@ pub(super) mod tests {
         };
         assert!(decode(1, erc20_token(POLICY.token)).is_ok());
         let other = Address::repeat_byte(9);
-        // A private send pays nothing out, whatever its unshield preimage says.
         assert!(decode(0, erc20_token(other)).is_ok());
         let others = [
             erc20_token(other),
@@ -690,10 +618,6 @@ pub(super) mod tests {
         }
     }
 
-    /// `Transaction[]` as calldata from its length on, written to amplify: `transactions`
-    /// transactions in the same bytes, each with its 13 outputs' ciphertexts in the same bytes,
-    /// each with its memo in the same `memo` bytes, placed a word after where it belongs. Alloy
-    /// decodes it to over transactions × 13 × memo bytes.
     pub(in crate::evm) fn amplifying(transactions: usize, memo: usize) -> Vec<u8> {
         let outputs = MAX_COMMITMENTS;
         let mut data = Vec::new();
@@ -701,8 +625,6 @@ pub(super) mod tests {
         let mut words = |values: &[usize]| values.iter().for_each(|&value| word(value));
         words(&[transactions]);
         words(&vec![32 * transactions; transactions]);
-        // Proof and root; nullifiers, commitments and bound parameters after the 17 words of
-        // heads; the unshield preimage.
         words(&[0; 9]);
         words(&[32 * 17, 32 * 19, 32 * (20 + outputs)]);
         words(&[0; 5]);
@@ -712,7 +634,6 @@ pub(super) mod tests {
         words(&[0; 6]);
         words(&[32 * 7, outputs]);
         words(&vec![32 * outputs; outputs]);
-        // The ciphertext: no annotation, and the memo past the word after it.
         words(&[0; 6]);
         words(&[32 * 8, 32 * 10, 0, 0, memo]);
         data.resize(data.len() + memo.next_multiple_of(32), 0);
@@ -733,8 +654,6 @@ pub(super) mod tests {
         ));
     }
 
-    /// The notes of the largest call a relayer takes are asked about in one request where
-    /// Multicall3 is deployed, with the answer that asking one at a time gives.
     #[tokio::test]
     async fn every_note_a_call_spends_is_asked_about_in_one_request() {
         use alloy::providers::MULTICALL3_ADDRESS;
@@ -754,8 +673,6 @@ pub(super) mod tests {
                 .await
                 .unwrap();
         };
-        // Answers any call with the storage word its second argument names, as Railgun's
-        // `nullifiers(tree, nullifier)` answers whether a note is spent.
         let railgun = POLICY.railgun;
         let code = "0x6024355460005260206000f3";
         set("anvil_setCode", serde_json::json!([railgun, code])).await;
@@ -792,7 +709,6 @@ pub(super) mod tests {
         assert!(!batched.spends_spent_notes(&transact).await.unwrap());
         assert_eq!(calls(&batched), 1);
 
-        // The last note it spends is spent.
         let spent = serde_json::json!([railgun, note(notes - 1), B256::from(U256::from(1))]);
         set("anvil_setStorageAt", spent).await;
         assert!(single.spends_spent_notes(&transact).await.unwrap());
@@ -812,7 +728,6 @@ pub(super) mod tests {
         let settlement =
             Settlement::connect(&anvil.endpoint(), Address::repeat_byte(1), key).unwrap();
         let chain_id = settlement.chain_id().await.unwrap();
-        // No code there: any call succeeds.
         let (policy, railgun) = (POLICY, POLICY.railgun);
         let data = transact(chain_id, 0, erc20_token(POLICY.token));
         let transact = policy.decode(chain_id, railgun, 0, data.into()).unwrap();

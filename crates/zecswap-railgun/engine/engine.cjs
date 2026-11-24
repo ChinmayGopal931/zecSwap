@@ -1,5 +1,3 @@
-// Railgun's own key, address and shield-note code, loaded from its engine package. Its "exports"
-// map hides these modules, so they are required by path.
 const path = require('path');
 const msgpack = require('msgpack-lite');
 
@@ -29,10 +27,6 @@ const hex = (bytes) => `0x${Buffer.from(bytes).toString('hex')}`;
 const bytes = (value) => Buffer.from(value.replace(/^0x/, ''), 'hex');
 const word = (n) => `0x${n.toString(16).padStart(64, '0')}`;
 
-/**
- * A wallet's keys as Railgun derives them from a BIP-39 seed. Its wallets start from the
- * mnemonic (`deriveNodes`); `vectors.cjs` checks that both routes agree.
- */
 async function wallet(seed, index) {
   await Promise.all([initPoseidonPromise, initCurve25519Promise]);
   const master = new WalletNode(getMasterKeyFromSeed(seed.replace(/^0x/, '')));
@@ -57,24 +51,17 @@ async function wallet(seed, index) {
   };
 }
 
-/** What Railgun's view-only wallets are made from: the viewing key and packed spending key. */
 function shareableViewingKey(keys) {
   const spub = Babyjubjub.packPoint(keys.spendingPublicKey.map(BigInt)).toString('hex');
   const vpriv = keys.viewingPrivateKey.replace(/^0x/, '');
   return msgpack.encode({ vpriv, spub }).toString('hex');
 }
 
-/** The address data the engine's notes take: the master public key and viewing public key. */
 const addressData = (keys) => ({
   masterPublicKey: BigInt(keys.masterPublicKey),
   viewingPublicKey: bytes(keys.viewingPublicKey),
 });
 
-/**
- * One transaction output from `sender` to `receiver`, encrypted as the engine's `Transaction`
- * does (V2): under a key agreed between the sender's viewing key and the receiver's, both
- * blinded. A hidden sender draws a random `senderRandom`; a visible one uses the null one.
- */
 async function transactOutput(sender, receiver, { random, senderRandom, value, token, memoText, outputType }) {
   WalletInfo.setWalletSource('zecswap vectors');
   const note = new TransactNote(
@@ -110,7 +97,6 @@ async function transactOutput(sender, receiver, { random, senderRandom, value, t
   };
 }
 
-/** What the holder of `viewingPrivateKey` reads from an output, as broadcasters read their fees. */
 async function receiveOutput(receiver, output) {
   const sharedKey = await getSharedSymmetricKey(bytes(receiver.viewingPrivateKey), bytes(output.blindedSenderViewingKey));
   const [ivTag, ...data] = output.ciphertext.map((word) => word.replace(/^0x/, ''));
@@ -132,7 +118,6 @@ async function receiveOutput(receiver, output) {
   );
 }
 
-/** The `random` a shield note hides from everyone but the holder of `viewingPrivateKey`. */
 async function decryptRandom(viewingPrivateKey, encryptedBundle, shieldKey) {
   const sharedKey = await getSharedSymmetricKey(bytes(viewingPrivateKey), bytes(shieldKey));
   return ShieldNote.decryptRandom(encryptedBundle, sharedKey);

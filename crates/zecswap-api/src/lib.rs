@@ -1,6 +1,3 @@
-//! The maker's quote API and the relayer's API on the wire. A maker only proposes here:
-//! wallets check every term against the contract before depositing.
-
 use alloy_primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 use zecswap_core::{PublicShare, ShareProof, ViewingKeys};
@@ -19,9 +16,7 @@ pub use network::Network;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuoteRequest {
     pub units: u32,
-    /// The swap's `user`: the account paid, or for a payout into Railgun, the swap's own key.
     pub payout: Address,
-    /// For a payout into Railgun, the commitment to the note it pays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payout_note: Option<B256>,
 }
@@ -30,7 +25,6 @@ pub struct QuoteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct Quote {
     pub quote_id: B256,
-    /// The account that opens the swap, which its id binds.
     pub maker: Address,
     #[serde(with = "bytes64")]
     pub maker_share: PublicShare,
@@ -39,36 +33,24 @@ pub struct Quote {
     pub chain_id: u64,
     pub contract: Address,
     pub token: Address,
-    /// Token base units paid out, as a decimal string.
     #[serde(with = "decimal")]
     pub amount: u128,
     pub deposit_zat: u64,
-    /// Unix time until which the maker accepts the quote.
     pub expires_at: u64,
-    /// Token base units of the maker's own gas and Zcash fee on this swap, at the prices of the
-    /// quote: in `depositZat` on top of the amount (ZEC to USDC), or kept from the ZEC paid
-    /// (USDC to ZEC). Absent where the maker charges none.
     #[serde(
         default,
         with = "optional_decimal",
         skip_serializing_if = "Option::is_none"
     )]
     pub network_cost: Option<u128>,
-    /// What the wallet pays before the maker opens the swap, where the maker asks for it. The
-    /// accept of a quote with one is refused, `feeRequired`, until it is paid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_fee: Option<OpenFee>,
 }
 
-/// The fee a forward swap pays ahead: the gas the maker spends opening the swap and, if no
-/// deposit follows, cancelling it. It is the maker's from the moment it is paid, whatever
-/// becomes of the swap, and is never part of the deposit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenFee {
-    /// Zatoshis, in one shielded payment, mined before the quote expires.
     pub zat: u64,
-    /// The unified address it is paid to, this quote's alone.
     pub address: String,
 }
 
@@ -81,21 +63,13 @@ pub struct Acceptance {
     pub user_proof: ShareProof,
     #[serde(with = "bytes64")]
     pub viewing_keys: ViewingKeys,
-    /// Where the maker takes tokens, the one its accept spends asked back: an RFC 9578
-    /// `blinded_msg` (base64url, 256 bytes) under the maker's return key, for the maker's
-    /// challenge on the day of the accept. The maker signs it once the user pays in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_request: Option<String>,
 }
 
-/// The header every relayer request for a swap carries its `Accepted::ticket` in.
 pub const TICKET_HEADER: &str = "ZecSwap-Ticket";
-/// What the maker's info and the relayer's terms call the windows contract (`contractKind`).
 pub const WINDOWS_CONTRACT: &str = "windows";
 
-/// Whether what a service says of its contract fits a windows contract with `windows`, the
-/// minimum and late windows the contract itself reports. A service that says nothing of it fits:
-/// the wallet reads the contract either way.
 pub fn fits_windows(
     kind: Option<&str>,
     min_window: Option<u64>,
@@ -111,43 +85,25 @@ pub fn fits_windows(
 #[serde(rename_all = "camelCase")]
 pub struct Accepted {
     pub swap_id: B256,
-    /// The deadlines the swap opens with, which the maker picks: from `t0` the user may claim
-    /// without `ready`, from `t1` the maker may refund a `Ready` swap. They complete the terms
-    /// the wallet checks on-chain.
     pub t0: u64,
     pub t1: u64,
-    /// How long from `t1` the maker may refund a forward swap, in seconds: a claim it never
-    /// refunded opens again at `t1 + lateWindow`. Absent on a reverse escrow, and from a maker on
-    /// the lock contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub late_window: Option<u64>,
-    /// Sent as it is in the `ZecSwap-Ticket` header of every relayer request for this swap,
-    /// which then has an allowance at the gateway of its own: the swap id, a dot, and an
-    /// HMAC-SHA256 of the id's 32 bytes under a secret the maker shares with the gateway alone,
-    /// in hex.
     pub ticket: String,
 }
 
-/// `GET /v1/swaps/{id}`: a forward swap as the maker has it. Everything else about it is
-/// read from the chain.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub swap_id: B256,
-    /// The accept's token handed back, once the user has paid in: the RFC 9578 `blind_sig`
-    /// (base64url) of its `tokenRequest`. Only the blinding secret turns it into a token.
     pub token_return: Option<String>,
 }
 
-/// A swap's terms as `open` committed to them, field for field the contract's `Terms`. The
-/// contract stores only their hash, so every request that acts on a swap carries them, and
-/// the contract refuses terms that don't hash to it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Terms {
     pub maker: Address,
     pub token: Address,
-    /// Token base units, as a decimal string.
     #[serde(with = "decimal")]
     pub amount: u128,
     #[serde(with = "bytes64")]
@@ -157,7 +113,6 @@ pub struct Terms {
     pub user: Address,
     pub t0: u64,
     pub t1: u64,
-    /// Zero for a swap that pays `user`'s balance rather than a Railgun note.
     pub payout_note: B256,
 }
 
@@ -193,7 +148,6 @@ impl From<&Terms> for zecswap_core::Terms {
     }
 }
 
-/// 64-byte values as `0x` hex, parsed into their checked types.
 mod bytes64 {
     use alloy_primitives::FixedBytes;
     use serde::de::Error as _;
@@ -241,7 +195,6 @@ mod bytes64 {
     }
 }
 
-/// `u128` as a decimal string, which JSON numbers can't hold exactly.
 pub(crate) mod decimal {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -281,8 +234,6 @@ mod tests {
     use super::*;
     use crate::service::ErrorCode;
 
-    /// The names wallets' ports read. A maker that asks no fee says nothing of one, as makers
-    /// did before there was one, and a wallet reads such a quote as free of it.
     #[test]
     fn a_quote_names_its_open_fee_only_where_the_maker_asks_one() {
         let quote = Quote {

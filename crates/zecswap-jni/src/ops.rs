@@ -1,8 +1,3 @@
-//! What each binding computes, over plain bytes, so it runs and is tested without a JVM. Every
-//! call derives the swap's or the deposit address's keys from the seed again: nothing secret
-//! outlives it. Railgun notes pay the wallet of a seed of their own, which no swap key derives
-//! from.
-
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zecswap_core::{
     Domain, JointAccount, NetworkType, Payout, PublicShare, ReverseOpen, SecretShare, ShareProof,
@@ -10,9 +5,7 @@ use zecswap_core::{
 };
 use zecswap_railgun::{Keys as RailgunKeys, ShieldNote};
 
-/// The 64-byte BIP-39 seed of the wallet's mnemonic, the bytes the Zcash SDK derives from.
 pub const SEED_BYTES: usize = 64;
-/// Railgun's wallets open the first wallet of a seed, and swaps pay into it.
 const RAILGUN_WALLET: u32 = 0;
 
 pub type Result<T> = core::result::Result<T, String>;
@@ -32,7 +25,6 @@ pub enum ReverseAction {
     LockRefund,
 }
 
-/// Swap number `index` of the wallet whose seed is `seed`.
 pub struct Swap<'a> {
     seed: &'a [u8],
     network: NetworkType,
@@ -123,31 +115,22 @@ impl<'a> Swap<'a> {
         })
     }
 
-    /// `Z`, the public share a quote is accepted with.
     pub fn user_share(&self) -> Result<[u8; 64]> {
         Ok(self.keys()?.share.public().to_affine_bytes())
     }
 
-    /// The swap's `user` on the contract: a key of its own that signs for it and is never funded.
     pub fn auth_address(&self) -> Result<[u8; 20]> {
         Ok(self.keys()?.auth.address())
     }
 
-    /// `z`, which a claim reveals.
     pub fn claim_secret(&self) -> Result<[u8; 32]> {
         Ok(self.keys()?.share.to_be_bytes())
     }
 
-    /// The Railgun note the payout is shielded to, in the wallet of `railgun_seed`, as `npk ‖
-    /// encryptedBundle ‖ shieldKey ‖ commitment`: the quote names the commitment and the relayer
-    /// sends the rest.
     pub fn payout_note(&self, railgun_seed: &[u8]) -> Result<Vec<u8>> {
         Ok(note_bytes(&self.note(&self.keys()?, railgun_seed)?))
     }
 
-    /// Checks the maker's proof of `E`, then proves `Z` bound to both shares and the payout into
-    /// the wallet of `railgun_seed`. Returns `userShare ‖ userProof ‖ viewingKeys`, what the
-    /// quote's accept call takes.
     pub fn accept(
         &self,
         railgun_seed: &[u8],
@@ -172,8 +155,6 @@ impl<'a> Swap<'a> {
         Ok(bytes)
     }
 
-    /// The deposit account as `[unified address, UFVK]`, from the maker's share as the contract
-    /// records it, never as the quote API reports it.
     pub fn deposit_account(&self, maker_share: &[u8; 64]) -> Result<[String; 2]> {
         let joint = self.joint(&self.keys()?, maker_share)?;
         Ok([
@@ -182,7 +163,6 @@ impl<'a> Swap<'a> {
         ])
     }
 
-    /// `r ‖ s ‖ v` over the EIP-712 `LockClaim(id, deadline)`.
     pub fn sign_lock_claim(
         &self,
         domain: Domain,
@@ -195,7 +175,6 @@ impl<'a> Swap<'a> {
             .sign(&domain.lock_claim(swap_id, deadline)))
     }
 
-    /// `r ‖ s ‖ v` over the EIP-712 `Payout(id, relayer, fee)`.
     pub fn sign_payout(
         &self,
         domain: Domain,
@@ -209,8 +188,6 @@ impl<'a> Swap<'a> {
             .sign(&domain.payout(swap_id, relayer, fee)))
     }
 
-    /// Signs the refund sweep in `pczt` with `e + z`, once the contract has revealed the maker's
-    /// `e`. Requires the matching maker share and independently authorized sweep intent.
     pub fn sign_refund(
         &self,
         maker_share: &[u8; 64],
@@ -241,10 +218,6 @@ impl<'a> Swap<'a> {
     }
 }
 
-/// The note a shield of deposit address `index` of ZIP 32 account `account` pays, or a rescue of
-/// its vault when `rescue`, in the wallet of `railgun_seed`, laid out as a payout note is
-/// (`docs/deposits.md`). `number` is the authorization's `validBefore`, or the rescue's nonce on
-/// the contract: each signing has a note of its own, and the request kept for it builds it again.
 pub fn deposit_note(
     seed: &[u8],
     mainnet: bool,
@@ -265,9 +238,6 @@ pub fn deposit_note(
     Ok(note_bytes(&note))
 }
 
-/// Checks the fee a quote asks before its swap opens (`docs/open-fee.md`): no more than `max_zat`
-/// zatoshis, to a unified address of the network with an Orchard receiver alone. A wallet pays
-/// the fee only once this passes.
 pub fn check_open_fee(mainnet: bool, address: &str, zat: u64, max_zat: u64) -> Result<()> {
     if zat == 0 || zat > max_zat {
         return Err(format!(
@@ -279,7 +249,6 @@ pub fn check_open_fee(mainnet: bool, address: &str, zat: u64, max_zat: u64) -> R
         .map_err(|wrong| format!("the open fee's address {wrong}"))
 }
 
-/// The `0zk` address of the Railgun wallet the mnemonic of `seed` opens in Railgun's own wallets.
 pub fn railgun_address(seed: &[u8]) -> Result<String> {
     Ok(railgun(seed)?.address())
 }
@@ -292,8 +261,6 @@ fn network(mainnet: bool) -> NetworkType {
     }
 }
 
-/// `npk ‖ encryptedBundle ‖ shieldKey ‖ commitment`: the five words a contract takes a note as,
-/// then what commits to them.
 fn note_bytes(note: &ShieldNote) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(6 * 32);
     note.words()

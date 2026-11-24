@@ -2,22 +2,13 @@ package xyz.justzappit.atomicswap
 
 import java.math.BigInteger
 
-/**
- * The user's cryptography for swaps that sell shielded ZEC into their Railgun balance, over
- * libzecswap. Stateless: each call derives the swap's keys from [SwapKey] again, so nothing secret
- * stays here. Failures throw [AtomicSwapException].
- */
 object AtomicSwap {
-    /** `Z`, the public share a quote is accepted with (64 bytes, `x ‖ y`). */
     fun userShare(key: SwapKey): ByteArray = AtomicSwapNative.userShare(key.seed, key.mainnet, key.index)
 
-    /** The swap's `user` on the contract: its own key, which signs for it and is never funded. */
     fun authAddress(key: SwapKey): ByteArray = AtomicSwapNative.authAddress(key.seed, key.mainnet, key.index)
 
-    /** `z`, the secret a claim reveals. */
     fun claimSecret(key: SwapKey): ByteArray = AtomicSwapNative.claimSecret(key.seed, key.mainnet, key.index)
 
-    /** The note the payout is shielded to, in [railgun]'s wallet. */
     fun payoutNote(
         key: SwapKey,
         railgun: RailgunSeed,
@@ -26,11 +17,6 @@ object AtomicSwap {
         return PayoutNote(npk = words[0], encryptedBundle = words.subList(1, 4), shieldKey = words[4], commitment = words[5])
     }
 
-    /**
-     * The note a shield of deposit address [index] of ZIP 32 account [account] pays into [railgun]'s wallet, for an
-     * authorization valid before [validBefore] (Unix seconds): each signing's own, which the request kept for it builds
-     * again. Built from [seed] and opened with the wallet's own viewing key before it's given out.
-     */
     fun shieldNote(
         seed: ByteArray,
         mainnet: Boolean,
@@ -40,10 +26,6 @@ object AtomicSwap {
         railgun: RailgunSeed,
     ): DepositShieldNote = depositNote(seed, mainnet, account, index, railgun, rescue = false, number = validBefore)
 
-    /**
-     * The note a rescue of deposit address [index]'s vault, with the contract's [nonce] for it, shields to in
-     * [railgun]'s wallet.
-     */
     fun rescueNote(
         seed: ByteArray,
         mainnet: Boolean,
@@ -53,10 +35,6 @@ object AtomicSwap {
         railgun: RailgunSeed,
     ): DepositShieldNote = depositNote(seed, mainnet, account, index, railgun, rescue = true, number = nonce)
 
-    /**
-     * Checks the maker's proof of its share for this quote, then proves ours, bound to both shares
-     * and the payout into [railgun]'s wallet.
-     */
     fun accept(
         key: SwapKey,
         railgun: RailgunSeed,
@@ -84,18 +62,12 @@ object AtomicSwap {
         )
     }
 
-    /**
-     * Checks the [fee] a quote asks before its swap opens: at most [maxZat], to a unified address of the wallet's
-     * network with an Orchard receiver alone. Pay it only once this passes, and accept once it is mined
-     * (`docs/open-fee.md`).
-     */
     fun checkOpenFee(
         mainnet: Boolean,
         fee: OpenFee,
         maxZat: Long,
     ) = AtomicSwapNative.checkOpenFee(mainnet, fee.address, fee.zat, maxZat)
 
-    /** From the maker share as the contract records it, never as a quote reports it. */
     fun depositAccount(
         key: SwapKey,
         makerShare: ByteArray,
@@ -104,7 +76,6 @@ object AtomicSwap {
         return DepositAccount(address, ufvk)
     }
 
-    /** `r ‖ s ‖ v` over the EIP-712 `LockClaim(swapId, deadline)`, for a relayer to send. */
     fun signLockClaim(
         key: SwapKey,
         deployment: Deployment,
@@ -121,7 +92,6 @@ object AtomicSwap {
             deadline,
         )
 
-    /** `r ‖ s ‖ v` over the EIP-712 `Payout(swapId, relayer, fee)`: what the relayer may keep. */
     fun signPayout(
         key: SwapKey,
         deployment: Deployment,
@@ -140,10 +110,6 @@ object AtomicSwap {
             fee.toString(),
         )
 
-    /**
-     * Signs the PCZT that sweeps a refunded deposit home, with the maker's secret the contract
-     * revealed. Refuses a secret that doesn't match the share, or a PCZT that spends anything else.
-     */
     fun signRefund(
         key: SwapKey,
         makerShare: ByteArray,
@@ -155,7 +121,6 @@ object AtomicSwap {
         intent.recipient, intent.minimumReceivedZat, intent.maximumFeeZat,
     )
 
-    /** The `0zk` address of [railgun]'s wallet, the one Railgun's own apps open from its words. */
     fun railgunAddress(railgun: RailgunSeed): String = AtomicSwapNative.railgunAddress(railgun.bytes)
 
     private fun depositNote(
@@ -182,7 +147,6 @@ object AtomicSwap {
     private fun ByteArray.asWords() = (indices step WORD_BYTES).map { copyOfRange(it, it + WORD_BYTES) }
 }
 
-/** A full sweep to one wallet receiver; other recipients, change and unsupported pools are rejected. */
 data class SweepIntent(
     val recipient: String,
     val minimumReceivedZat: Long,
@@ -193,25 +157,21 @@ data class SweepIntent(
     }
 }
 
-/** Swap [index] of the wallet whose 64-byte BIP-39 seed is [seed]. */
 class SwapKey(
     val seed: ByteArray,
     val mainnet: Boolean,
     val index: Int,
 )
 
-/** The 64-byte BIP-39 seed of the Railgun wallet's mnemonic: the wallet payouts and refunds go to. */
 class RailgunSeed(
     val bytes: ByteArray,
 )
 
-/** A ZecSwap contract: the EIP-712 domain the swap's signatures are bound to. */
 class Deployment(
     val chainId: Long,
     val contract: ByteArray,
 )
 
-/** The Railgun note a payout is shielded to. The quote names its [commitment]; the relayer sends the rest. */
 class PayoutNote(
     val npk: ByteArray,
     val encryptedBundle: List<ByteArray>,
@@ -219,10 +179,6 @@ class PayoutNote(
     val commitment: ByteArray,
 )
 
-/**
- * The Railgun note a deposit or a rescue shields to, as zecSwap's Deposits contract takes it: [npk], the three words of
- * [encryptedBundle] and [shieldKey], and their [commitment], `keccak256(abi.encode(npk, ciphertext))`.
- */
 class DepositShieldNote(
     val npk: ByteArray,
     val encryptedBundle: List<ByteArray>,
@@ -230,20 +186,17 @@ class DepositShieldNote(
     val commitment: ByteArray,
 )
 
-/** What accepting a quote sends the maker. */
 class Acceptance(
     val userShare: ByteArray,
     val userProof: ByteArray,
     val viewingKeys: ByteArray,
 )
 
-/** A quote's `openFee`: what the wallet pays the maker, in one shielded payment, before the swap opens. */
 data class OpenFee(
     val zat: Long,
     val address: String,
 )
 
-/** Where the ZEC goes, and the viewing key that watches it for a refund. */
 data class DepositAccount(
     val address: String,
     val ufvk: String,

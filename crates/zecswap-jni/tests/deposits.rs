@@ -1,6 +1,3 @@
-//! Deposit notes as `docs/deposits.md` has a wallet build them, through the bindings: the known
-//! answers the Android port checks (`android/src/test`).
-
 use zecswap::ops::deposit_note;
 use zecswap_core::{NetworkType, derive_deposit_keys};
 use zecswap_railgun::{Keys as RailgunKeys, ShieldCiphertext, ShieldNote};
@@ -13,7 +10,6 @@ fn hex(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-/// The note in the first five words of a binding's answer.
 fn note(bytes: &[u8]) -> ShieldNote {
     let words: Vec<[u8; 32]> = bytes
         .chunks(32)
@@ -65,7 +61,6 @@ fn a_shield_note_is_the_known_answer() {
     );
 }
 
-/// The first rescue of address 0's vault, nonce 0.
 #[test]
 fn a_rescue_note_is_the_known_answer() {
     let words: Vec<_> = rescue(0, 0).chunks(32).map(hex).collect();

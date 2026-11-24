@@ -9,7 +9,6 @@ use zecswap_core::{NetworkType, derive_maker_share, derive_user_keys};
 
 type Mutation = Box<dyn Fn(&mut IRelayAdapt::relayCall)>;
 
-/// The chain the SDK vector's proofs are bound to.
 const SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 
 fn fixture() -> (FundingPolicy, Domain, B256, IRelayAdapt::relayCall) {
@@ -133,7 +132,6 @@ fn calldata_written_to_amplify_is_refused_before_decoding() {
     let (p, d, id, _) = fixture();
     let transactions = amplifying(MAX_TRANSACTIONS, 60 * 1024);
     let mut data = IRelayAdapt::relayCall::SELECTOR.to_vec();
-    // The heads; then an action with no calls: random, requireSuccess, minGasLimit, calls.
     for word in [64, 64 + transactions.len()] {
         data.extend(U256::from(word).to_be_bytes::<32>());
     }
@@ -360,7 +358,6 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         nonce
     );
     assert!(chain.swap(id, &terms.terms()).await.unwrap().is_none());
-    // A call that fails after the mocked unshield still rolls everything back in simulation.
     let mut short = relay.clone();
     short._transactions[0].unshieldPreimage.value = alloy::primitives::aliases::U120::from(1);
     let short = validate(&p, d, id, &short).unwrap();
@@ -437,7 +434,6 @@ async fn sponsors_atomic_escrow_and_reconciles_retries_on_anvil() {
         chain.sponsor_reverse_funding(&p, &request).await.unwrap(),
         None
     );
-    // A restarted service reconciles from escrow rather than paying to submit again.
     let restarted = Settlement::connect(
         &url,
         contract,

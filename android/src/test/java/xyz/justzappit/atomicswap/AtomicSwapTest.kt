@@ -10,10 +10,6 @@ import org.junit.Test
 import java.io.File
 import java.math.BigInteger
 
-/**
- * Through the JNI layer, the known answers `cargo run -p zecswap-client --example vectors` prints,
- * on a host build of libzecswap (`cargo build -p zecswap-jni`). Skipped without one.
- */
 class AtomicSwapTest {
     private val key = SwapKey(ByteArray(64) { 7 }, mainnet = false, index = 0)
     private val railgun = RailgunSeed(ByteArray(64) { 8 })
@@ -147,12 +143,10 @@ class AtomicSwapTest {
         )
         assertEquals("0xdfd7ff431856fb4cfb9de4047e42f9481270266327a4c11361abe5f8b648a6dd", note.shieldKey.hex())
         assertEquals("0x7544c517c31d651b094aa7d6eae02d4265f711a56cc4e0e11533cac7539bfa14", note.commitment.hex())
-        // The same inputs build the same note; the address's rescue with that number is another one.
         val again = AtomicSwap.shieldNote(key.seed, false, 0, 0, 1_790_000_000, railgun)
         assertEquals(note.commitment.hex(), again.commitment.hex())
         val sameNumber = AtomicSwap.rescueNote(key.seed, false, 0, 0, 1_790_000_000, railgun)
         assertNotEquals(note.commitment.hex(), sameNumber.commitment.hex())
-        // The first rescue of address 0's vault, nonce 0.
         val rescue = AtomicSwap.rescueNote(key.seed, mainnet = false, account = 0, index = 0, nonce = 0, railgun)
         assertEquals("0x2cb930fd875166de6013f1de6c85b7e3c8f92e056e397580a3353ca93c61de45", rescue.npk.hex())
         assertEquals(

@@ -1,43 +1,22 @@
-//! What a party may reveal now, judged on one read of the chain: a swap's stage and deadlines as of
-//! the newest block, that block's time and number, and the wall clock. A window opens by the
-//! block's time; how much of it is left goes by the later of the block's time and the wall clock,
-//! as either can only make a party act earlier. The third audit's port spec answers each case, and
-//! `tests/windows_spec.rs` replays its vectors.
-
 use super::{Head, Reveal, Stage, Window, Windows};
 
-/// Blocks a ready must have above it before a forward claim is revealed on it ahead of `t0`: a
-/// claim sent on a ready a reorganisation drops lands reverted, its share public, the swap the
-/// maker's to cancel.
 pub const READY_DEPTH: u64 = 2;
-/// Blocks a reverse escrow's ready must have above it before its maker's claim is revealed on it:
-/// its user can't sign the ready again, and a claim on one a reorganisation drops lands reverted,
-/// the maker's share public, the escrow the user's to refund and the ZEC theirs to sweep.
 pub const REVERSE_READY_DEPTH: u64 = 4;
 
-/// Why a reveal isn't sent now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// Its window is shut: the swap is the other side's now, or no one's.
     Shut,
-    /// From `t1` a forward swap is its maker's to refund; its claim reopens at this time.
     MakersUntil(u64),
-    /// Its window ends within the margin: sent now, it might land after and revert.
     TooSoon,
-    /// A ready of ours may land first, and would revert it with the share public.
     ReadyMayLand,
 }
 
-/// When a reveal may go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Go {
     Now,
-    /// Once the swap, read as of this block, is ready there: deep enough before `t0` for a forward
-    /// claim, and for a reverse one.
     OnceReadyAt(u64),
 }
 
-/// A forward claim, the user's or a relayer's for it, with `margin` left in its window.
 pub fn forward_claim(
     windows: Windows,
     stage: Stage,
@@ -66,7 +45,6 @@ pub fn forward_claim(
     })
 }
 
-/// A reverse escrow's claim, its maker's, with `margin` left in its window.
 pub fn reverse_claim(
     windows: Windows,
     stage: Stage,
@@ -87,9 +65,6 @@ pub fn reverse_claim(
     ))
 }
 
-/// A reverse escrow's refund, its user's or a relayer's for it: `ready_signed_until` is the
-/// latest deadline of a ready its user signed, and `ready_may_land` whether one the sender sent may
-/// still land.
 pub fn reverse_refund(
     windows: Windows,
     stage: Stage,
@@ -110,8 +85,6 @@ pub fn reverse_refund(
     Ok(())
 }
 
-/// A reverse escrow's ready, signed to be good for `ttl` seconds: only on an escrow not yet ready,
-/// and with time to land before `t0`, from which none is taken.
 pub fn reverse_ready(stage: Stage, t0: u64, head: &Head, ttl: u64) -> Result<(), Refusal> {
     if stage != Stage::Open {
         return Err(Refusal::Shut);

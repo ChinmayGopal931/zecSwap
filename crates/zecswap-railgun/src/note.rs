@@ -10,24 +10,15 @@ use zeroize::Zeroizing;
 
 use crate::keys::{Receiver, ed25519_public_key, note_hash, note_public_key, shared_key};
 
-/// Railgun encrypts notes with AES-256-GCM under a 16-byte IV.
 type Gcm = AesGcm<Aes256, U16>;
 type Ctr = ctr::Ctr128BE<Aes256>;
 
-/// The part of a Railgun `ShieldRequest` that decides who can spend it: the note public key,
-/// and the ciphertext its receiver finds it by. The token and value go in when it is shielded,
-/// since the ciphertext binds neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShieldNote {
     pub npk: [u8; 32],
     pub ciphertext: ShieldCiphertext,
 }
 
-/// Railgun's `ShieldCiphertext`.
-///
-/// The bundle holds the GCM IV and tag, then `random` encrypted to the receiver's viewing key
-/// with the CTR IV, then the receiver's viewing key encrypted to the shielder. `shield_key` is
-/// the ed25519 public key the receiver's side of the key agreement uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShieldCiphertext {
     pub encrypted_bundle: [[u8; 32]; 3],
@@ -35,9 +26,6 @@ pub struct ShieldCiphertext {
 }
 
 impl ShieldNote {
-    /// A note paying `receiver`, every secret of it drawn from `entropy`: the same entropy
-    /// always builds the same note. Use fresh entropy for each note, since a reused shield key
-    /// links the shields that share it.
     pub(crate) fn new(receiver: &Receiver, entropy: &[u8; 32]) -> Self {
         let random: [u8; 16] = *expand(entropy, b"random").first_chunk().expect("64 bytes");
         let mut shield_private_key = Zeroizing::new([0u8; 32]);
@@ -73,8 +61,6 @@ impl ShieldNote {
         }
     }
 
-    /// `keccak256(abi.encode(npk, encryptedBundle, shieldKey))`: what a swap commits its payout
-    /// to when it opens.
     pub fn commitment(&self) -> [u8; 32] {
         let mut hasher = Keccak256::new();
         for word in self.words() {
@@ -83,14 +69,11 @@ impl ShieldNote {
         hasher.finalize().into()
     }
 
-    /// The note as `abi.encode(npk, ciphertext)` writes it: its note public key, then the
-    /// ciphertext's bundle and shield key.
     pub fn words(&self) -> [[u8; 32]; 5] {
         let [first, second, third] = self.ciphertext.encrypted_bundle;
         [self.npk, first, second, third, self.ciphertext.shield_key]
     }
 
-    /// The note's `random`, if the holder of `viewing_key` can decrypt it.
     pub(crate) fn decrypt_random(&self, viewing_key: &[u8; 32]) -> Option<[u8; 16]> {
         let key = Zeroizing::new(shared_key(viewing_key, &self.ciphertext.shield_key)?);
         let [iv_and_tag, random_and_ctr_iv, _] = &self.ciphertext.encrypted_bundle;
@@ -107,29 +90,20 @@ impl ShieldNote {
     }
 }
 
-/// One output of a Railgun transaction as its `CommitmentCiphertext` carries it (V2): the note
-/// encrypted to its receiver under a key agreed with the sender's blinded viewing key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputCiphertext {
-    /// The GCM IV and tag, then the note: its encoded master public key, its token, and its
-    /// random and value.
     pub ciphertext: [[u8; 32]; 4],
     pub blinded_sender_viewing_key: [u8; 32],
-    /// The encrypted memo, which continues the GCM stream and is covered by its tag.
     pub memo: Vec<u8>,
 }
 
-/// What a transaction output pays the wallet that opens it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Received {
-    /// The token's hash: for an ERC-20, its address left-padded to 32 bytes.
     pub token: [u8; 32],
     pub value: u128,
 }
 
 impl OutputCiphertext {
-    /// The output, if the holder of `viewing_key` can decrypt it and it is the note
-    /// `commitment` paying `master_public_key`, so that wallet can find and spend it.
     pub(crate) fn open(
         &self,
         viewing_key: &[u8; 32],

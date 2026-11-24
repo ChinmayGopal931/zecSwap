@@ -1,6 +1,3 @@
-//! Deposits from this seed's deposit addresses into its Railgun wallet, resumable: each signed
-//! request is saved before it is posted, and posted again after an interruption.
-
 use alloy_primitives::Address;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -22,7 +19,6 @@ pub(crate) struct DepositArgs {
     pub(crate) max_fee_bps: u32,
 }
 
-/// A shield signed and saved, not yet known to have landed.
 #[derive(Serialize, Deserialize)]
 struct Pending {
     index: u32,

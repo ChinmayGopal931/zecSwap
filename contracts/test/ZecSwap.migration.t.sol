@@ -6,18 +6,11 @@ import {ZecSwap} from "../src/ZecSwap.sol";
 import {ZecSwapLocks} from "./deployed/ZecSwapLocks.sol";
 import {WindowsBase} from "./utils/WindowsBase.sol";
 
-/// Running the lock contract (as deployed on mainnet) and the windows contract side by side: what
-/// a client of one does against the other. A windows-rules client against the lock contract
-/// reveals without a lock and loses both legs; a lock-rules client against the windows contract
-/// fails before it reveals, by accident of the ABI. The swap record itself changes shape: six
-/// words to four. Every client must therefore check which contract it talks to (audit 3, A-2).
 contract ZecSwapMigrationTest is WindowsBase {
     ZecSwap internal windows;
     ZecSwapLocks internal locks;
     uint256 internal constant START = 1_792_000_000;
 
-    /// A reveal that is broadcast puts its share on this ledger, mined or reverted: the calldata
-    /// is public either way.
     mapping(uint256 share => bool) internal publicShare;
 
     function setUp() public override {
@@ -28,9 +21,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         vm.warp(START);
     }
 
-    /// A client built for windows ("from t0 I may claim an unready swap") pointed at the deployed
-    /// contract: its claim reverts LockNotHeld with z public, and the lock contract's maker locks
-    /// the refund (an Open swap is refundable at any time there), refunds, and sweeps with e + z.
     function test_windowsClientOnTheLockContractLosesBothLegs() public {
         (bytes32 id, ZecSwapLocks.Terms memory t, uint256 e, uint256 z) = lockSwap(41, 42);
         vm.warp(t.t0 + 1);
@@ -46,9 +36,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         assertTrue(publicShare[z] && publicShare[e], "and holds both halves: it sweeps the user's ZEC");
     }
 
-    /// A client built for locks pointed at the windows contract: `lockClaim` is not a function
-    /// there, so the call reverts and the client never reaches `claim`. Safe, but only because the
-    /// lock flow puts the lock first: its "claims never expire" rule would leak after t1.
     function test_lockClientOnTheWindowsContractFailsBeforeRevealing() public {
         Case memory c =
             openForward(windows, maker, 51, 52, uint64(START + 90 minutes), uint64(START + 150 minutes));
@@ -80,7 +67,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         assertTrue(bothPublic(c));
     }
 
-    /// The record's shape: a reader must know which contract it reads.
     function test_getSwapReturnsFourWordsOnWindowsAndSixOnLocks() public {
         Case memory c =
             openForward(windows, maker, 61, 62, uint64(START + 90 minutes), uint64(START + 150 minutes));
@@ -91,7 +77,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         (ok, ret) = address(locks).staticcall(abi.encodeCall(ZecSwapLocks.getSwap, (id)));
         assertTrue(ok);
         assertEq(ret.length, 6 * 32);
-        // Solidity's own decoder takes six words as four, reading the claim lock as the secret.
         ZecSwap.Swap memory misread = abi.decode(ret, (ZecSwap.Swap));
         assertEq(uint8(misread.stage), OPEN);
         assertEq(misread.secret, 0);
@@ -101,8 +86,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         (ok, ret) = address(locks).staticcall(abi.encodeCall(ZecSwapLocks.getSwap, (id)));
         misread = abi.decode(ret, (ZecSwap.Swap));
         assertEq(misread.secret, uint256(t.t0 + 1 + 30 minutes), "the claim lock lands in the secret field");
-        // The windows contract has no LOCK_DURATION; the lock contract has no MIN_WINDOW. Either
-        // call tells a client which contract it is talking to.
         (ok,) = address(windows).staticcall(abi.encodeWithSignature("LOCK_DURATION()"));
         assertFalse(ok);
         (ok,) = address(locks).staticcall(abi.encodeWithSignature("MIN_WINDOW()"));
@@ -139,7 +122,6 @@ contract ZecSwapMigrationTest is WindowsBase {
         id = locks.open(address(usdc), AMOUNT, E, Z, user, t.t0, t.t1, 0);
     }
 
-    /// Lands `data` as a transaction would, and records any share it carried.
     function land(address to, bytes memory data) internal returns (bool ok, bytes4 sel) {
         bytes memory ret;
         (ok, ret) = to.call(data);
@@ -152,14 +134,12 @@ contract ZecSwapMigrationTest is WindowsBase {
         ) {
             uint256 share;
             assembly {
-                // id, 11 words of Terms, then the share
                 share := mload(add(data, add(32, add(4, mul(12, 32)))))
             }
             publicShare[share] = true;
         }
     }
 
-    /// Whoever knows both halves can spend the joint Orchard address.
     function bothPublic(Case memory c) internal view returns (bool) {
         return publicShare[c.claimShare] && publicShare[c.refundShare]
             && Pallas.isSpendAuthMul(c.claimShare, c.terms.userKey[0], c.terms.userKey[1])

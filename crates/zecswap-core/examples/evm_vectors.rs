@@ -1,23 +1,3 @@
-//! Vectors for the contract's differential tests.
-//!
-//!   evm_vectors [count]   JSON: edge-case and seeded-random scalars with their `[k]·SpendAuthG`
-//!   evm_vectors mul <k>   ABI-encoded `(x, y)` for the 32-byte hex scalar `k` (forge ffi)
-//!   evm_vectors terms <maker> <token> <amount> <makerKey> <userKey> <user> <t0> <t1> <payoutNote>
-//!                         `Terms::hash` of a swap's terms: hex addresses, 64-byte keys and note,
-//!                         decimal numbers (forge ffi)
-//!   evm_vectors deposit-nonce <chainId> <deposits> <npk> <bundle0> <bundle1> <bundle2>
-//!                         <shieldKey> <fee> <relayer>
-//!                         `DepositsDomain::deposit_nonce` (forge ffi)
-//!   evm_vectors receive-digest <name> <version> <chainId> <token> <from> <to> <value>
-//!                         <validAfter> <validBefore> <nonce>
-//!                         `TokenDomain::receive_with_authorization` (forge ffi)
-//!   evm_vectors deposit-rescue <chainId> <deposits> <from> <note> <relayer> <fee> <nonce>
-//!                         <deadline>
-//!                         `DepositsDomain::rescue` (forge ffi)
-//!   evm_vectors digest <kind> <chainId> <contract> <fields...>
-//!                         `Domain`'s digest of `ready`, `payout`, `refund-payout`, `rescue` or
-//!                         `open-reverse` (forge ffi)
-
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use zecswap_core::{
@@ -250,7 +230,6 @@ fn share(k: &str) -> SecretShare {
     SecretShare::from_be_bytes(&padded).expect("scalar in (0, q)")
 }
 
-/// Exactly `N` bytes of `0x` hex.
 fn fixed<const N: usize>(text: &str) -> [u8; N] {
     unhex(text.trim_start_matches("0x"))
         .try_into()

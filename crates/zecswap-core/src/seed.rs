@@ -11,22 +11,13 @@ const ROOT_PERSONALIZATION: &[u8; 16] = b"ZecSwap_UserRoot";
 const EXPAND_PERSONALIZATION: &[u8; 16] = b"ZecSwap_UserKeys";
 const MAKER_PERSONALIZATION: &[u8; 16] = b"ZecSwap_MakerKey";
 
-/// Everything the user contributes to swap number `index`.
 pub struct UserSwapKeys {
     pub share: SecretShare,
     pub viewing: ViewingKeys,
-    /// The swap's `user` when it pays into Railgun.
     pub auth: AuthKey,
-    /// What the Railgun note the swap pays into is built from (`zecswap_railgun::Keys::note`),
-    /// so the note can be rebuilt from the seed to send the payout after an interruption.
     pub note_entropy: Zeroizing<[u8; 32]>,
 }
 
-/// Derives the user's keys for one swap from the wallet seed, so an interrupted swap can
-/// be resumed from the seed alone.
-///
-/// An index is spent once its public share has been sent to a maker: reusing it hands
-/// the next maker a share whose secret the previous swap may already have revealed.
 pub fn derive_user_keys(
     seed: &[u8],
     network: NetworkType,
@@ -67,8 +58,6 @@ pub fn derive_user_keys(
     })
 }
 
-/// Derives the maker's share for quote `nonce`, so every in-flight `e` can be rebuilt from
-/// the root secret and the quote counter rather than stored.
 pub fn derive_maker_share(root: &[u8; 32], nonce: u64) -> Result<SecretShare, Error> {
     let hash = Params::new()
         .hash_length(64)

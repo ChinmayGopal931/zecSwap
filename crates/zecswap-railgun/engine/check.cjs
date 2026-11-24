@@ -1,7 +1,3 @@
-// Confirms that Railgun's engine finds notes built by zecswap-railgun:
-//   cargo run -p zecswap-railgun --example note | node check.cjs
-// Each input line is a JSON note from the example: the wallet it pays (seed, index, address) and
-// the note. Exits non-zero on the first note the engine cannot open.
 const readline = require('readline');
 const { wallet, decryptRandom, ShieldNote, word } = require('./engine.cjs');
 

@@ -23,6 +23,5 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 lto = true
 codegen-units = 1
 
-# Halo 2 proving in the end-to-end tests is unusably slow unoptimised.
 [profile.test.package."*"]
 opt-level = 3

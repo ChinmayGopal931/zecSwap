@@ -29,10 +29,8 @@ const TIP: u32 = 4_395_130;
 const DEPOSIT: u64 = 1_000_000;
 const FEE: u64 = 40_000;
 
-/// One prover for every test, so the circuit's keys are built once.
 static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
 
-/// Mainnet's NU7 activation height, as the crates schedule it.
 fn nu7() -> u32 {
     Network::MainNetwork
         .activation_height(NetworkUpgrade::Nu7)
@@ -76,7 +74,6 @@ fn previous_swap(scanned: bool) -> (TempDir, Wallet) {
     let mut wallet = Wallet::open(&path, Network::TestNetwork).unwrap();
     let old = import_at(&mut wallet, &random_joint(), 4_395_100);
     if scanned {
-        // Synthetic scan metadata only: no incident database or real keys are needed.
         let conn = rusqlite::Connection::open(&path).unwrap();
         for height in 4_395_100..=4_395_105 {
             conn.execute(
@@ -95,7 +92,6 @@ fn previous_swap(scanned: bool) -> (TempDir, Wallet) {
     }
     wallet.forget(old).unwrap();
     assert!(wallet.db.get_account_ids().unwrap().is_empty());
-    // Sync downloads subtree roots before updating the tip. One completed shard is enough.
     wallet
         .db
         .put_orchard_subtree_roots(
@@ -119,7 +115,6 @@ fn future_birthday_panics_only_with_retained_blocks_at_unchanged_tip() {
     ] {
         let (dir, mut wallet) = previous_swap(scanned);
         import_at(&mut wallet, &random_joint(), birthday);
-        // `sync` skips every tip that panics here.
         assert!(!panics || wallet.born_above(BlockHeight::from_u32(tip)).unwrap());
         if panics {
             let conn = rusqlite::Connection::open(dir.path().join("wallet.sqlite")).unwrap();
@@ -213,7 +208,6 @@ fn one_summary_reads_every_accounts_funds() {
 
 #[test]
 fn a_birthday_above_the_tip_imports_and_syncs_from_the_next_block() {
-    // Scanned to 4,395,105, so the import needs no rewind of the note trees.
     let (_dir, mut wallet) = previous_swap(true);
     import_at(&mut wallet, &random_joint(), 4_395_106);
     assert!(wallet.born_above(BlockHeight::from_u32(4_395_105)).unwrap());
@@ -255,7 +249,6 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
             [TIP, height + 1],
         )
         .unwrap();
-        // Advertised tip and downloaded blocks alone must not count as scanned depth.
         conn.execute(
             "INSERT INTO scan_queue VALUES (?1, ?2, 20)",
             [height + 1, TIP + 21],
@@ -284,9 +277,6 @@ fn sweep_finality_uses_scanned_confirmations_and_rewinds_after_a_reorg() {
     assert!(!wallet.is_confirmed(TxId::from_bytes([2; 32])).unwrap());
 }
 
-/// `count` chained blocks from `tip` as lightwalletd serves them, each `(block, to, zatoshis)` of
-/// `outputs` an Ironwood payment in the block at that index, and the chain's state after the
-/// block at each index.
 fn blocks_paying(
     tip: u32,
     count: u8,
@@ -360,7 +350,6 @@ fn blocks_paying(
     (blocks, state)
 }
 
-/// A seed's first account as `create_account` makes it, born at `birthday`.
 fn derive_at(
     wallet: &mut Wallet,
     seed: &[u8],
@@ -377,7 +366,6 @@ fn derive_at(
         .unwrap()
 }
 
-/// The Orchard receiver of a unified address.
 fn orchard_receiver(wallet: &Wallet, address: &str) -> orchard::Address {
     match Address::decode(&wallet.network, address) {
         Some(Address::Unified(address)) => *address.orchard().unwrap(),
@@ -385,8 +373,6 @@ fn orchard_receiver(wallet: &Wallet, address: &str) -> orchard::Address {
     }
 }
 
-/// A wallet on `network` with `count` blocks cached from `tip` that pay its accounts, the first
-/// two scanned.
 struct Funded {
     _dir: TempDir,
     wallet: Wallet,
@@ -396,7 +382,6 @@ struct Funded {
 }
 
 impl Funded {
-    /// Funds the account `add` makes with `DEPOSIT` at `tip`, at the address it gives.
     async fn new(
         network: Network,
         tip: u32,
@@ -412,8 +397,6 @@ impl Funded {
         funded
     }
 
-    /// Makes the accounts `add` does, the one it gives the wallet's own, and the blocks that
-    /// pay what it lists (`blocks_paying`).
     async fn paying(
         network: Network,
         tip: u32,
@@ -438,7 +421,6 @@ impl Funded {
         funded
     }
 
-    /// A funded joint account, its combined key, and the joint.
     async fn joint(network: Network, tip: u32, count: u8) -> (Self, SpendKey, JointAccount) {
         let (e, z) = (
             SecretShare::random(UnwrapErr(SysRng)),
@@ -457,7 +439,6 @@ impl Funded {
         (funded, joint.spend_key(&e, &z).unwrap(), joint)
     }
 
-    /// A funded seed-derived account, and its key.
     async fn derived(network: Network, tip: u32, count: u8) -> (Self, UnifiedSpendingKey) {
         let mut key = None;
         let funded = Self::new(network, tip, count, |wallet| {
@@ -471,7 +452,6 @@ impl Funded {
         (funded, key.unwrap())
     }
 
-    /// Moves the chain tip to `chain_tip` and scans `count` cached blocks from the one at `from`.
     fn scan(&mut self, chain_tip: u32, from: u8, count: usize) {
         self.wallet
             .db
@@ -496,7 +476,6 @@ impl Funded {
         self.wallet.funds(self.account).unwrap().spendable
     }
 
-    /// What `txid`, as stored, pays `home`.
     fn paid(&self, txid: TxId, home: &JointAccount) -> u64 {
         let tx = self.wallet.db.get_transaction(txid).unwrap().unwrap();
         [tx.orchard_bundle(), tx.ironwood_bundle()]
@@ -538,9 +517,6 @@ async fn the_other_side_cannot_read_where_a_sweep_went() {
     }
 }
 
-/// A sweep built under NU6.3's rules can't be mined once NU7 activates. Left to the builder's
-/// expiry, 40 blocks on, it would hold the deposit and read as pending through NU7's first 40
-/// blocks.
 #[tokio::test]
 async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
     let nu7 = nu7();
@@ -561,7 +537,6 @@ async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
     assert_eq!(tx.expiry_height(), BlockHeight::from_u32(nu7 - 1));
     assert_eq!(funded.spendable(), 0);
 
-    // The chain reaches NU7 without the sweep.
     funded.scan(nu7, 2, 2);
     assert!(!funded.wallet.is_mined(before).unwrap());
     assert!(funded.wallet.is_expired(before).unwrap());
@@ -573,9 +548,6 @@ async fn a_sweep_unmined_at_nu7_expires_with_it_and_is_built_again_under_nu7() {
     assert_eq!(tx.expiry_height(), BlockHeight::from_u32(nu7 + 1 + 120));
 }
 
-/// A payment proved ahead holds its note from every other payment until it is sent or given
-/// up; its holder, having lost it, proves it again from the note it holds; one held too long is
-/// released, never sent; and one that fails to sign gives its note back.
 #[tokio::test]
 async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     let (mut funded, usk) = Funded::derived(Network::TestNetwork, TIP, 5).await;
@@ -601,7 +573,6 @@ async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     funded.wallet.release(held).unwrap();
     assert_eq!(funded.spendable(), DEPOSIT);
 
-    // Proved for the block after the tip, and held two more.
     let held = prove(&mut funded, 1).unwrap();
     funded.scan(TIP + 3, 2, 2);
     assert!(funded.wallet.holds(&held).unwrap());
@@ -623,8 +594,6 @@ async fn a_payment_proved_ahead_holds_its_note_until_sent_or_released() {
     assert_eq!(funded.paid(txid, &home), DEPOSIT / 2);
 }
 
-/// At the indices the wallet picks for its own fresh addresses and at ones named to it, far
-/// ones included, and for no other key.
 #[test]
 fn an_address_derived_from_the_key_alone_is_the_wallets_own_for_that_index() {
     let dir = tempfile::tempdir().unwrap();
@@ -658,10 +627,6 @@ fn an_address_derived_from_the_key_alone_is_the_wallets_own_for_that_index() {
     }
 }
 
-/// A payment to an address derived from the key alone, which the wallet never gave out, is
-/// reported under that address's index and no other, for its account alone, and only while its
-/// transaction is mined: a reorganisation that drops its block leaves the note in the wallet
-/// with nothing reported, until it is mined again. Spending the note takes nothing back.
 #[tokio::test]
 async fn a_payment_to_a_derived_address_is_reported_under_its_index_while_mined() {
     const INDEX: u64 = 4_207;
@@ -692,7 +657,6 @@ async fn a_payment_to_a_derived_address_is_reported_under_its_index_while_mined(
     assert_eq!(received(&funded, inventory, &[INDEX, 0]), [0, DEPOSIT]);
     assert_eq!(received(&funded, fees, &[]), [0; 0]);
 
-    // The fee's block, the second, is reorganised away.
     funded
         .wallet
         .db
@@ -726,16 +690,12 @@ async fn a_payment_to_a_derived_address_is_reported_under_its_index_while_mined(
     assert_eq!(received(&funded, fees, &[INDEX]), [FEE]);
 }
 
-/// Each seed's account is found by its key in a wallet that holds both, where the first derived
-/// account found used to be taken for the inventory, whichever seed's it was; a seed that is not
-/// the inventory's is still refused, and makes no account.
 #[tokio::test]
 async fn the_inventory_account_is_found_by_its_seed_among_other_seeds_accounts() {
     let dir = tempfile::tempdir().unwrap();
     let mut wallet = Wallet::open(dir.path().join("wallet.sqlite"), Network::TestNetwork).unwrap();
     let (fees, _) = derive_at(&mut wallet, &[8; 32], "fees", TIP);
     let (inventory, key) = derive_at(&mut wallet, &[7; 32], INVENTORY, TIP);
-    // Never dialled: an account the wallet has is found without the chain.
     let mut client = lightwalletd::connect_lazy("http://127.0.0.1:9").unwrap();
 
     let (found, found_key) = wallet
@@ -763,8 +723,6 @@ async fn the_inventory_account_is_found_by_its_seed_among_other_seeds_accounts()
     assert_eq!(wallet.accounts().unwrap().len(), 2);
 }
 
-/// Only an expiry that would outlive a scheduled upgrade stops before it, and nothing stops one
-/// built at the upgrade's own height.
 #[test]
 fn an_expiry_stops_before_an_upgrade_only_when_it_would_outlive_it() {
     let nu7 = BlockHeight::from_u32(nu7());
@@ -774,10 +732,6 @@ fn an_expiry_stops_before_an_upgrade_only_when_it_would_outlive_it() {
     assert_eq!(expiry_before_upgrade(&mainnet, nu7), None);
 }
 
-/// Whoever pays a joint account chooses how many notes it is paid in, and a sweep spends them
-/// all. One of 64 pays the most a sweep may; one more and the sweep is refused before anything
-/// is proved, where it once cost a proof at every try and was refused by its own signer after.
-/// What a sweep would pay is there to ask first, with nothing proved either.
 #[tokio::test]
 async fn a_joint_account_paid_in_too_many_notes_is_refused_its_sweep_before_any_proof() {
     let (e, z) = (
@@ -818,6 +772,5 @@ async fn a_joint_account_paid_in_too_many_notes_is_refused_its_sweep_before_any_
         ),
         "{refused:?}"
     );
-    // Refused, it holds nothing: the notes are there for a sweep that fits.
     assert_eq!(over.spendable(), 650_000);
 }

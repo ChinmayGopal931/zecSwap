@@ -1,9 +1,3 @@
-//! JNI bindings for `xyz.justzappit.atomicswap.AtomicSwapNative`, in the `android` module. Each
-//! takes the wallet's 64-byte BIP-39 seed, the network and the swap's or deposit address's index,
-//! plus the 64-byte seed of the Railgun wallet a note pays where it builds one, and computes what
-//! `ops` does; the token bindings compute what `tokens` does. Errors and panics surface as
-//! `AtomicSwapException` instead of crossing into the JVM.
-
 pub mod ops;
 pub mod tokens;
 
@@ -19,7 +13,6 @@ use crate::ops::{Result, Swap};
 
 const EXCEPTION: &str = "xyz/justzappit/atomicswap/AtomicSwapException";
 
-/// Runs `body`, leaving an `AtomicSwapException` pending if it fails or panics.
 fn run<'local, T>(
     env: &mut JNIEnv<'local>,
     body: impl FnOnce(&mut JNIEnv<'local>) -> Result<T>,
@@ -29,7 +22,6 @@ fn run<'local, T>(
         Ok(Err(message)) => message,
         Err(_) => "zecswap panicked".to_owned(),
     };
-    // A failed JNI call leaves its own exception pending, which says more than ours would.
     if !env.exception_check().unwrap_or(true) {
         let _ = env.throw_new(EXCEPTION, message);
     }

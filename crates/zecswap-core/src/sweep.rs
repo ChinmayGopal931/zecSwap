@@ -1,5 +1,3 @@
-//! A sweep pays one independently selected receiver, with no change or other pools.
-
 use orchard::{Address, ValuePool, value::Sign};
 use pczt::{
     Pczt,
@@ -33,7 +31,6 @@ impl SweepIntent {
         Ok(intent)
     }
 
-    /// The Orchard receiver a sweep to `address` pays, if it is a unified address on `network`.
     pub fn recipient(address: &str, network: NetworkType) -> Result<Address, Error> {
         orchard_receiver(address, network, false)
             .map_err(|wrong| policy(&format!("sweep destination {wrong}")))
@@ -148,8 +145,6 @@ fn policy(message: &str) -> Error {
     Error::SweepIntent(message.into())
 }
 
-/// The Orchard receiver of `address`, if it is a unified address on `network` with no other
-/// receiver, so that a wallet paying it has no pool to choose; else what is wrong with it.
 pub fn orchard_only(address: &str, network: NetworkType) -> Result<Address, &'static str> {
     orchard_receiver(address, network, true)
 }
@@ -161,7 +156,6 @@ fn orchard_receiver(
 ) -> Result<Address, &'static str> {
     let (actual_network, _, address) =
         unified::Address::decode(address).map_err(|_| "must be a unified address")?;
-    // Metadata such as an expiry would have to be honoured, so it is refused, not ignored.
     if !address.metadata_items().is_empty() {
         return Err("must not carry address metadata");
     }

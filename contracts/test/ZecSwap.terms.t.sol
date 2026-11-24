@@ -4,16 +4,11 @@ pragma solidity 0.8.28;
 import {ZecSwap} from "../src/ZecSwap.sol";
 import {ZecSwapReverseTest} from "./ZecSwap.reverse.t.sol";
 
-/// The contract keeps only a hash of each swap's terms and takes the terms themselves from each
-/// caller, so every function that acts on a swap must check them. Each one in `actions` is called
-/// on swaps at every stage, with terms that differ in a single word, and must refuse them.
 contract ZecSwapTermsTest is ZecSwapReverseTest {
-    /// maker, token, amount, makerKey (2), userKey (2), user, t0, t1, payoutNote.
     uint256 internal constant TERMS_WORDS = 11;
 
     struct Action {
         string name;
-        /// Who sends it and its calldata, which the right terms would let past the terms check.
         function(bytes32, ZecSwap.Terms memory) internal view returns (address, bytes memory) call;
     }
 
@@ -28,7 +23,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         uint256 user;
     }
 
-    /// The secrets behind each subject's `makerKey` and `userKey`.
     mapping(bytes32 id => Shares) internal sharesOf;
 
     function test_everyActionRefusesTermsAlteredInAnyWord() public {
@@ -54,7 +48,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
     function test_termsAreCheckedAgainstTheSwapTheCallNames() public {
         (bytes32 first, ZecSwap.Terms memory firstTerms) = openForward(1);
         (bytes32 second, ZecSwap.Terms memory secondTerms) = openForward(2);
-        // Consistent terms, under the very id they would open, for a swap nobody opened.
         ZecSwap.Terms memory unopened = termsWith(randomVector(6), randomVector(7));
         bytes32 unopenedId = swaps.swapId(maker, unopened.userKey);
         Action[] memory list = actions();
@@ -66,8 +59,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         }
     }
 
-    /// A function added later that changes a swap must join `actions`, to be tried with wrong
-    /// terms above; one that leaves swaps alone joins `untouched` here.
     function test_actionsCoverEveryFunctionThatChangesState() public view {
         string memory artifact = vm.readFile(string.concat(vm.projectRoot(), "/out/ZecSwap.sol/ZecSwap.json"));
         string[] memory changing = abi.decode(
@@ -77,7 +68,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
             ),
             (string[])
         );
-        // Inventory moves, and the two calls that create a swap and its terms' hash.
         string[4] memory untouched = ["deposit", "withdraw", "open", "openReverse"];
         Action[] memory list = actions();
         for (uint256 f; f < changing.length; ++f) {
@@ -93,8 +83,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         assertEq(changing.length, list.length + untouched.length, "a listed function is gone");
     }
 
-    /// The known answers `cargo run -p zecswap-client --example vectors` prints for wallets'
-    /// ports and zecswap-core's tests check: the same terms hash the same here.
     function test_hashTermsMatchesTheWalletVectors() public view {
         address vectorMaker = 0x09eD1F966745Be18C711C346242c0974DAd7c3e5;
         address token = 0x3333333333333333333333333333333333333333;
@@ -195,7 +183,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         );
     }
 
-    /// Railgun swaps at each stage a call can find one in, and a reverse swap refunded into Railgun.
     function swapsAtEveryStage() internal returns (Subject[] memory list) {
         string[5] memory stages = ["open", "ready", "claimed", "paid out", "refunded"];
         list = new Subject[](stages.length + 1);
@@ -203,7 +190,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
             (bytes32 id, ZecSwap.Terms memory t) = openForward(k + 1);
             list[k] = Subject(stages[k], id, t);
             if (k == 4) {
-                // A cancel: the maker's refund of an unready swap before t0.
                 swaps.refund(id, t, sharesOf[id].maker);
                 continue;
             }
@@ -227,7 +213,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         list[stages.length] = Subject("reverse, refund paid out", reverse, reverseTerms());
     }
 
-    /// A Railgun swap between shares `2k` and `2k + 1`.
     function openForward(uint256 k) internal returns (bytes32 id, ZecSwap.Terms memory t) {
         Vector memory makerShare = randomVector(2 * k);
         Vector memory userShare = randomVector(2 * k + 1);
@@ -236,7 +221,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         sharesOf[id] = Shares(makerShare.k, userShare.k);
     }
 
-    /// `terms` with one word of their ABI encoding one higher.
     function altered(ZecSwap.Terms memory terms_, uint256 word)
         internal
         pure
@@ -261,7 +245,6 @@ contract ZecSwapTermsTest is ZecSwapReverseTest {
         assertEq(reason, abi.encodeWithSelector(ZecSwap.WrongTerms.selector), what);
     }
 
-    /// The swap's own terms get the call past the terms check, whatever it meets there after.
     function expectPastTheTerms(Action memory action, bytes32 id, ZecSwap.Terms memory t, string memory stage)
         internal
     {

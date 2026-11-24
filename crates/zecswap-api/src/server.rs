@@ -9,7 +9,6 @@ use serde::de::DeserializeOwned;
 
 use crate::service::{ErrorCode, ErrorResponse};
 
-/// A monitoring route's bearer token. Every request is refused while none is set.
 #[derive(Default)]
 pub struct MonitorToken(Option<blake2b_simd::Hash>);
 
@@ -18,7 +17,6 @@ impl MonitorToken {
         Self(token.map(|value| blake2b_simd::blake2b(value.as_bytes())))
     }
 
-    /// The token in `variable`, at least 32 characters; none if it is unset.
     pub fn from_env(variable: &str) -> anyhow::Result<Self> {
         let token = match std::env::var(variable) {
             Ok(value) => Some(zeroize::Zeroizing::new(value)),
@@ -41,12 +39,10 @@ impl MonitorToken {
         let Some(value) = header.and_then(|value| value.strip_prefix("Bearer ")) else {
             return false;
         };
-        // Hash equality is constant time; both hashes have the same fixed length.
         blake2b_simd::blake2b(value.as_bytes()) == expected
     }
 }
 
-/// Middleware for monitoring routes: a request without the bearer token gets `401`.
 pub async fn require_monitor(
     State(token): State<Arc<MonitorToken>>,
     request: Request,

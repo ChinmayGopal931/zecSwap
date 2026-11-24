@@ -7,24 +7,16 @@ use zeroize::Zeroizing;
 use crate::Error;
 use crate::auth::{address_of, sign};
 
-/// Deposit addresses take BIP-44 account numbers from here on, above any a wallet opens by
-/// default: MetaMask's `m/44'/60'/0'/0/i` and Ledger Live's `m/44'/60'/x'/0/0` count up from 0.
 pub const DEPOSIT_ACCOUNTS: u32 = 1000;
 
 const NOTES_PERSONALIZATION: &[u8; 16] = b"ZecSwap_Deposits";
 const NOTE_PERSONALIZATION: &[u8; 16] = b"ZecSwap_DepoNote";
 
-/// Deposit address `index` of a wallet's account: its key, and what the notes its deposits pay
-/// are built from.
 pub struct DepositKeys {
     pub key: DepositKey,
     notes: Zeroizing<[u8; 32]>,
 }
 
-/// A deposit address's Ethereum key, at BIP-44's `m/44'/60'/(1000 + account)'/0/index` on
-/// mainnet and `m/44'/1'/(1000 + account)'/0/index` on testnet, so any wallet that takes a
-/// derivation path finds it from the seed. It signs only what the Deposits contract takes: never
-/// delegate it (EIP-7702) or use the address for anything else.
 pub struct DepositKey(SigningKey);
 
 impl DepositKey {
@@ -32,14 +24,11 @@ impl DepositKey {
         address_of(self.0.verifying_key())
     }
 
-    /// `r ‖ s ‖ v` over a `TokenDomain` or `DepositsDomain` digest, as they are verified.
     pub fn sign(&self, digest: &[u8; 32]) -> [u8; 65] {
         sign(&self.0, digest)
     }
 }
 
-/// Derives deposit address `index` of `account`, the wallet's ZIP 32 account, from the wallet's
-/// BIP-39 seed. Testnet addresses are under another coin type, unlinked to mainnet's.
 pub fn derive_deposit_keys(
     seed: &[u8],
     network: NetworkType,
@@ -91,14 +80,10 @@ pub fn derive_deposit_keys(
 }
 
 impl DepositKeys {
-    /// What the note a shield of this address pays is built from (`zecswap_railgun::Keys::note`),
-    /// for an authorization valid before `valid_before`. Each signing has its own, so no two
-    /// shields of one address share a note or a nonce, and the persisted request rebuilds it.
     pub fn shield_entropy(&self, valid_before: u64) -> Zeroizing<[u8; 32]> {
         self.entropy(0, valid_before)
     }
 
-    /// What the note the rescue with `nonce` of this address's vault pays is built from.
     pub fn rescue_entropy(&self, nonce: u64) -> Zeroizing<[u8; 32]> {
         self.entropy(1, nonce)
     }
@@ -143,8 +128,6 @@ mod tests {
             .collect()
     }
 
-    /// The addresses ethers derives from the same seeds and paths (`tests/deposit-vectors.json`,
-    /// from crates/zecswap-railgun/engine/deposit-vectors.cjs): other wallets find these.
     #[test]
     fn deposit_addresses_are_the_ones_ethers_derives() {
         let vectors: Vec<Vector> =

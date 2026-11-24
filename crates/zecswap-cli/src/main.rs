@@ -120,7 +120,6 @@ impl Session {
         self.wallet.sync(&mut self.client).await.context("syncing")
     }
 
-    /// Syncs every `POLL_INTERVAL` until `done` holds.
     pub(crate) async fn sync_until(
         &mut self,
         mut done: impl FnMut(&mut Self) -> Result<bool>,
@@ -140,7 +139,6 @@ impl Session {
             .context("no wallet yet; run `init`")
     }
 
-    /// Stores a payment from the wallet's account, which `init` creates at ZIP 32 index 0.
     pub(crate) fn pay(&mut self, to: &ZcashAddress, zatoshis: u64) -> Result<TxId> {
         self.pay_all(&[(to.clone(), zatoshis)])
     }
@@ -167,7 +165,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let network = cli.network;
     std::fs::create_dir_all(&cli.data_dir)?;
-    // Deposits never touch Zcash.
     if let Command::Deposit {
         relayer,
         rpc,
@@ -226,7 +223,6 @@ async fn main() -> Result<()> {
             };
             let tokens = match issuer {
                 Some(issuer) => {
-                    // A test tool takes the return key the maker publishes; an app pins it.
                     let info = zecswap_client::MakerApi::new(maker.clone())?.info().await?;
                     let key = info.token_return_key.context("the maker takes no tokens")?;
                     let device = zecswap_client::Unattested(device.into_bytes());

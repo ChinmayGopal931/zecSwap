@@ -1,6 +1,5 @@
 package xyz.justzappit.atomicswap
 
-/** libzecswap's entry points, implemented in `crates/zecswap-jni/src/lib.rs`. */
 internal object AtomicSwapNative {
     init {
         System.loadLibrary("zecswap")

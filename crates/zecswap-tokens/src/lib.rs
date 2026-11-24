@@ -1,10 +1,3 @@
-//! Privacy Pass tokens: limits per device that never say which device a request came from.
-//!
-//! An issuer that has checked a device's attestation signs a batch of tokens for it without
-//! seeing them (RFC 9578's publicly verifiable type, RSA blind signatures), so it can't recognise
-//! them when they are spent. A service spends one per request it can be spammed with, checks it
-//! with the issuer's public key alone, and asks for one with RFC 9577's HTTP scheme.
-
 #[cfg(feature = "server")]
 pub mod server;
 
@@ -18,23 +11,16 @@ use blind_rsa_signatures::{
 use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use sha2::{Digest, Sha256};
 
-/// RFC 9578's publicly verifiable token type: RSABSSA-SHA384-PSS-Deterministic, 2048-bit keys.
 pub const TOKEN_TYPE: u16 = 0x0002;
 const KEY_BITS: usize = 2048;
-/// An authenticator's length, and a blinded request's: the modulus's.
 const NK: usize = KEY_BITS / 8;
-/// What the issuer signs: `token_type`, `nonce`, `challenge_digest` and `token_key_id`.
 const INPUT: usize = 2 + 32 + 32 + 32;
-/// Seconds in a UTC day, the span a token is good for.
 pub const DAY: u64 = 24 * 60 * 60;
 
-/// The UTC day `unix` (seconds) falls on, counted from the Unix epoch: what a challenge's
-/// redemption context names.
 pub fn day(unix: u64) -> u64 {
     unix / DAY
 }
 
-/// The UTC day it is now.
 pub fn today() -> u64 {
     day(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -42,9 +28,6 @@ pub fn today() -> u64 {
         .as_secs())
 }
 
-/// Who issues tokens, where they are spent and on which UTC day: RFC 9577's `TokenChallenge`.
-/// Its redemption context is the day, so a token is good only on the day it is for, and the
-/// same for everyone that day, so it says nothing of who fetched it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Challenge {
     issuer: String,
@@ -74,7 +57,6 @@ impl Challenge {
         self.day
     }
 
-    /// The same issuer and service on another day.
     pub fn on(&self, day: u64) -> Self {
         Self {
             day,
@@ -82,8 +64,6 @@ impl Challenge {
         }
     }
 
-    /// The redemption context is 32 bytes: the day as a big-endian `u64` in the last 8, zeros
-    /// before it.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = TOKEN_TYPE.to_be_bytes().to_vec();
         out.extend((self.issuer.len() as u16).to_be_bytes());
@@ -96,8 +76,6 @@ impl Challenge {
         out
     }
 
-    /// Refuses any redemption context but a day: another would let a service tell apart the
-    /// clients it gave different ones.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let mut rest = bytes;
         ensure!(
@@ -120,7 +98,6 @@ impl Challenge {
     }
 }
 
-/// An issuer's public key, which tokens name by the SHA-256 of its encoding.
 #[derive(Clone, Debug)]
 pub struct TokenKey {
     key: PublicKeySha384PSSDeterministic,
@@ -128,7 +105,6 @@ pub struct TokenKey {
 }
 
 impl TokenKey {
-    /// From RFC 9578's encoding, an RSASSA-PSS SubjectPublicKeyInfo.
     pub fn from_spki(spki: &[u8]) -> Result<Self> {
         let key = PublicKeySha384PSSDeterministic::from_spki(spki).map_err(|e| anyhow!("{e}"))?;
         ensure!(
@@ -153,13 +129,10 @@ impl TokenKey {
         URL_SAFE_NO_PAD.encode(&self.spki)
     }
 
-    /// `token_key_id`.
     pub fn id(&self) -> [u8; 32] {
         Sha256::digest(&self.spki).into()
     }
 
-    /// Refuses a blinded request this key can't sign: one of another length, or not below the
-    /// modulus.
     pub fn check_request(&self, blinded: &[u8]) -> Result<()> {
         ensure!(
             blinded.len() == NK && blinded < self.key.components().n().as_slice(),
@@ -169,7 +142,6 @@ impl TokenKey {
     }
 }
 
-/// The issuer's signing key.
 pub struct IssuerKey {
     secret: SecretKeySha384PSSDeterministic,
     public: TokenKey,
@@ -182,7 +154,6 @@ impl IssuerKey {
         Self::from_secret(pair.sk)
     }
 
-    /// From a PKCS #8 PEM, as RFC 9578's test vectors give keys.
     pub fn from_pem(pem: &str) -> Result<Self> {
         Self::from_secret(
             SecretKeySha384PSSDeterministic::from_pem(pem).map_err(|e| anyhow!("{e}"))?,
@@ -203,7 +174,6 @@ impl IssuerKey {
         &self.public
     }
 
-    /// Signs a blinded token request without learning the token it will become.
     pub fn sign(&self, blinded: &[u8]) -> Result<Vec<u8>> {
         Ok(self
             .secret
@@ -213,14 +183,12 @@ impl IssuerKey {
     }
 }
 
-/// A token on its way: the client's half, kept while the issuer signs the blinded half.
 pub struct Pending {
     input: [u8; INPUT],
     blinding: BlindingResult,
 }
 
 impl Pending {
-    /// Starts a token for `challenge` under `key`, and the blinded request for the issuer.
     pub fn new(key: &TokenKey, challenge: &Challenge) -> Result<(Self, Vec<u8>)> {
         let mut nonce = [0; 32];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
@@ -233,8 +201,6 @@ impl Pending {
         Ok((Self { input, blinding }, blinded))
     }
 
-    /// `token_input ‖ blinding secret ‖ blinded message`, for a client that keeps no state between
-    /// calls. Whoever holds them can tie the token to its request, so they never leave the device.
     pub fn to_bytes(&self) -> Vec<u8> {
         [
             &self.input[..],
@@ -258,7 +224,6 @@ impl Pending {
         let (secret, blinded) = rest.split_at(NK);
         Ok(Self {
             input: input.try_into().expect("the input's length"),
-            // The deterministic variant has no message randomizer.
             blinding: BlindingResult {
                 blind_message: BlindMessage(blinded.to_vec()),
                 secret: Secret(secret.to_vec()),
@@ -267,7 +232,6 @@ impl Pending {
         })
     }
 
-    /// The token, once the issuer's blind signature unblinds to a valid one under `key`.
     pub fn finalize(self, key: &TokenKey, blind_signature: &[u8]) -> Result<Token> {
         let signature = key
             .key
@@ -284,7 +248,6 @@ impl Pending {
     }
 }
 
-/// A token to spend: what the issuer signed, and the signature.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
     input: [u8; INPUT],
@@ -313,7 +276,6 @@ impl Token {
         [&self.input[..], &self.authenticator].concat()
     }
 
-    /// What a service records to accept the token once.
     pub fn nonce(&self) -> [u8; 32] {
         self.input[2..34].try_into().expect("32 bytes")
     }
@@ -322,7 +284,6 @@ impl Token {
         self.input[66..].try_into().expect("32 bytes")
     }
 
-    /// Whether `key` signed this token for `challenge`.
     pub fn verify(&self, key: &TokenKey, challenge: &Challenge) -> Result<()> {
         self.verify_digest(key, &challenge.digest())
     }
@@ -338,7 +299,6 @@ impl Token {
             .map_err(|_| anyhow!("a token its key did not sign"))
     }
 
-    /// The `Authorization` header that spends it.
     pub fn authorization(&self) -> String {
         format!(
             "PrivateToken token=\"{}\"",
@@ -356,8 +316,6 @@ impl Token {
     }
 }
 
-/// The `WWW-Authenticate` header asking for a token: the challenge, and the key it must be
-/// signed with.
 pub fn www_authenticate(challenge: &Challenge, key: &TokenKey) -> String {
     format!(
         "PrivateToken challenge=\"{}\", token-key=\"{}\"",
@@ -366,7 +324,6 @@ pub fn www_authenticate(challenge: &Challenge, key: &TokenKey) -> String {
     )
 }
 
-/// What a `WWW-Authenticate` header asks for.
 pub fn read_www_authenticate(header: &str) -> Result<(Challenge, TokenKey)> {
     let params = params(header)?;
     let param = |wanted: &str| {
@@ -382,8 +339,6 @@ pub fn read_www_authenticate(header: &str) -> Result<(Challenge, TokenKey)> {
     ))
 }
 
-/// The parameters of a `PrivateToken` header. Their values are base64url, so they hold no
-/// commas or quotes.
 fn params(header: &str) -> Result<Vec<(&str, &str)>> {
     let (scheme, params) = header.trim().split_once(' ').unwrap_or((header, ""));
     ensure!(
@@ -427,9 +382,6 @@ fn input(nonce: &[u8; 32], challenge: &[u8; 32], key: &[u8; 32]) -> [u8; INPUT] 
 mod tests {
     use super::*;
 
-    /// RFC 9578, appendix A.2, test vector 2: a token another implementation issued verifies
-    /// here. Its challenge has no redemption context, which ours always do, so it is checked by
-    /// its digest.
     #[test]
     fn verifies_the_rfcs_token() {
         let key = TokenKey::from_spki(
@@ -476,8 +428,6 @@ mod tests {
         assert!(token.verify(&key, &elsewhere).is_err());
     }
 
-    /// The day sits in RFC 9577's 32-byte redemption context, big-endian in its last 8 bytes,
-    /// as ports must encode it; a challenge with any other context, or none, is refused.
     #[test]
     fn challenges_name_their_day_and_nothing_else() {
         let challenge = Challenge::new("issuer.example", "origin.example", 20_000).unwrap();
@@ -500,8 +450,6 @@ mod tests {
         assert_eq!(day(20_000 * 86_400 + 86_399), 20_000);
     }
 
-    /// A token issued blind verifies for its own service, day and key, and nowhere else; the
-    /// headers carry it intact, and a client takes no signature but its own request's.
     #[test]
     fn issued_tokens_verify_only_where_they_were_meant() {
         let issuer = IssuerKey::generate().unwrap();

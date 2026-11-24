@@ -1,4 +1,3 @@
-# libzecswap finds these by name.
 -keepclasseswithmembernames,includedescriptorclasses class xyz.justzappit.atomicswap.AtomicSwapNative {
     native <methods>;
 }

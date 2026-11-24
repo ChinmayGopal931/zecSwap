@@ -1,5 +1,3 @@
-// Run from engine/ to regenerate the Rust validator fixture with the installed V2 ABI.
-// Dummy SNARK: tests encoding and authorization, not Railgun proving.
 const fs = require('node:fs');
 const { AbiCoder, Interface, Wallet, keccak256, zeroPadValue } = require('ethers');
 const abi = require('./node_modules/@railgun-community/engine/dist/abi/V2/RelayAdapt.json');

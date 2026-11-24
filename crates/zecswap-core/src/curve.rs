@@ -1,8 +1,3 @@
-//! Pallas encodings shared with the settlement contract.
-//!
-//! The contract works in big-endian EVM words: points as affine `(x, y)`, scalars as
-//! `uint256`. Zcash encodings are little-endian, so every crossing goes through here.
-
 use std::sync::OnceLock;
 
 use ff::PrimeField;
@@ -11,7 +6,6 @@ use pasta_curves::{arithmetic::CurveAffine, pallas};
 
 use crate::Error;
 
-/// `GroupHash^P("z.cash:Orchard", "G")`, the Orchard spend authorization base, compressed.
 const SPEND_AUTH_G: [u8; 32] = [
     99, 201, 117, 184, 132, 114, 26, 141, 12, 161, 112, 123, 227, 12, 127, 12, 95, 68, 95, 62, 124,
     24, 141, 59, 6, 214, 241, 40, 179, 35, 85, 183,
@@ -22,7 +16,6 @@ pub(crate) fn spend_auth_g() -> pallas::Point {
     *G.get_or_init(|| pallas::Point::from_bytes(&SPEND_AUTH_G).unwrap())
 }
 
-/// Affine big-endian `(x, y)`. The caller guarantees `p` is not the identity.
 pub(crate) fn point_to_evm(p: &pallas::Affine) -> [u8; 64] {
     let c = p.coordinates().expect("identity has no affine coordinates");
     let mut out = [0; 64];
@@ -36,7 +29,6 @@ pub(crate) fn point_from_evm(bytes: &[u8; 64]) -> Result<pallas::Affine, Error> 
     let (x, y) = base_from_be(x)
         .zip(base_from_be(y))
         .ok_or(Error::InvalidPoint)?;
-    // `from_xy` accepts (0, 0) as the identity, which is never a valid share.
     Option::<pallas::Affine>::from(pallas::Affine::from_xy(x, y))
         .filter(|p| !bool::from(p.is_identity()))
         .ok_or(Error::InvalidPoint)

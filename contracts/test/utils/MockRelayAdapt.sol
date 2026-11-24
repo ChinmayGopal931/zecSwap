@@ -3,8 +3,6 @@ pragma solidity 0.8.28;
 
 import {TestToken} from "./TestToken.sol";
 
-/// Test-only V2 ABI harness. Mints in place of an unshield and checks a dummy proof marker.
-/// Real SNARK verification and deployed Relay Adapt compatibility need a live Railgun test.
 contract MockRelayAdapt {
     struct G1Point {
         uint256 x;

@@ -1,6 +1,3 @@
-//! The bindings' operations reproduce `cargo run -p zecswap-client --example vectors`, the known
-//! answers the Android port is checked against.
-
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use zecswap::ops::{Swap, check_open_fee, railgun_address};
 use zecswap_core::{Domain, Payout, PublicShare, ShareProof, SwapContext, derive_maker_share};
@@ -205,7 +202,6 @@ fn payout_note_pays_the_railgun_seeds_wallet_only() {
     assert!(RailgunKeys::from_seed(&SEED, 0).open(&note).is_none());
 }
 
-/// Swaps accepted before the Railgun seed was separate committed to this note: it never changes.
 #[test]
 fn payout_note_into_the_swap_seeds_own_wallet_is_unchanged() {
     let note = swap().payout_note(&SEED).unwrap();
@@ -316,7 +312,6 @@ fn accept_refuses_a_maker_proof_for_another_quote() {
 
 #[test]
 fn an_open_fee_is_paid_only_within_its_cap_to_an_orchard_address_of_the_network() {
-    // A deposit address is as a maker's fee address is: a unified address, Orchard alone.
     let address = &swap().deposit_account(&maker_share()).unwrap()[0];
     assert_eq!(check_open_fee(false, address, 40_000, 40_000), Ok(()));
     for (mainnet, address, zat, wrong) in [

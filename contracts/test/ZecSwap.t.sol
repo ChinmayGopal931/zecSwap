@@ -41,13 +41,10 @@ contract ZecSwapTest is SpendAuthVectors {
         t1 = uint64(block.timestamp + 150 minutes);
     }
 
-    // open
-
     function test_open_recordsTheSwapAndDebitsInventory() public {
         bytes32 id = open();
         ZecSwap.Swap memory s = swaps.getSwap(id);
         assertEq(uint8(s.stage), uint8(ZecSwap.Stage.Open));
-        // The definition wallets and relayers reproduce: the terms' ABI encoding, hashed.
         assertEq(s.termsHash, keccak256(abi.encode(terms())));
         assertEq(swaps.hashTerms(terms()), s.termsHash);
         assertFalse(s.paidOut);
@@ -55,8 +52,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY - AMOUNT);
     }
 
-    /// The cost cut this layout exists for: open stores the terms' hash and the stage, spends
-    /// the maker's share and debits the inventory, and writes nothing else.
     function test_open_storesOnlyTheTermsHashAndStage() public {
         vm.record();
         bytes32 id = open();
@@ -80,8 +75,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.swapId(maker, [z.x, z.y]), keccak256(abi.encode(maker, z.x, z.y)));
     }
 
-    /// On a public mempool anyone can copy a pending `open`, but the copy is its own swap: the
-    /// maker's still opens, under the id its user expects.
     function test_open_underCopiedSharesCannotBlockTheMaker() public {
         address copier = makeAddr("copier");
         TestToken junk = new TestToken();
@@ -122,8 +115,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.open(address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], address(0), t0, t1, bytes32(0));
     }
 
-    /// An open leaves the maker `MIN_WINDOW` to cancel before `t0`, and the user as much to
-    /// claim before `t1`.
     function test_open_rejectsWindowsUnderTheMinimum() public {
         uint64 now_ = uint64(block.timestamp);
         vm.startPrank(maker);
@@ -182,8 +173,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.open(address(usdc), uint128(INVENTORY + 1), [e.x, e.y], [z.x, z.y], user, t0, t1, bytes32(0));
     }
 
-    // ready
-
     function test_ready_isTheMakersAttestationOnly() public {
         bytes32 id = open();
         vm.expectRevert(ZecSwap.Unauthorized.selector);
@@ -207,8 +196,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.ready(id, terms());
     }
 
-    /// From `t0` an unready swap is the user's to claim anyway: a ready then would only move
-    /// the maker's refund of a swap nobody claimed from `t0` to `t1`.
     function test_ready_isGivenOnlyBeforeT0() public {
         bytes32 id = open();
         vm.warp(t0);
@@ -216,8 +203,6 @@ contract ZecSwapTest is SpendAuthVectors {
         vm.prank(maker);
         swaps.ready(id, terms());
     }
-
-    // claim
 
     function test_claim_creditsTheUserAndPublishesTheShare() public {
         bytes32 id = openReady();
@@ -264,8 +249,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
 
-    /// The claim ends at `t1`, where the maker's refund begins; a swap the maker never refunds
-    /// in `LATE_WINDOW` is the user's to claim again, for good.
     function test_claim_endsAtT1AndReturnsAfterTheLateWindow() public {
         bytes32 id = openReady();
         vm.warp(t1 - 1);
@@ -307,8 +290,6 @@ contract ZecSwapTest is SpendAuthVectors {
         }
     }
 
-    // refund
-
     function test_refund_cancelsAnOpenSwapAndPublishesTheShare() public {
         bytes32 id = open();
         vm.expectEmit(address(swaps));
@@ -331,8 +312,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
     }
 
-    /// The cancel of an unready swap ends at `t0` sharp: from there the swap is the user's,
-    /// deposit or not, until `t1`.
     function test_refund_ofAnUnreadySwapEndsAtT0() public {
         bytes32 id = open();
         vm.warp(t0 - 1);
@@ -353,8 +332,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Refunded));
     }
 
-    /// Replaces the lock design's lapsing turns: at every moment of a forward swap's life exactly
-    /// one side may reveal, so nothing is ever stranded and nothing is ever raced.
     function test_exactlyOneSideMayRevealAtEveryMoment() public {
         bytes32 unready = open();
         for (uint256 t = block.timestamp; t < t1 + LATE + 2 hours; t += 11 minutes) {
@@ -375,8 +352,6 @@ contract ZecSwapTest is SpendAuthVectors {
         }
     }
 
-    /// A claim not mined by `t1` leaves the swap to the maker's refund: the user takes its
-    /// deposit back with the revealed share instead.
     function test_aClaimNotSentByT1LeavesTheRefundToTheMaker() public {
         bytes32 id = openReady();
         vm.warp(t1);
@@ -386,7 +361,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(maker, address(usdc)), INVENTORY);
     }
 
-    /// A cancel not mined by `t0` leaves an unready swap to the user's claim.
     function test_aCancelNotSentByT0LeavesTheClaimToTheUser() public {
         bytes32 id = open();
         vm.warp(t0);
@@ -395,8 +369,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.claim(id, terms(), z.k);
         assertEq(swaps.balanceOf(user, address(usdc)), AMOUNT);
     }
-
-    // settlement is final
 
     function test_aClaimedSwapCannotBeRefunded() public {
         bytes32 id = openReady();
@@ -422,8 +394,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.claim(id, terms(), z.k);
     }
 
-    // never both, whatever the time and stage
-
     function testFuzz_neverBothRevealsAtOnce(bool makeReady, uint32 readyAt, uint32 at) public {
         bytes32 id = open();
         uint256 opened = block.timestamp;
@@ -435,8 +405,6 @@ contract ZecSwapTest is SpendAuthVectors {
         vm.warp(opened + bound(at, 0, 9 days));
         assertFalse(claims(id) && refunds(id), "both reveals possible at once");
     }
-
-    // inventory
 
     function test_withdraw() public {
         vm.startPrank(maker);
@@ -458,8 +426,6 @@ contract ZecSwapTest is SpendAuthVectors {
         swaps.deposit(makeAddr("not a token"), 1);
     }
 
-    /// A token that turns a transfer down by returning false, not reverting, is refused as a
-    /// reverting one is: a withdrawal it turned down keeps its credit.
     function test_tokensThatReturnFalseAreRefused() public {
         FalseToken token = new FalseToken();
         token.mint(maker, 2 * AMOUNT);
@@ -475,7 +441,6 @@ contract ZecSwapTest is SpendAuthVectors {
         assertEq(token.balanceOf(address(swaps)), AMOUNT);
     }
 
-    /// A token whose transfers return nothing, as USDT's do, deposits and withdraws.
     function test_tokensWhoseTransfersReturnNothingWork() public {
         SilentToken token = new SilentToken();
         token.mint(maker, AMOUNT);
@@ -532,7 +497,6 @@ contract ZecSwapTest is SpendAuthVectors {
         );
     }
 
-    /// The terms `open` commits to, which every later call supplies.
     function terms() internal view returns (ZecSwap.Terms memory) {
         return termsWith(e, z);
     }
@@ -555,7 +519,6 @@ contract ZecSwapTest is SpendAuthVectors {
         );
     }
 
-    /// Whether the claim would succeed now; the state is left as it was.
     function claims(bytes32 id) internal returns (bool) {
         return tryClaim(id, terms(), z.k);
     }
@@ -581,7 +544,6 @@ contract ZecSwapTest is SpendAuthVectors {
     }
 }
 
-/// Turns transfers down by returning false, as some tokens do when paused or blacklisting.
 contract FalseToken {
     mapping(address => uint256) public balanceOf;
     bool public refusing;
@@ -610,7 +572,6 @@ contract FalseToken {
     }
 }
 
-/// Returns nothing from its transfers, as USDT does.
 contract SilentToken {
     mapping(address => uint256) public balanceOf;
 

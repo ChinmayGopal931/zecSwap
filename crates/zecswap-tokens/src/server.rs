@@ -1,8 +1,3 @@
-//! A service's side. A request it can be spammed with comes with a token, which it holds while
-//! the request runs and keeps spent only if the request goes through: one that is refused leaves
-//! its token spendable. A request without one is answered with RFC 9577's challenge, from which
-//! a client fetches one. The service also hands tokens back, signed blind under a key of its own.
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,21 +16,13 @@ use zecswap_api::service::ErrorCode;
 
 use crate::{Challenge, DAY, IssuerKey, Token, TokenKey, day, today, www_authenticate};
 
-/// `[tokens]` in a service's config.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The issuer every token names.
     pub issuer: String,
-    /// This service as tokens name it, so one meant for another is refused here.
     pub origin: String,
-    /// The issuer's keys tokens are taken under, base64url SPKI, the current one first: an old
-    /// one stays listed until the UTC day the issuer last signed with it is over.
     pub keys: Vec<String>,
-    /// The service's own key for the tokens it hands back, a PKCS #8 PEM (`IssuerKey::to_pem`).
-    /// Its public half is the same for every client, which pins it.
     pub return_key: PathBuf,
-    /// Where spent tokens are recorded.
     pub spent: PathBuf,
 }
 
@@ -48,7 +35,6 @@ pub struct Gate {
 
 struct Spent {
     store: Connection,
-    /// The tokens of requests still running.
     held: HashSet<[u8; 32]>,
     today: Today,
 }
@@ -58,23 +44,17 @@ enum Refusal {
     Store(rusqlite::Error),
 }
 
-/// Why a token was refused, as the gate counts it.
 #[derive(Clone, Copy)]
 enum Refused {
     Missing,
     Unreadable,
     Malformed,
     UnknownKey,
-    /// For another service or day, or not signed by the key it names.
     Invalid,
     InUse,
     Spent,
 }
 
-/// What the gate has seen today, for monitoring: the tokens its store holds spent today, and
-/// since `since` (its start or 00:00 UTC, whichever came later) the ones requests kept, by
-/// whose key they were under, and the requests refused, by why. Nothing in it tells one token
-/// or device from another.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Today {
@@ -112,7 +92,6 @@ impl Today {
         }
     }
 
-    /// Counts afresh from midnight on.
     fn roll(&mut self, now: u64) {
         if day(now) != self.day {
             *self = Self::starting(day(now) * DAY);
@@ -181,7 +160,6 @@ impl Gate {
         })
     }
 
-    /// What the gate has seen today.
     pub fn today(&self) -> anyhow::Result<Today> {
         let now = now();
         let mut state = self.state();
@@ -197,18 +175,14 @@ impl Gate {
         })
     }
 
-    /// What the service's tokens answer on `day`.
     pub fn challenge(&self, day: u64) -> Challenge {
         self.challenge.on(day)
     }
 
-    /// The key the service hands tokens back under.
     pub fn return_key(&self) -> &TokenKey {
         self.returns.token_key()
     }
 
-    /// A client's request for its token back, as it arrives (base64url): one the return key
-    /// can sign.
     pub fn read_return_request(&self, request: &str) -> anyhow::Result<Vec<u8>> {
         let blinded = URL_SAFE_NO_PAD
             .decode(request)
@@ -217,14 +191,10 @@ impl Gate {
         Ok(blinded)
     }
 
-    /// Hands a token back, signed blind (base64url): the service never sees the token it
-    /// becomes.
     pub fn sign_return(&self, blinded: &[u8]) -> anyhow::Result<String> {
         Ok(URL_SAFE_NO_PAD.encode(self.returns.sign(blinded)?))
     }
 
-    /// Holds the request's token, unless it is missing, forged, meant for another service or
-    /// day, spent, or held by another request.
     fn hold(self: &Arc<Self>, headers: &HeaderMap) -> Result<Spend, Refusal> {
         let refuse = |kind: Refused, why: &str| Refusal::Token(kind, why.into());
         let header = headers
@@ -289,8 +259,6 @@ impl Gate {
     }
 }
 
-/// The token a request came with, held while it runs: spent for good once the request keeps
-/// it, spendable again if the request ends without.
 #[derive(Clone)]
 pub struct Spend(Arc<Held>);
 
@@ -298,7 +266,6 @@ struct Held {
     gate: Arc<Gate>,
     nonce: [u8; 32],
     day: u64,
-    /// Under the service's own key: handed back by an earlier request.
     returned: bool,
 }
 
@@ -315,7 +282,6 @@ impl Spend {
             "INSERT OR IGNORE INTO spent_tokens (nonce, day) VALUES (?1, ?2)",
             params![nonce, day],
         )?;
-        // A token for an earlier day is refused anyway: keep no record of it.
         state
             .store
             .execute("DELETE FROM spent_tokens WHERE day < ?1", [day])?;
@@ -332,8 +298,6 @@ impl Drop for Held {
     }
 }
 
-/// Middleware for the routes a token pays for: the handler finds the token's `Spend` among
-/// the request's extensions.
 pub async fn require(State(gate): State<Arc<Gate>>, mut request: Request, next: Next) -> Response {
     match gate.hold(request.headers()) {
         Ok(spend) => {
@@ -407,8 +371,6 @@ mod tests {
             }
         }
 
-        /// `/keep` keeps its token, `/refuse` refuses the request without, and `/wait` keeps
-        /// it once `go` is notified.
         fn app(&self, config: &Config, go: Arc<Notify>) -> (Arc<Gate>, Router) {
             let gate = Arc::new(Gate::open(config).unwrap());
             let router = Router::new()
@@ -449,10 +411,6 @@ mod tests {
             .status()
     }
 
-    /// A request without a token is asked for today's; a token kept by its request buys
-    /// nothing more, here or after a restart, while one whose request was refused buys the
-    /// next. Tokens for another service or day, or under a retired key, buy nothing; the
-    /// service's own returned tokens are taken like the issuer's.
     #[tokio::test]
     async fn a_token_is_spent_only_by_a_request_that_keeps_it() {
         let service = Service::new();
@@ -524,8 +482,6 @@ mod tests {
         assert_eq!(current, StatusCode::OK);
     }
 
-    /// Two requests at once with one token: the second is refused while the first holds it,
-    /// and once the first keeps it, so is every later one.
     #[tokio::test]
     async fn one_token_sent_twice_at_once_buys_one_request() {
         let service = Service::new();
@@ -558,9 +514,6 @@ mod tests {
         assert_eq!((today.refused.spent, today.spent.issuer), (1, 1));
     }
 
-    /// The gate counts the requests it refused, by why, and the tokens requests kept, by whose
-    /// key they were under; a token whose request was refused after the gate let it through is
-    /// neither.
     #[tokio::test]
     async fn refusals_are_counted_by_why_and_kept_tokens_by_whose_key() {
         let service = Service::new();
@@ -628,7 +581,6 @@ mod tests {
         );
     }
 
-    /// The day's counts start afresh at midnight UTC, counted from it.
     #[test]
     fn counts_start_afresh_at_midnight() {
         let start = 20_000 * DAY + 3_600;

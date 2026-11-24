@@ -13,25 +13,18 @@ use crate::{Error, address, babyjubjub};
 const SPENDING_PATH: [u32; 4] = [44, 1984, 0, 0];
 const VIEWING_PATH: [u32; 4] = [420, 1984, 0, 0];
 
-/// A Railgun wallet's keys, derived from a BIP-39 seed along Railgun's own paths, so the same
-/// mnemonic opens the balance in any Railgun wallet.
 pub struct Keys {
     viewing_key: Zeroizing<[u8; 32]>,
     receiver: Receiver,
 }
 
-/// What a payer needs to reach a wallet, as its 0zk address carries it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Receiver {
-    /// `Poseidon(spending public key, nullifying key)`, big-endian.
     pub master_public_key: [u8; 32],
-    /// The ed25519 public key that shield notes to this wallet are encrypted to.
     pub viewing_public_key: [u8; 32],
 }
 
 impl Keys {
-    /// The wallet at `index` of `seed`, the 64-byte BIP-39 seed of the mnemonic. Railgun's
-    /// wallets open index 0 by default.
     pub fn from_seed(seed: &[u8], index: u32) -> Self {
         let spending_key = derive(seed, &SPENDING_PATH, index);
         let viewing_key = derive(seed, &VIEWING_PATH, index);
@@ -54,14 +47,10 @@ impl Keys {
         self.receiver
     }
 
-    /// The wallet's `0zk` address, valid on every chain.
     pub fn address(&self) -> String {
         address::encode(&self.receiver)
     }
 
-    /// A note paying this wallet, built from `entropy` and opened with the wallet's own viewing
-    /// key before anyone commits to it: Railgun takes any ciphertext, and a note its receiver
-    /// cannot open is lost.
     pub fn note(&self, entropy: &[u8; 32]) -> Result<ShieldNote, Error> {
         let note = ShieldNote::new(&self.receiver, entropy);
         match self.open(&note) {
@@ -70,16 +59,11 @@ impl Keys {
         }
     }
 
-    /// The `random` of a note paying this wallet, or `None` if the note is not for it. Unlike
-    /// Railgun's wallets, this also checks the note public key, without which the note cannot
-    /// be spent.
     pub fn open(&self, note: &ShieldNote) -> Option<[u8; 16]> {
         let random = note.decrypt_random(&self.viewing_key)?;
         (note.npk == note_public_key(&self.receiver.master_public_key, &random)).then_some(random)
     }
 
-    /// What a transaction's output pays this wallet, if it is the note `commitment` and the
-    /// wallet can open it, as Railgun's broadcasters read their fees.
     pub fn receive(&self, commitment: &[u8; 32], output: &OutputCiphertext) -> Option<Received> {
         output.open(
             &self.viewing_key,
@@ -95,7 +79,6 @@ impl Receiver {
     }
 }
 
-/// `Poseidon(master public key, random)`: the note public key a shield commits to.
 pub(crate) fn note_public_key(master_public_key: &[u8; 32], random: &[u8; 16]) -> [u8; 32] {
     to_bytes(&poseidon(&[
         Fr::from_be_bytes_mod_order(master_public_key),
@@ -103,8 +86,6 @@ pub(crate) fn note_public_key(master_public_key: &[u8; 32], random: &[u8; 16]) -
     ]))
 }
 
-/// `Poseidon(note public key, token, value)`: the commitment a transaction output adds to the
-/// tree.
 pub(crate) fn note_hash(npk: &[u8; 32], token: &[u8; 32], value: u128) -> [u8; 32] {
     to_bytes(&poseidon(&[
         Fr::from_be_bytes_mod_order(npk),
@@ -119,15 +100,12 @@ pub(crate) fn ed25519_public_key(private_key: &[u8; 32]) -> [u8; 32] {
         .to_bytes()
 }
 
-/// Railgun's ECDH: the SHA-256 of `[a]·B`, where `a` is the private key's ed25519 scalar. It is
-/// not X25519. `None` if `public_key` is not a point.
 pub(crate) fn shared_key(private_key: &[u8; 32], public_key: &[u8; 32]) -> Option<[u8; 32]> {
     let point = CompressedEdwardsY(*public_key).decompress()?;
     let shared = (point * ed25519_scalar(private_key)).compress();
     Some(Sha256::digest(shared.as_bytes()).into())
 }
 
-/// The ed25519 scalar of a private key: its clamped SHA-512 head, reduced.
 fn ed25519_scalar(private_key: &[u8; 32]) -> Scalar {
     let mut head = Zeroizing::new([0u8; 32]);
     head.copy_from_slice(&Sha512::digest(private_key)[..32]);
@@ -137,8 +115,6 @@ fn ed25519_scalar(private_key: &[u8; 32]) -> Scalar {
     Scalar::from_bytes_mod_order(*head)
 }
 
-/// Railgun's hardened-only BIP-32 variant, keyed "babyjubjub seed", to `path/index'`. The key
-/// is the raw left half of each HMAC output, never reduced.
 fn derive(seed: &[u8], path: &[u32; 4], index: u32) -> Zeroizing<[u8; 32]> {
     let (mut key, mut chain_code) = split(hmac(b"babyjubjub seed", &[seed]));
     for segment in path.iter().chain([&index]) {
@@ -207,7 +183,6 @@ mod tests {
         hex::decode(value.trim_start_matches("0x")).unwrap()
     }
 
-    /// Intermediate keys, which the integration tests only see through the address.
     #[test]
     fn derivation_steps_match_railgun_engine() {
         let vectors: Vectors =

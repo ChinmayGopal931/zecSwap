@@ -1,7 +1,3 @@
-//! Shield notes built here, one JSON line each, for Railgun's engine to open:
-//!   cargo run -p zecswap-railgun --example note | node crates/zecswap-railgun/engine/check.cjs
-//! The first is the contracts' fork-test note (`contracts/test/vectors/railgun_note.json`).
-
 use serde::Deserialize;
 use serde_json::json;
 use zecswap_railgun::Keys;

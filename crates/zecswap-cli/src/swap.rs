@@ -1,5 +1,3 @@
-//! The user side of a swap, resumable: progress is saved after every step.
-
 use std::time::Duration;
 
 use alloy_primitives::Address;
@@ -20,12 +18,8 @@ use crate::store::Store;
 const STATE: &str = "swap.json";
 const NEXT_INDEX: &str = "next-swap-index.json";
 const CHAIN_POLL: Duration = Duration::from_secs(15);
-/// An open fee has only its quote's few minutes to be mined in.
 const FEE_POLL: Duration = Duration::from_secs(5);
-/// The polls an open fee in no block is given before it is sent again: half a minute. A node can
-/// take a payment and drop it, and the quote ends meanwhile.
 const FEE_RESEND: u32 = 6;
-/// What a payment of one note and its change pays the network under ZIP 317.
 const PAYMENT_FEE: u64 = 10_000;
 
 pub(crate) struct SwapArgs {
@@ -39,11 +33,8 @@ pub(crate) struct SwapArgs {
     pub(crate) max_open_fee: u64,
 }
 
-/// Where the swap pays.
 pub(crate) enum Payee {
-    /// An account the user holds the key to, which sends its own transactions.
     Account(PrivateKeySigner),
-    /// The Railgun wallet of this seed, through a relayer.
     Railgun { relayer: String, max_fee: u128 },
 }
 
@@ -57,8 +48,6 @@ struct Run {
 
 #[derive(Serialize, Deserialize)]
 enum Progress {
-    /// A quote taken and, once built, the payment of its open fee, each saved before the next
-    /// step: a resumed run neither pays the fee twice nor takes the index again.
     Quoted {
         quoted: Quoted,
         fee: Option<[u8; 32]>,
@@ -75,7 +64,6 @@ impl Run {
     }
 }
 
-/// The maker's side of opening a swap, as `User` has it.
 trait Opener {
     async fn quote(&self, index: u32, units: u32) -> Result<Quoted>;
     async fn accept(&self, quoted: &Quoted) -> Result<UserSwap>;
@@ -91,16 +79,11 @@ impl Opener for User {
     }
 }
 
-/// The wallet's side of opening a swap, as `Session` has it.
 trait FeeWallet {
     fn store(&self) -> &Store;
-    /// The zatoshis the wallet holds, as its server now shows the chain.
     async fn holds(&mut self) -> Result<u64>;
-    /// Builds and stores a payment. Nothing is sent.
     async fn prepare(&mut self, to: &ZcashAddress, zatoshis: u64) -> Result<TxId>;
-    /// Sends a stored payment; sending it again is no error.
     async fn send(&mut self, txid: TxId) -> Result<()>;
-    /// Whether a block has the payment, as the wallet's server now shows the chain.
     async fn mined(&mut self, txid: TxId) -> Result<bool>;
 }
 
@@ -194,7 +177,6 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
     }
 }
 
-/// The run to carry on: the unfinished one, or a new one with a quote for the next index.
 async fn start(store: &Store, maker: &impl Opener, units: u32) -> Result<Run> {
     let saved = store.load::<Run>(STATE).with_context(|| {
         format!("{STATE} is another version's: rename it if its swap is finished")
@@ -205,7 +187,6 @@ async fn start(store: &Store, maker: &impl Opener, units: u32) -> Result<Run> {
         println!("resuming swap #{}", run.index());
         return Ok(run);
     }
-    // The index is spent the moment anything derived from it leaves the device.
     let index = store.load::<u32>(NEXT_INDEX)?.unwrap_or(0);
     store.save(NEXT_INDEX, &(index + 1))?;
     let run = Run {
@@ -221,9 +202,6 @@ async fn start(store: &Store, maker: &impl Opener, units: u32) -> Result<Run> {
     Ok(run)
 }
 
-/// Brings the run to a swap its maker accepted: pays its quote's open fee, once, waits for a
-/// block to have it, and accepts. A run that can no longer get there is ended, whatever it paid
-/// lost, and the next begins another swap.
 async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -> Result<UserSwap> {
     let (quoted, fee) = match &run.progress {
         Progress::Accepted(swap) => return Ok(swap.clone()),
@@ -235,7 +213,6 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
         None => match quoted.fee_due(wall_now()) {
             Ok(None) => None,
             Ok(Some(due)) => {
-                // A fee buys nothing if the deposit cannot follow it.
                 let needed = due
                     .zat
                     .saturating_add(quoted.quote.deposit_zat)
@@ -250,7 +227,6 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
                 println!("paying the maker's open fee of {} zat", due.zat);
                 let to = due.address.parse().context("the open fee's address")?;
                 let txid = wallet.prepare(&to, due.zat).await?;
-                // Saved before it is sent, so a resumed run never pays twice.
                 run.progress = Progress::Quoted {
                     quoted: quoted.clone(),
                     fee: Some(*txid.as_ref()),
@@ -262,7 +238,6 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
         },
     };
     if let Some(txid) = fee {
-        // The polls since this run last sent the payment, or decided not to.
         let mut waited = None;
         while !wallet.mined(txid).await? {
             if wall_now() >= quoted.quote.expires_at {
@@ -272,11 +247,7 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
                 return Err(end(wallet.store(), run, unmined));
             }
             if waited.is_none_or(|polls| polls >= FEE_RESEND) {
-                // The time left is judged again each time: building the payment can outlast
-                // what it was built within, and a resumed run comes back at any time.
                 match quoted.fee_due(wall_now()) {
-                    // Sent again by a resumed run, whose first send may never have left, and
-                    // by this one while no block has it.
                     Ok(_) => {
                         wallet.send(txid).await?;
                         match waited {
@@ -287,7 +258,6 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
                         }
                     }
                     Err(_) if waited.is_some() => {}
-                    // What an earlier run sent may still be mined in time.
                     Err(e) if resumed => println!("  not sending the open fee again: {e:#}"),
                     Err(e) => return Err(end(wallet.store(), run, e.context("nothing was paid"))),
                 }
@@ -299,8 +269,6 @@ async fn open(wallet: &mut impl FeeWallet, maker: &impl Opener, run: &mut Run) -
     }
     let swap = match maker.accept(&quoted).await {
         Ok(swap) => swap,
-        // Turned down, nothing opens the quote's swap any more; any other failure may have
-        // opened it, and the next run asks again.
         Err(e) if e.is::<FeeNotHonoured>() || refused(&e) => {
             let e = match fee {
                 Some(txid) => e.context(format!("the open fee paid in {txid} is lost")),
@@ -322,7 +290,6 @@ fn refused(error: &anyhow::Error) -> bool {
         .is_some_and(ServiceError::refused)
 }
 
-/// Ends a run that will open no swap, so that the next starts a new one: the error to stop with.
 fn end(store: &Store, run: &mut Run, why: anyhow::Error) -> anyhow::Error {
     run.finished = true;
     match store.save(STATE, run) {
@@ -345,7 +312,6 @@ async fn deposit(
         run.joint_account = Some(account);
         ctx.store.save(STATE, run)?;
     }
-    // A wallet that paid its open fee from its only note has the change to wait for.
     let (own, deposit_zat) = (ctx.account()?, swap.quote.deposit_zat);
     ctx.sync_until(|ctx| {
         let funds = ctx.wallet.funds(own)?;
@@ -356,7 +322,6 @@ async fn deposit(
         .unified_address(ctx.wallet.network().network_type())
         .parse()?;
     let txid = ctx.pay(&to, deposit_zat)?;
-    // Saved before broadcasting, so a resumed run never pays twice.
     run.deposit = Some(*txid.as_ref());
     ctx.store.save(STATE, run)?;
     ctx.broadcast(txid).await?;
@@ -370,7 +335,6 @@ async fn claim(ctx: &mut Session, user: &User, run: &mut Run, swap: &UserSwap) -
         Some(account) => format!("paid {} to {account}", paid.amount),
         None => format!("shielded {} into {}", paid.amount, user.railgun().address()),
     };
-    // A request that timed out may have paid, in a transaction no answer named.
     match (paid.amount, paid.tx) {
         (0, _) => println!("claimed; nothing was left to pay"),
         (_, Some(tx)) => println!("claimed; {to} in {tx}"),
@@ -379,7 +343,6 @@ async fn claim(ctx: &mut Session, user: &User, run: &mut Run, swap: &UserSwap) -
     finish(ctx, run)
 }
 
-/// The maker refunded and revealed its share, so the deposit is ours to take back.
 async fn sweep_back(ctx: &mut Session, user: &User, run: &mut Run, swap: &UserSwap) -> Result<()> {
     let (Some(account), Some(deposit)) = (run.joint_account, run.deposit.map(TxId::from_bytes))
     else {
@@ -393,7 +356,6 @@ async fn sweep_back(ctx: &mut Session, user: &User, run: &mut Run, swap: &UserSw
         Ok(ctx.wallet.is_mined(deposit)? && funds.spendable == funds.total)
     })
     .await?;
-    // Nothing left means an earlier run already swept it.
     if ctx.wallet.funds(account)?.total > 0 {
         let home: ZcashAddress = ctx.wallet.fresh_address(ctx.account()?)?.parse()?;
         let txid = ctx.wallet.sweep(&ctx.prover, account, &key, &home)?;
@@ -430,17 +392,12 @@ mod tests {
 
     const FEE: u64 = 40_000;
 
-    /// How a maker ends an accept short of a swap.
     enum Refusal {
-        /// The quote expired with its fee unseen.
         Unseen,
         Refused,
-        /// No answer: the accept may have opened the swap.
         Silent,
     }
 
-    /// A maker whose quotes last `life` seconds, ask a fee or none, and whose accepts end as
-    /// `refusals` says, in turn, before they succeed.
     struct Maker {
         life: u64,
         fee: bool,
@@ -507,20 +464,15 @@ mod tests {
         }
     }
 
-    /// A wallet that records what it is asked to pay and send. A payment is in a block
-    /// `blocks_away` polls after it was sent, or never.
     struct Wallet {
         _dir: tempfile::TempDir,
         store: Store,
         paid: Vec<(String, u64)>,
         sent: Vec<TxId>,
-        /// Sends still to fail, as for a run cut off between saving its payment and sending it.
         failing_sends: u32,
-        /// Sends of a payment the network takes and drops before one reaches a block.
         dropped: usize,
         blocks_away: Option<u32>,
         held: u64,
-        /// How long building a payment takes, by the wall clock a quote's life is judged by.
         building: Duration,
     }
 
@@ -593,7 +545,6 @@ mod tests {
             .encode(&NetworkType::Test)
     }
 
-    /// One run of the CLI, up to its swap being accepted.
     async fn run(wallet: &mut Wallet, maker: &Maker) -> Result<UserSwap> {
         let mut run = start(&wallet.store, maker, 1).await?;
         open(wallet, maker, &mut run).await
@@ -619,7 +570,6 @@ mod tests {
         assert_eq!((maker.quotes.get(), maker.accepts.get()), (1, 1));
         assert_eq!((swap.index, wallet.next_index()), (0, Some(1)));
 
-        // Accepted, a run asks its maker nothing more and pays nothing.
         let again = run(&mut wallet, &maker).await.unwrap();
         assert_eq!(again.swap_id, swap.swap_id);
         assert_eq!((maker.quotes.get(), maker.accepts.get()), (1, 1));
@@ -690,7 +640,6 @@ mod tests {
         let mut wallet = Wallet::new(None);
         wallet.failing_sends = 1;
         run(&mut wallet, &maker).await.unwrap_err();
-        // The CLI is next run after the quote's end.
         let mut saved = wallet.saved();
         let Progress::Quoted { quoted, fee } = &mut saved.progress else {
             panic!("the quote was accepted");
@@ -710,7 +659,6 @@ mod tests {
     async fn a_wallet_that_could_not_also_deposit_pays_no_fee() {
         let maker = Maker::new(600, true, []);
         let mut wallet = Wallet::new(Some(0));
-        // The fake maker's deposit is 100,000 zat.
         wallet.held = FEE + 100_000 + 2 * PAYMENT_FEE - 1;
         let short = run(&mut wallet, &maker).await.unwrap_err();
         let short = format!("{short:#}");
@@ -742,7 +690,6 @@ mod tests {
         let mut wallet = Wallet::new(None);
         wallet.failing_sends = 1;
         run(&mut wallet, &maker).await.unwrap_err();
-        // The CLI is next run with a second of the quote left.
         let mut saved = wallet.saved();
         let Progress::Quoted { quoted, .. } = &mut saved.progress else {
             panic!("the quote was accepted");

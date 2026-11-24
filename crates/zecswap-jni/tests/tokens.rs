@@ -1,10 +1,6 @@
-//! The token bindings against `zecswap_tokens`' own issuer: a maker's challenge read, a request
-//! blinded, signed and finalized through the bytes the Android wrapper carries between calls.
-
 use zecswap::tokens::{authorization, blind, finalize, read_challenge};
 use zecswap_tokens::{Challenge, IssuerKey, Token, www_authenticate};
 
-/// RFC 9578's 2048-bit modulus: the blinded message's length.
 const BLINDED: usize = 256;
 
 #[test]
@@ -29,7 +25,6 @@ fn a_token_round_trips_through_the_bindings_bytes() {
     assert_eq!(spent.encode(), token);
     spent.verify(issuer.token_key(), &maker).unwrap();
 
-    // Another request's signature, a pending half changed or cut short, never finalize.
     let other = blind(&key, &challenge).unwrap();
     let wrong = issuer.sign(&other[..BLINDED]).unwrap();
     assert!(finalize(pending, &key, &wrong).is_err());

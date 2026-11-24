@@ -1,47 +1,27 @@
-//! Untrusted calldata is checked against the shape it should have before anything in it is
-//! decoded. Alloy's decoder follows each offset wherever it points, so values can share bytes and
-//! decoding copies every one of them: a few kilobytes can decode to gigabytes. In the canonical
-//! encoding each value has bytes of its own, so once it is checked, decoding costs about the
-//! calldata's size.
-
 use std::iter;
 
 use alloy::sol_types::SolCall;
 
 use super::U256;
 
-/// An ABI type as untrusted calldata must carry it, with a cap on every length in it.
 #[derive(Debug)]
 pub enum Shape {
-    /// Value words in place: value types, and structs and fixed arrays of them. Decoding checks
-    /// their ranges.
     Words(usize),
-    /// A `bool`: decoding takes any last byte as true, so it is checked here.
     Bool,
-    /// `bytes` of at most this many bytes.
     Bytes(usize),
-    /// `T[]` of at most this many elements.
     Array(&'static Shape, usize),
-    /// `T[]` of at most this many elements, its length the cap of the next `Capped` array.
     Capping(&'static Shape, usize),
-    /// `T[]` no longer than the last `Capping` array.
     Capped(&'static Shape),
-    /// A struct, its fields in order.
     Tuple(&'static [Shape]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Malformed {
-    /// Not a call to the function, or a value out of its type's range.
     NotTheCall,
-    /// An offset not where the canonical encoding puts it, a nonzero pad, or bytes after the end.
     Noncanonical,
-    /// A length over its cap.
     TooLong,
 }
 
-/// Decodes `data` as a call to `C` whose arguments have the shapes `args`, once it is known to be
-/// their canonical encoding with every length within its cap.
 pub fn decode<C: SolCall>(data: &[u8], args: &[Shape]) -> Result<C, Malformed> {
     let data = data
         .strip_prefix(&C::SELECTOR)
@@ -62,7 +42,6 @@ impl Shape {
         }
     }
 
-    /// Its bytes in a tuple's heads: all of it if static, else the offset of its value.
     fn head(&self) -> usize {
         match self {
             Shape::Words(words) => 32 * words,
@@ -74,13 +53,10 @@ impl Shape {
 
 struct Walk<'a> {
     data: &'a [u8],
-    /// The length of the last `Capping` array.
     cap: usize,
 }
 
 impl Walk<'_> {
-    /// Checks a tuple at `start`: its fields' heads in order, then the values of the dynamic
-    /// ones, each starting where the one before it ends. Where the last one ends.
     fn tuple<'s>(
         &mut self,
         start: usize,
@@ -102,7 +78,6 @@ impl Walk<'_> {
         Ok(end)
     }
 
-    /// Checks the dynamic value at `at`; where it ends.
     fn value(&mut self, at: usize, shape: &Shape) -> Result<usize, Malformed> {
         let elements = at + 32;
         match *shape {
@@ -136,8 +111,6 @@ impl Walk<'_> {
         }
     }
 
-    /// Checks a static value at `at`. Its bytes come before where the walk ends, which `decode`
-    /// holds to the calldata's end, so only a bool needs reading.
     fn inline(&self, at: usize, shape: &Shape) -> Result<(), Malformed> {
         match shape {
             Shape::Bool if self.word(at)? > U256::from(1) => Err(Malformed::Noncanonical),
@@ -202,9 +175,6 @@ mod tests {
         }
     }
 
-    /// `call(2, &[5, 33])`. By word after the selector: 0–2 the heads (words at 0x60, notes at
-    /// 0xc0, flag); 3 two words; 6 two notes, their heads 7 and 8 at 0x40 and 0xc0 from word 7;
-    /// 9 the first note (memo at 0x40 from word 9, kind, a memo of 5); 13 the second.
     fn calldata() -> Vec<u8> {
         call(2, &[5, 33]).abi_encode()
     }
@@ -304,7 +274,6 @@ mod tests {
     fn refuses_other_calls_and_values_out_of_range() {
         let mut selector = calldata();
         selector[0] ^= 1;
-        // The first note's `kind`, a uint8.
         let kind = patched(&[(10, 256)]);
         for data in [selector, kind] {
             assert_eq!(

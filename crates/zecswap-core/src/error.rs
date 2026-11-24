@@ -4,27 +4,14 @@ use orchard::ValuePool;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A scalar was non-canonical or zero.
     InvalidScalar,
-    /// BIP-32 can't derive the key: a seed of another length, an account or index past its
-    /// range, or one of the 1-in-2^127 children it skips.
     InvalidDerivation,
-    /// A point was non-canonical, off the curve, or the identity.
     InvalidPoint,
-    /// `nk` or `rivk` was non-canonical, or together they yield an invalid viewing key.
     InvalidViewingKey,
-    /// The two public shares sum to the identity.
     DegenerateJointKey,
-    /// A proof of knowledge of a share did not verify.
     InvalidProof,
-    /// The secret shares do not combine to the joint account's `ak`.
     ShareMismatch,
-    /// None of the given keys authorizes this spend.
-    UnsignedSpend {
-        pool: ValuePool,
-        index: usize,
-    },
-    /// The PCZT contains no spend awaiting a signature.
+    UnsignedSpend { pool: ValuePool, index: usize },
     NothingToSign,
     SweepIntent(String),
     Pczt(String),

@@ -19,30 +19,16 @@ use zeroize::Zeroizing;
 
 use crate::api::{MakerApi, RelayerApi, refused};
 
-/// Ten confirmations take about 12.5 minutes; a swap must leave room to get them before `t0`.
 pub const MIN_TIME_TO_T0: u64 = 25 * 60;
-/// Until `t0` an unresponsive maker holds the deposit hostage.
 pub const MAX_TIME_TO_T0: u64 = 2 * 60 * 60;
-/// Never reveal with less than this left in the claim's window: a claim landing after `t1`
-/// reverts, its share public, with the swap the maker's to refund.
 pub const CLAIM_MARGIN: u64 = 5 * 60;
-/// How long a claim waits for its ready to be deep enough.
 const DEPTH_WAIT: Duration = Duration::from_secs(10 * 60);
 const CATCH_UP: Duration = Duration::from_secs(60);
-/// How long a relayer request that may have been sent is watched for on the chain before it is
-/// posted again.
 const RELAY_RETRY: Duration = Duration::from_secs(15);
-/// How long a relayer request goes on being posted while the chain doesn't show it: a payout
-/// never expires, but a run should end some time.
 const RELAY_PATIENCE: Duration = Duration::from_secs(30 * 60);
-/// Railgun's wallets open the first wallet of a seed.
 pub(crate) const RAILGUN_WALLET: u32 = 0;
-/// An open fee is paid only with this much of its quote's life left: it counts once mined, as
-/// the maker sees the chain, and paid any later it is likely lost.
 pub const OPEN_FEE_MARGIN: u64 = 60;
 
-/// A quote taken and checked for the swap at `index`, until it is accepted: what a wallet saves
-/// before it pays the quote's open fee.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Quoted {
     pub index: u32,
@@ -50,8 +36,6 @@ pub struct Quoted {
 }
 
 impl Quoted {
-    /// The fee to pay before accepting, if the quote asks one: an error once under
-    /// `OPEN_FEE_MARGIN` of the quote's life is left at `now`.
     pub fn fee_due(&self, now: u64) -> Result<Option<&OpenFee>> {
         let Some(fee) = &self.quote.open_fee else {
             return Ok(None);
@@ -65,46 +49,28 @@ impl Quoted {
     }
 }
 
-/// What a user keeps about a swap it accepted; its keys re-derive from the seed and index.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserSwap {
     pub index: u32,
     pub quote: Quote,
     pub swap_id: B256,
-    /// The deadlines the maker reported opening with, which complete the swap's terms.
     pub t0: u64,
     pub t1: u64,
-    /// The ticket the maker answered the accept with; none in a swap kept from before makers
-    /// gave them.
     #[serde(default)]
     pub ticket: Option<String>,
 }
 
-/// How a user is paid, and who sends its transactions.
 pub enum Route {
-    /// To the account the settlement connection sends as, which claims and withdraws itself.
     Account,
-    /// Into the user's Railgun wallet, the one its Railgun seed opens. Each swap's own key
-    /// signs, the relayer sends, and the user needs no account on the chain.
-    Railgun {
-        relayer: RelayerApi,
-        /// The most the relayer may keep from a payout, in token base units.
-        max_fee: u128,
-    },
+    Railgun { relayer: RelayerApi, max_fee: u128 },
 }
 
-/// What a claim paid the user.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Paid {
-    /// Token base units that left the contract for the user: withdrawn to the account, or
-    /// shielded into Railgun before Railgun's own fee.
     pub amount: u128,
-    /// The transaction that paid it; none if an earlier call already had.
     pub tx: Option<B256>,
 }
 
-/// A user with a wallet seed, which its swaps' keys derive from, paid to an account or into the
-/// Railgun wallet of its Railgun seed.
 pub struct User {
     seed: Zeroizing<Vec<u8>>,
     network: Network,
@@ -141,15 +107,11 @@ impl User {
         }
     }
 
-    /// Takes quotes whose open fee is at most `zatoshis`. Unless this is set, a quote that asks
-    /// any fee is refused.
     pub fn with_max_open_fee(mut self, zatoshis: u64) -> Self {
         self.max_open_fee = zatoshis;
         self
     }
 
-    /// Accepts a `t0` as soon as `seconds` away, instead of `MIN_TIME_TO_T0`: enough for a
-    /// deposit to get the confirmations its maker waits for, when that is fewer than 10.
     pub fn with_min_time_to_t0(mut self, seconds: u64) -> Self {
         self.min_time_to_t0 = seconds;
         self
@@ -159,15 +121,10 @@ impl User {
         &self.settlement
     }
 
-    /// The Railgun wallet payouts into Railgun go to.
     pub fn railgun(&self) -> &RailgunKeys {
         &self.railgun
     }
 
-    /// Takes a quote for `units` for the swap at `index` and checks it: its deployment, the
-    /// maker's proof and, where it asks an open fee, that the fee is within `with_max_open_fee`
-    /// and paid to an address of our network with an Orchard receiver alone. The index is spent
-    /// from this call on, whatever its outcome.
     pub async fn quote(&self, index: u32, units: u32) -> Result<Quoted> {
         let keys = self.keys(index)?;
         let payout = self.payout(&keys)?;
@@ -176,8 +133,6 @@ impl User {
             .quote(units, payout.user.into(), payout.note.map(B256::from))
             .await?;
         let chain_id = self.settlement.chain_id().await?;
-        // The maker checks its chain is its own network's too: a deposit on another Zcash
-        // network than the maker's would never be seen.
         let railgun = self.settlement.railgun().await?;
         self.network.check(chain_id, railgun, self.token)?;
         ensure!(quote.chain_id == chain_id, "the quote is for another chain");
@@ -194,10 +149,6 @@ impl User {
         Ok(Quoted { index, quote })
     }
 
-    /// Accepts a quote with its index's share. Where the quote asks an open fee, pay it and see
-    /// it mined first (`Quoted::fee_due`): until the maker has seen it too the accept is posted
-    /// again, and it fails with `FeeNotHonoured` if the quote expires first. Accepting again,
-    /// after an interruption, answers with the same swap.
     pub async fn accept(&self, quoted: &Quoted) -> Result<UserSwap> {
         let Quoted { index, quote } = quoted;
         let keys = self.keys(*index)?;
@@ -238,7 +189,6 @@ impl User {
         })
     }
 
-    /// Takes a quote and accepts it at once, as a maker that asks no open fee lets a wallet.
     pub async fn open(&self, index: u32, units: u32) -> Result<UserSwap> {
         let quoted = self.quote(index, units).await?;
         ensure!(
@@ -248,23 +198,15 @@ impl User {
         self.accept(&quoted).await
     }
 
-    /// Holds the token the swap hands back once paid into, where the maker takes tokens:
-    /// whether it now holds it. Spend it later, not right away: a spend just after it comes
-    /// back could be tied to this swap.
     pub async fn collect_token(&self, swap: &UserSwap) -> Result<bool> {
         self.maker.collect_token(swap.swap_id).await
     }
 
-    /// Checks the swap as the contract records it and derives the deposit account from the
-    /// on-chain shares. Nothing may be deposited unless this succeeds.
     pub async fn verify(&self, swap: &UserSwap) -> Result<JointAccount> {
-        // Swaps on the lock contract deployed before follow its rules, not ours.
         self.settlement
             .windows()
             .await
             .context("the swap's contract is not the windows contract")?;
-        // Read against the terms we expect, so the chain vouches for every one of them: the
-        // quoted maker, token, amount and share, our share and payout, and the deadlines.
         let chain = self.caught_up(swap, |_| true).await?;
         let keys = self.keys(swap.index)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
@@ -277,7 +219,6 @@ impl User {
         )?)
     }
 
-    /// The swap as the chain has it; an error if it opened on terms other than `terms` gives.
     pub async fn state(&self, swap: &UserSwap) -> Result<OnChainSwap> {
         self.settlement
             .swap(swap.swap_id, &self.terms(swap)?)
@@ -285,8 +226,6 @@ impl User {
             .context("the swap is not on-chain")
     }
 
-    /// The terms the swap must have opened with: the quote, our share and payout, and the
-    /// deadlines the maker reported. Every call on the swap supplies them.
     pub fn terms(&self, swap: &UserSwap) -> Result<Terms> {
         let keys = self.keys(swap.index)?;
         let payout = self.payout(&keys)?;
@@ -303,8 +242,6 @@ impl User {
         })
     }
 
-    /// Reveals the user share in the claim's window with time to spare, then pays the user. Safe
-    /// to call again after an interruption at any point.
     pub async fn claim(&self, swap: &UserSwap) -> Result<Paid> {
         match &self.route {
             Route::Account => self.claim_to_account(swap).await,
@@ -314,8 +251,6 @@ impl User {
         }
     }
 
-    /// Once the maker has refunded, combines its revealed share with ours: the key that
-    /// takes the deposit back.
     pub async fn refund_key(&self, swap: &UserSwap) -> Result<SpendKey> {
         let chain = self.state(swap).await?;
         ensure!(
@@ -335,7 +270,6 @@ impl User {
         let chain = self.state(swap).await?;
         let amount = match chain.stage {
             Stage::Refunded => bail!("the maker refunded the swap"),
-            // Revealed before an interruption: withdraw whatever is still credited.
             Stage::Claimed => self.settlement.balance_of(chain.user, chain.token).await?,
             Stage::Open | Stage::Ready => {
                 self.claim_window(swap).await?;
@@ -349,7 +283,6 @@ impl User {
         if amount == 0 {
             return Ok(Paid { amount, tx: None });
         }
-        // Apart from the claim, so a paused token can delay the payout but not the reveal.
         let tx = self
             .settlement
             .withdraw(chain.token, amount, chain.user)
@@ -395,7 +328,6 @@ impl User {
         };
 
         let ticket = swap.ticket.as_deref();
-        // The transaction that paid, where this call's requests sent it.
         let mut paid = None;
         match chain.stage {
             Stage::Refunded => bail!("the maker refunded the swap"),
@@ -405,11 +337,8 @@ impl User {
                     tx: None,
                 });
             }
-            // Revealed before an interruption: only the payout is left.
             Stage::Claimed => {}
             Stage::Open | Stage::Ready => {
-                // A payout Railgun won't take would sit in the contract; better the swap
-                // unwinds, which leaves the ZEC with the user.
                 ensure!(
                     self.settlement.railgun_accepts(chain.token).await?,
                     "Railgun is not taking the payout now; the share stays secret"
@@ -421,7 +350,6 @@ impl User {
                     secret: keys.share.to_be_bytes().into(),
                     payout: payout.clone(),
                 };
-                // Posted again only while the window keeps the margin, as it did at first.
                 let claimed = |chain: &OnChainSwap| chain.stage == Stage::Claimed;
                 let until = match window {
                     Window::Until(end) => end.saturating_sub(CLAIM_MARGIN),
@@ -431,7 +359,6 @@ impl User {
                     .relayed(swap, || relayer.claim(&claim, ticket), claimed, until)
                     .await?;
                 self.caught_up(swap, claimed).await?;
-                // The relayer reveals first and pays out after; a payout that failed is retried.
                 paid = sent
                     .filter(|sent| sent.transactions.len() == 2)
                     .and_then(|sent| last(&sent));
@@ -451,10 +378,6 @@ impl User {
         })
     }
 
-    /// Posts a relayer request until the chain shows what it does: what the relayer answered,
-    /// none where the chain showed it first. A request that timed out or failed with a `5xx`
-    /// may still land, and the relayer sends nothing twice, so it is watched for and then
-    /// posted again, until chain time `until`; a refusal sent nothing, and ends it.
     async fn relayed<F: Future<Output = Result<Sent>>>(
         &self,
         swap: &UserSwap,
@@ -488,7 +411,6 @@ impl User {
         }
     }
 
-    /// The note payouts of the swap at `index` go to, when it pays into Railgun.
     pub fn payout_note(&self, index: u32) -> Result<ShieldNote> {
         Ok(self.railgun.note(&self.keys(index)?.note_entropy)?)
     }
@@ -510,9 +432,6 @@ impl User {
         })
     }
 
-    /// The claim's window, once it is open with `CLAIM_MARGIN` to spare and, before `t0`, the
-    /// swap's ready has `READY_DEPTH` blocks above it, which it waits for: judged on the swap and
-    /// the newest block read as of one block, by the later of its time and the wall clock.
     async fn claim_window(&self, swap: &UserSwap) -> Result<Window> {
         let terms = self.terms(swap)?;
         let windows = self.settlement.windows().await?;
@@ -557,8 +476,6 @@ impl User {
         }
     }
 
-    /// Reads the swap once our RPC node shows what `seen` expects: it can lag the node a
-    /// transaction went through.
     async fn caught_up(
         &self,
         swap: &UserSwap,
@@ -609,8 +526,6 @@ fn last(sent: &Sent) -> Option<B256> {
     sent.transactions.last().copied()
 }
 
-/// That a wallet may pay `fee`: at most `max` zatoshis, to a unified address of `network` with an
-/// Orchard receiver alone, so no wallet pays it from, or into, a transparent pool.
 fn check_open_fee(fee: &OpenFee, network: NetworkType, max: u64) -> Result<()> {
     ensure!(fee.zat > 0, "the maker asks an open fee of nothing");
     ensure!(
@@ -623,8 +538,6 @@ fn check_open_fee(fee: &OpenFee, network: NetworkType, max: u64) -> Result<()> {
     Ok(())
 }
 
-/// That `t0` is `min` to `MAX_TIME_TO_T0` from `now`, and that `t1` leaves time to claim from
-/// `t0` with `CLAIM_MARGIN` to spare, should the maker never ready the swap.
 fn check_deadlines(now: u64, min: u64, t0: u64, t1: u64) -> Result<()> {
     ensure!(
         (now + min..=now + MAX_TIME_TO_T0).contains(&t0),
@@ -670,12 +583,9 @@ mod tests {
     const QUOTE: B256 = B256::repeat_byte(5);
     const FEE: u64 = 40_000;
 
-    /// A maker whose quotes ask `fee` and last `life` seconds. It has seen the fee once it has
-    /// turned `unseen` accepts down, each with `code`.
     struct Maker {
         fee: Option<OpenFee>,
         life: u64,
-        /// The accepts it first sheds, as a gateway or a maker with no room does.
         busy: u32,
         unseen: u32,
         code: ErrorCode,
@@ -756,7 +666,6 @@ mod tests {
         .into_response()
     }
 
-    /// The chain as the user's node answers for it: Sepolia, and the contract's Railgun.
     async fn node(Json(request): Json<Value>) -> Json<Value> {
         let result = match request["method"].as_str() {
             Some("eth_chainId") => format!("{SEPOLIA:#x}"),
@@ -766,7 +675,6 @@ mod tests {
         Json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
     }
 
-    /// A user of `maker`, which takes fees up to `max_open_fee` if any.
     async fn user_of(maker: Maker, max_open_fee: Option<u64>) -> (Arc<Maker>, User) {
         let maker = Arc::new(maker);
         let app = Router::new()
@@ -794,7 +702,6 @@ mod tests {
         (maker, user)
     }
 
-    /// An address a maker's fees could go to: Orchard alone, on `network`.
     fn fee_address(network: NetworkType) -> String {
         let keys = derive_user_keys(&[1; 64], network, 0, 0).unwrap();
         let maker = derive_maker_share(&[9; 32], 1).unwrap().public();
@@ -839,7 +746,6 @@ mod tests {
             ),
         ] {
             let (maker, user) = user_of(Maker::asking(asked), max).await;
-            // No quote comes back to pay for, or to accept.
             let refused = user.quote(0, 1).await.unwrap_err().to_string();
             assert!(refused.contains(wrong), "{refused}");
             assert!(user.open(0, 1).await.is_err());
@@ -849,7 +755,6 @@ mod tests {
         let (maker, user) = user_of(Maker::asking(fee(FEE)), Some(FEE)).await;
         let quoted = user.quote(0, 1).await.unwrap();
         assert_eq!(quoted.fee_due(wall_now()).unwrap(), fee(FEE).as_ref());
-        // Accepting at once would never be honoured: the fee comes first.
         let unpaid = user.open(0, 1).await.unwrap_err().to_string();
         assert!(unpaid.contains("pay it between"), "{unpaid}");
         assert_eq!(maker.accepts(), 0);
@@ -879,7 +784,6 @@ mod tests {
             (3, 1_790_003_600, 1_790_007_200)
         );
 
-        // Only `feeRequired` means not yet: another refusal with its status ends the accept.
         let refusing = Maker {
             unseen: u32::MAX,
             code: ErrorCode::Rejected,
@@ -922,7 +826,6 @@ mod tests {
         };
         let (maker, user) = user_of(blind, Some(FEE)).await;
         let quoted = user.quote(0, 1).await.unwrap();
-        // A wallet would not have paid for a quote this near its end.
         let late = quoted.fee_due(wall_now()).unwrap_err().to_string();
         assert!(late.contains("too soon"), "{late}");
 

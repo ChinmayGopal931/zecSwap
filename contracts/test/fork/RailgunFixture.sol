@@ -11,12 +11,9 @@ interface IRailgunTree {
     function shieldFee() external view returns (uint120);
 }
 
-/// The real Railgun and USDC on an Ethereum mainnet fork, and the note zecswap-railgun built in
-/// `vectors/railgun_note.json`. Tests skip unless ETH_RPC_URL is set.
 abstract contract RailgunFixture is Test {
     address internal constant RAILGUN = 0xFA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9;
     address internal constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
-    /// 2026-09-25; pinned so forks are cached and repeatable.
     uint256 internal constant FORK_BLOCK = 26_056_542;
     bytes32 internal constant SHIELD_EVENT = keccak256(
         "Shield(uint256,uint256,(bytes32,(uint8,address,uint256),uint120)[],(bytes32[3],bytes32)[],uint256[])"
@@ -26,7 +23,6 @@ abstract contract RailgunFixture is Test {
     IRailgun.ShieldCiphertext internal ciphertext;
     bytes32 internal commitment;
 
-    /// Forks mainnet at `FORK_BLOCK`, or skips the test, and reads the note.
     function forkMainnet() internal {
         string memory rpc = vm.envOr("ETH_RPC_URL", string(""));
         vm.skip(bytes(rpc).length == 0);
@@ -40,7 +36,6 @@ abstract contract RailgunFixture is Test {
         commitment = vm.parseJsonBytes32(json, ".commitment");
     }
 
-    /// The one `Shield` Railgun emitted since `vm.recordLogs`.
     function shieldEvent()
         internal
         view

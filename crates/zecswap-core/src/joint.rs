@@ -10,8 +10,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{Error, PublicShare, SecretShare};
 
-/// The user's `nk` and `rivk`, which complete the joint full viewing key. Shared with the
-/// maker so both can see the deposit.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ViewingKeys {
     nk: [u8; 32],
@@ -26,7 +24,6 @@ impl ViewingKeys {
         }
     }
 
-    /// Parses `nk ‖ rivk` in their raw Orchard FVK encodings.
     pub fn from_bytes(bytes: &[u8; 64]) -> Result<Self, Error> {
         let (nk, rivk) = bytes.split_at(32);
         let nk: [u8; 32] = nk.try_into().expect("32 bytes");
@@ -53,8 +50,6 @@ impl ViewingKeys {
     }
 }
 
-/// The Orchard account whose `ak` is `±(E + Z)`: both parties can view it, and only the
-/// holder of both secret shares can spend from it.
 #[derive(Clone, Debug)]
 pub struct JointAccount {
     fvk: FullViewingKey,
@@ -62,7 +57,6 @@ pub struct JointAccount {
 }
 
 impl JointAccount {
-    /// Derive from the shares as recorded on-chain, never from what a quote API claims.
     pub fn derive(
         maker: &PublicShare,
         user: &PublicShare,
@@ -72,7 +66,6 @@ impl JointAccount {
         if sum.is_identity().into() {
             return Err(Error::DegenerateJointKey);
         }
-        // Orchard requires `ak` to have an even `y`; `spend_key` negates `e + z` to match.
         let negated = sum.to_bytes()[31] >> 7 == 1;
         let ak = if negated { -sum } else { sum };
 
@@ -87,7 +80,6 @@ impl JointAccount {
         &self.fvk
     }
 
-    /// An Orchard-only unified full viewing key, for importing as a view-only account.
     pub fn ufvk(&self, network: NetworkType) -> String {
         unified::Ufvk::try_from_items(
             Revision::R0,
@@ -101,7 +93,6 @@ impl JointAccount {
         self.fvk.address_at(0u32, Scope::External)
     }
 
-    /// The deposit address as an Orchard-only unified address.
     pub fn unified_address(&self, network: NetworkType) -> String {
         let receiver = unified::Receiver::Orchard(self.deposit_address().to_raw_address_bytes());
         unified::Address::try_from_items(Revision::R0, vec![Uitem::Data(receiver)])
@@ -109,7 +100,6 @@ impl JointAccount {
             .encode(&network)
     }
 
-    /// Combines both halves into the key that authorizes spends from this account.
     pub fn spend_key(&self, maker: &SecretShare, user: &SecretShare) -> Result<SpendKey, Error> {
         let sum = maker.scalar() + user.scalar();
         let key = SpendKey::from_scalar(if self.negated { -sum } else { sum })
@@ -121,7 +111,6 @@ impl JointAccount {
     }
 }
 
-/// A combined spend authorizing key, `±(e + z)`, for one joint account.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SpendKey([u8; 32]);
 

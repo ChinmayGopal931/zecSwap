@@ -5,11 +5,6 @@ use crate::{Error, PublicShare, SecretShare, ShareProof};
 const MAKER_TAG: &[u8; 16] = b"ZecSwap/v1/maker";
 const USER_TAG: &[u8; 16] = b"ZecSwap/v2/user_";
 
-/// The quote a share's proof of knowledge is bound to, so it cannot be replayed into
-/// another swap, chain or contract.
-///
-/// The maker proves `E` before it sees `Z`, so its proof binds only `E`; the user's
-/// binds both shares and the payout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SwapContext {
     pub chain_id: u64,
@@ -17,8 +12,6 @@ pub struct SwapContext {
     pub quote_id: [u8; 32],
 }
 
-/// Where a swap pays: the contract's `user`, and for a payout into Railgun, the commitment to
-/// the note it goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Payout {
     pub user: [u8; 20],

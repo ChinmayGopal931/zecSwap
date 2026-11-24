@@ -1,6 +1,3 @@
-//! A note paid to the joint address is swept end to end: a real Halo 2 proof, a signature
-//! from the combined key, and a transaction the extractor fully verifies.
-
 use std::sync::OnceLock;
 
 use incrementalmerkletree::Retention;
@@ -65,8 +62,6 @@ impl Swap {
         self.joint.spend_key(&self.e, &self.z).unwrap()
     }
 
-    /// An IO-finalized PCZT sweeping a fresh deposit to a wallet outside the swap, as
-    /// `createPcztFromProposal` hands it over.
     fn sweep(&self) -> Pczt {
         self.sweep_with_outputs(&[(destination(), DEPOSIT - FEE)])
     }
@@ -341,8 +336,6 @@ fn an_orchard_only_address_has_that_receiver_alone_on_its_network() {
         Err("is on another network")
     );
 
-    // A sweep signs for the Orchard receiver itself, so others beside it do no harm there; a
-    // wallet paying the address could choose the transparent one.
     let with_transparent = address(vec![orchard, unified::Receiver::P2pkh([7; 20])]);
     assert_eq!(
         SweepIntent::recipient(&with_transparent, NetworkType::Test),

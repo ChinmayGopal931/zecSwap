@@ -6,7 +6,6 @@ import {MockRailgun} from "./utils/MockRailgun.sol";
 import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
-/// Smoke tests of the windows design: who may reveal when, in both directions.
 contract ZecSwapWindowsTest is SpendAuthVectors {
     uint256 internal constant WINDOW = 1 hours;
     uint256 internal constant LATE = 24 hours;
@@ -40,8 +39,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         swaps.deposit(address(usdc), 1_000 * uint256(AMOUNT));
         vm.stopPrank();
     }
-
-    // Forward
 
     function test_forward_aReadySwapIsTheUsersUntilT1() public {
         Case memory c = forward(90 minutes, 150 minutes);
@@ -77,7 +74,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         assertTrue(claims(c), "a user the maker didn't refund claims again");
     }
 
-    /// A user who missed t1 on a ready swap gets the late window too.
     function test_forward_aReadySwapNobodySettledIsTheUsersAgainAfterTheLateWindow() public {
         Case memory c = forward(90 minutes, 150 minutes);
         vm.prank(maker);
@@ -90,7 +86,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         assertFalse(refunds(c));
     }
 
-    /// Reverse escrows have no late window: from t1 the refund is the user's for good.
     function test_reverse_hasNoLateWindow() public {
         Case memory c = reverse(2 hours, 3 hours);
         ready(c);
@@ -118,8 +113,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         swaps.open(address(usdc), AMOUNT, e, z, maker, now_ + uint64(WINDOW), now_ + uint64(2 * WINDOW), 0);
         vm.stopPrank();
     }
-
-    // Reverse
 
     function test_reverse_anOpenLeavesTheUserAWindowToReadyBeforeT0() public {
         (ZecSwap.ReverseOpen memory r, bytes memory sig,) =
@@ -153,8 +146,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         }
     }
 
-    // Never both, whatever the time, stage and direction.
-
     function testFuzz_neverBothRevealsAtOnce(bool reverse_, bool makeReady, uint32 readyAt, uint32 at)
         public
     {
@@ -168,8 +159,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         vm.warp(opened + bound(at, 0, 9 days));
         assertFalse(claims(c) && refunds(c), "both reveals possible at once");
     }
-
-    // Helpers: each try is undone, so a test can ask both.
 
     function claims(Case memory c) internal returns (bool ok) {
         uint256 snap = vm.snapshotState();
@@ -225,7 +214,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         c.refundShare = e.k;
     }
 
-    /// Stored roles: the escrowing user is `maker`, the maker is `user`.
     function reverse(uint64 t0After, uint64 t1After) internal returns (Case memory c) {
         Vector memory m = randomVector(next++);
         Vector memory u = randomVector(next++);
@@ -241,7 +229,6 @@ contract ZecSwapWindowsTest is SpendAuthVectors {
         c.refundShare = u.k;
     }
 
-    /// A reverse open as Relay Adapt sends it, signed by a fresh per-swap key and funded.
     function reverseOpen(Vector memory m, Vector memory u, uint64 t0After, uint64 t1After)
         internal
         returns (ZecSwap.ReverseOpen memory r, bytes memory sig, uint256 authKey)

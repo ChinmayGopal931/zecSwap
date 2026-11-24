@@ -1,6 +1,3 @@
-//! The user side of a ZecSwap, step by step as a wallet runs it. The maker's API only
-//! proposes; nothing is deposited until the contract shows what was promised.
-
 mod api;
 mod deposits;
 mod tokens;

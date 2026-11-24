@@ -25,8 +25,6 @@ const RPC_TOTAL: Duration = Duration::from_secs(120);
 
 pub type Lightwalletd = CompactTxStreamerClient<DeadlineChannel>;
 
-/// Bounds the response body as well as the wait for headers, including streams opened by
-/// the wallet backend. HTTP/2 keepalives alone do not detect a stalled RPC stream.
 #[derive(Clone)]
 pub struct DeadlineChannel(Channel);
 
@@ -113,7 +111,6 @@ pub async fn connect(url: &str) -> Result<Lightwalletd, Error> {
     ))
 }
 
-/// Allows an existing maker to start protecting EVM escrows during a Zcash outage.
 pub fn connect_lazy(url: &str) -> Result<Lightwalletd, Error> {
     Ok(CompactTxStreamerClient::new(
         endpoint(url)?.connect_lazy().into(),
@@ -121,7 +118,6 @@ pub fn connect_lazy(url: &str) -> Result<Lightwalletd, Error> {
 }
 
 fn endpoint(url: &str) -> Result<Endpoint, Error> {
-    // Without keepalives a connection the server silently dropped would hang every call.
     let mut endpoint = Endpoint::from_shared(url.to_owned())
         .map_err(|e| Error::Config(format!("lightwalletd URL {url}: {e}")))?
         .connect_timeout(Duration::from_secs(15))
@@ -136,7 +132,6 @@ fn endpoint(url: &str) -> Result<Endpoint, Error> {
     Ok(endpoint)
 }
 
-/// Refuses a server on another Zcash network than `network`.
 pub(crate) async fn check_network(
     client: &mut Lightwalletd,
     network: NetworkType,
@@ -212,8 +207,6 @@ async fn confirm_submission(
     if response.error_code == 0 {
         return Ok(());
     }
-    // Duplicate submissions differ by backend. Verify the exact transaction instead
-    // of suppressing errors by matching strings or treating every rejection as success.
     if let Ok(Ok(known)) = tokio::time::timeout(Duration::from_secs(5), lookup).await
         && !data.is_empty()
         && known.data == data

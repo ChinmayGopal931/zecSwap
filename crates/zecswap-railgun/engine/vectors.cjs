@@ -1,5 +1,3 @@
-// Known answers from Railgun's engine for zecswap-railgun's tests:
-//   node vectors.cjs > ../tests/engine-vectors.json
 const {
   wallet,
   transactOutput,
@@ -17,7 +15,6 @@ const {
   word,
 } = require('./engine.cjs');
 
-// The engine's own key-derivation test mnemonics.
 const MNEMONICS = [
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
   'culture flower sunny seat maximum begin design magnet side permit coin dial alter insect whisper series desk power cream afford regular strike poem ostrich',
@@ -37,7 +34,6 @@ async function main() {
     }
   }
 
-  // Shields built by the engine, each with fresh random IVs, to the first two wallets.
   const notes = [];
   for (const [n, receiver] of wallets.slice(0, 2).entries()) {
     const random = hex(Buffer.alloc(16, 0x11 * (n + 1)));
@@ -59,9 +55,6 @@ async function main() {
     });
   }
 
-  // Transaction outputs from the third wallet to the first two: a broadcaster fee with the
-  // sender hidden and no memo, as the wallet SDK writes fees, and a transfer showing its sender
-  // with a memo, which the GCM tag covers too.
   const outputs = [];
   const sends = [
     { receiver: 0, value: 250000n, outputType: OutputType.BroadcasterFee, senderRandom: hex(Buffer.alloc(15, 0x5a)).slice(2) },

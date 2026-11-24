@@ -15,12 +15,8 @@ interface IUsdc {
     function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
 }
 
-/// Deposits against the real USDC, Railgun and sanctions oracle on an Ethereum mainnet fork, paying
-/// the note zecswap-railgun built. Its gas is what the relayer's deposit fee pays for:
-///   ETH_RPC_URL=… forge test --match-path test/fork/DepositsFork.t.sol --isolate -vv
 contract DepositsForkTest is RailgunFixture {
     address internal constant SANCTIONS = 0x40C57923924B5c5c5455c48D93317139ADDaC8fb;
-    /// On OFAC's list, and flagged by the oracle at the fork block.
     address internal constant SANCTIONED = 0x7F367cC41522cE07553e823bf3be79A889DEbe1B;
     bytes32 internal constant RECEIVE_WITH_AUTHORIZATION_TYPEHASH = keccak256(
         "ReceiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)"
@@ -44,8 +40,6 @@ contract DepositsForkTest is RailgunFixture {
         (depositor, depositorKey) = makeAddrAndKey("depositor");
     }
 
-    /// Wallets build USDC's domain from its `name()` and `version()`, and check it against
-    /// `DOMAIN_SEPARATOR()`.
     function test_usdcsDomainIsItsNameAndVersion() public view {
         string memory name = IUsdc(USDC).name();
         string memory version = IUsdc(USDC).version();
@@ -61,7 +55,6 @@ contract DepositsForkTest is RailgunFixture {
         assertEq(deposits.noteCommitment(npk, ciphertext), commitment);
     }
 
-    /// A first deposit from an address makes its vault; a later one goes through it.
     function test_aSignedAuthorizationShieldsItsValueLessTheFees() public {
         address vault = deposits.vaultOf(depositor);
         uint256 firstGas = deposit(FEE);
@@ -74,7 +67,6 @@ contract DepositsForkTest is RailgunFixture {
         console.log("later deposit gas", laterGas);
     }
 
-    /// Refused before anything else is read: USDC has blacklisted it too.
     function test_aSanctionedDepositorIsRefused() public {
         uint256 validBefore = block.timestamp + 1 hours;
         vm.prank(relayer);
@@ -101,7 +93,6 @@ contract DepositsForkTest is RailgunFixture {
         console.log("rescue gas", gas);
     }
 
-    /// The depositor's signature of `VALUE` to `deposits`, valid for an hour.
     struct Signed {
         uint256 validBefore;
         bytes32 nonce;
@@ -110,8 +101,6 @@ contract DepositsForkTest is RailgunFixture {
         bytes32 s;
     }
 
-    /// Mints `VALUE` to the depositor and shields it for `fee`, checking what Railgun recorded;
-    /// the shield's gas.
     function deposit(uint128 fee) internal returns (uint256 gas) {
         deal(USDC, depositor, VALUE);
         uint256 relayed = IERC20(USDC).balanceOf(relayer);
@@ -132,7 +121,6 @@ contract DepositsForkTest is RailgunFixture {
         assertTrue(IUsdc(USDC).authorizationState(depositor, signed.nonce));
     }
 
-    /// The one note Railgun shielded since `vm.recordLogs`: `VALUE` less `fee` and Railgun's fee.
     function checkShielded(uint128 fee) internal view {
         (
             IRailgun.CommitmentPreimage[] memory notes,

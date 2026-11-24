@@ -9,8 +9,6 @@ import {MockRailgun} from "./utils/MockRailgun.sol";
 import {MockSanctions} from "./utils/MockSanctions.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
-/// Public tokens shielded into their owner's Railgun balance on the owner's EIP-3009 authorization,
-/// sent by a relayer that keeps the fee signed for it.
 contract DepositsTest is Test {
     uint256 internal constant VALUE = 25e6;
     uint128 internal constant FEE = 150_000;
@@ -19,7 +17,6 @@ contract DepositsTest is Test {
         "Rescue(address from,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)"
     );
 
-    /// One `shield` call's arguments.
     struct Authorization {
         address from;
         uint256 value;
@@ -50,8 +47,6 @@ contract DepositsTest is Test {
         ciphertext = cipher("ciphertext");
         usdc.mint(depositor, VALUE);
     }
-
-    // shield
 
     function test_shield_shieldsTheValueLessTheFeeToTheSignedNote() public {
         Authorization memory a = signed(authorization(), relayer);
@@ -128,7 +123,6 @@ contract DepositsTest is Test {
         vm.expectRevert(invalid);
         send(a);
 
-        // The token's own digest binds the amount and the window.
         a = signed(authorization(), relayer);
         a.value = VALUE - 1;
         vm.expectRevert(invalid);
@@ -139,7 +133,6 @@ contract DepositsTest is Test {
         vm.expectRevert(invalid);
         send(a);
 
-        // Signed for another relayer, or sent by anyone but the one it names: another nonce.
         a = signed(authorization(), makeAddr("another relayer"));
         vm.expectRevert(invalid);
         send(a);
@@ -223,8 +216,6 @@ contract DepositsTest is Test {
         send(a);
     }
 
-    /// A fee of the whole deposit or more is refused even when the vault holds a returned note: that
-    /// would pay the relayer the deposit and shield the old note in its place.
     function test_shield_refusesAFeeOfTheWholeValueBesideAReturnedNote() public {
         send(signed(authorization(), relayer));
         usdc.mint(deposits.vaultOf(depositor), VALUE);
@@ -273,7 +264,6 @@ contract DepositsTest is Test {
         assertNotEq(deposits.depositNonce(npk, ciphertext, FEE, relayer), nonce);
         vm.chainId(chain);
 
-        // Signed for this contract, sent through its twin: the token's digest names this one.
         Authorization memory a = signed(authorization(), relayer);
         vm.prank(relayer);
         vm.expectRevert(bytes("invalid signature"));
@@ -302,8 +292,6 @@ contract DepositsTest is Test {
         vm.expectRevert(ShieldVault.NotEscrow.selector);
         vault.shield(railgun, address(usdc), npk, ciphertext, 0, address(this));
     }
-
-    // rescue
 
     function test_rescue_shieldsWhatCameBackToANoteTheDepositorSigns() public {
         send(signed(authorization(), relayer));
@@ -376,8 +364,6 @@ contract DepositsTest is Test {
         assertEq(deposits.rescueNonces(depositor), 2);
     }
 
-    /// A signature one byte short or long is refused, and so is one for the nonce after the next:
-    /// nonces are taken in order.
     function test_rescue_takesWellFormedSignaturesForTheNextNonceOnly() public {
         send(signed(authorization(), relayer));
         usdc.mint(deposits.vaultOf(depositor), VALUE);
@@ -420,7 +406,6 @@ contract DepositsTest is Test {
         deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, sig);
         assertEq(deposits.rescueNonces(depositor), 0);
 
-        // Good until its deadline, that second included.
         deadline = uint64(block.timestamp);
         sig = rescueSig(depositorKey, npk, ciphertext, relayer, FEE, 0, deadline);
         vm.prank(relayer);
@@ -461,10 +446,6 @@ contract DepositsTest is Test {
         deposits.rescue(depositor, npk, ciphertext, FEE, 0, deadline, sig);
     }
 
-    // Rust's answers
-
-    /// zecswap-core's `deposit_hashes_match_the_contracts_known_answers`: the contracts at those
-    /// addresses take a shield and a rescue signed over the digests Rust computed.
     function test_hashesMatchTheRustVectors() public {
         address at = address(0x1111111111111111111111111111111111111111);
         address token = address(0x8888888888888888888888888888888888888888);
@@ -501,9 +482,6 @@ contract DepositsTest is Test {
         assertEq(vectors.rescueNonces(from), 1);
     }
 
-    // helpers
-
-    /// Shields the depositor's whole balance to `npk`, valid for an hour.
     function authorization() internal view returns (Authorization memory a) {
         a.from = depositor;
         a.value = VALUE;
@@ -513,7 +491,6 @@ contract DepositsTest is Test {
         a.fee = FEE;
     }
 
-    /// `a`, signed by the depositor for `by` to send.
     function signed(Authorization memory a, address by) internal view returns (Authorization memory) {
         bytes32 nonce = deposits.depositNonce(a.npk, a.ciphertext, a.fee, by);
         (a.v, a.r, a.s) = vm.sign(depositorKey, receiveDigest(a, nonce));
@@ -527,7 +504,6 @@ contract DepositsTest is Test {
         );
     }
 
-    /// The token's EIP-712 digest of `receiveWithAuthorization` to `deposits`.
     function receiveDigest(Authorization memory a, bytes32 nonce) internal view returns (bytes32) {
         bytes32 structHash = keccak256(
             abi.encode(
@@ -557,7 +533,6 @@ contract DepositsTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    /// The depositor's rescue, as a wallet computes it for `deposits`.
     function rescueDigest(
         bytes32 noteNpk,
         IRailgun.ShieldCiphertext memory noteCiphertext,
@@ -582,7 +557,6 @@ contract DepositsTest is Test {
         return keccak256(abi.encodePacked("\x19\x01", domain, structHash));
     }
 
-    /// The word of 32 `b`s.
     function repeated(uint8 b) internal pure returns (bytes32) {
         return bytes32(uint256(b) * (type(uint256).max / 255));
     }

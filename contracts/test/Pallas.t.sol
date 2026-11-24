@@ -17,7 +17,6 @@ contract PallasTest is SpendAuthVectors {
         }
     }
 
-    /// [q - k]·G = -[k]·G: an independent check of each vector through a different bit pattern.
     function test_negatedScalarGivesNegatedPoint() public view {
         for (uint256 i; i < vectors.length; ++i) {
             Vector memory v = vectors[i];
@@ -37,11 +36,8 @@ contract PallasTest is SpendAuthVectors {
     function test_rejectsScalarsOutsideTheGroupOrder() public view {
         assertFalse(pallas.isSpendAuthMul(0, Pallas.GX, Pallas.GY));
         assertFalse(pallas.isSpendAuthMul(Pallas.Q, Pallas.GX, Pallas.GY));
-        // q + 1 reduces to 1, so an unchecked implementation would accept it.
         assertFalse(pallas.isSpendAuthMul(Pallas.Q + 1, Pallas.GX, Pallas.GY));
         assertFalse(pallas.isSpendAuthMul(type(uint256).max, Pallas.GX, Pallas.GY));
-        // q + 2 ends on G + G, which the addition formula answers with (0, 0, 0): unchecked, it
-        // would open every key.
         Vector memory v = randomVector(0);
         assertFalse(pallas.isSpendAuthMul(Pallas.Q + 2, v.x, v.y));
     }
@@ -53,7 +49,6 @@ contract PallasTest is SpendAuthVectors {
         assertFalse(pallas.isOnCurve(Pallas.GX, Pallas.GY + Pallas.P));
     }
 
-    /// A point's y does not name it: (ζ·x, y) is on the curve too, for ζ a cube root of one.
     function test_rejectsTheOtherPointsWithTheSameY() public view {
         uint256 zeta = 0x2d33357cb532458ed3552a23a8554e5005270d29d19fc7d27b7fd22f0201b547;
         assertEq(mulmod(mulmod(zeta, zeta, Pallas.P), zeta, Pallas.P), 1);

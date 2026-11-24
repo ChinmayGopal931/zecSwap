@@ -1,6 +1,3 @@
-//! What a connection asks its node, counted by method: nodes bill each request by its method,
-//! so this is what each service spends of its RPC.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -14,26 +11,20 @@ use tower_layer::Layer;
 use tower_service::Service;
 use tracing::info;
 
-/// The requests of every connection given it, by method, since it started.
 #[derive(Clone, Default)]
 pub struct RpcMeter(Arc<Mutex<RpcUsage>>);
 
-/// Requests sent, by JSON-RPC method, and how many got no answer: refused by the node, such as
-/// over its quota, or lost on the way.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RpcUsage {
     pub requests: BTreeMap<String, u64>,
     pub failed: u64,
 }
 
-/// What a monitor shows of a service's RPC since it started.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RpcReport {
-    /// The node's host and a fingerprint of its key, never the key.
     pub endpoint: String,
     pub requests: u64,
-    /// What Alchemy bills for them, in its compute units.
     pub compute_units: u64,
     pub failed: u64,
     pub methods: BTreeMap<String, u64>,
@@ -44,7 +35,6 @@ impl RpcMeter {
         self.0.lock().unwrap().clone()
     }
 
-    /// What it counted since it started, for a monitor, with `endpoint` naming the node.
     pub fn report(&self, endpoint: String) -> RpcReport {
         let usage = self.usage();
         RpcReport {
@@ -66,7 +56,6 @@ impl RpcUsage {
         self.requests.values().sum()
     }
 
-    /// What Alchemy bills for these requests, in its compute units.
     pub fn compute_units(&self) -> u64 {
         self.requests
             .iter()
@@ -74,7 +63,6 @@ impl RpcUsage {
             .sum()
     }
 
-    /// What was sent after `earlier`, a reading of the same meter.
     pub fn since(&self, earlier: &RpcUsage) -> RpcUsage {
         RpcUsage {
             requests: self
@@ -90,7 +78,6 @@ impl RpcUsage {
         }
     }
 
-    /// The methods, most sent first: `eth_call=40 eth_getLogs=12`.
     pub fn methods(&self) -> String {
         let mut methods: Vec<_> = self.requests.iter().collect();
         methods.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
@@ -102,8 +89,6 @@ impl RpcUsage {
     }
 }
 
-/// Alchemy's published rate for `method`
-/// (https://www.alchemy.com/docs/reference/compute-unit-costs); 20 for the rest it lists.
 pub fn compute_units(method: &str) -> u64 {
     match method {
         "eth_chainId" => 0,
@@ -115,7 +100,6 @@ pub fn compute_units(method: &str) -> u64 {
     }
 }
 
-/// Logs what `meter` sent in each `period`, by method, with what Alchemy bills for it.
 pub async fn log_usage(meter: RpcMeter, period: Duration) {
     let mut last = meter.usage();
     loop {
@@ -134,9 +118,6 @@ pub async fn log_usage(meter: RpcMeter, period: Duration) {
     }
 }
 
-/// Where `url` points, naming its key only by a fingerprint: the first eight hex digits of the
-/// SHA-256 of its last path segment (or its query), as `printf %s KEY | shasum -a 256` prints
-/// them. Logs and monitors tell keys apart by it without ever holding one.
 pub fn endpoint(url: &str) -> String {
     let Ok(url) = reqwest::Url::parse(url) else {
         return "an unreadable URL".into();
@@ -226,7 +207,6 @@ mod tests {
 
     #[test]
     fn endpoints_name_their_host_and_only_a_fingerprint_of_their_key() {
-        // printf %s 'abc' | shasum -a 256 → ba7816bf…
         assert_eq!(
             endpoint("https://eth-sepolia.g.alchemy.com/v2/abc"),
             "eth-sepolia.g.alchemy.com, key ba7816bf"

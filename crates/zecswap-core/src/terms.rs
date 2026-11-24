@@ -1,27 +1,20 @@
 use crate::auth::{address, keccak, uint};
 use crate::{PublicShare, ReverseOpen};
 
-/// What a swap commits to at `open`. The contract stores only their hash, so whoever acts on the
-/// swap supplies them again, and the contract refuses any that don't hash to what it stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
-    /// Whose inventory the swap locks: the maker's, or for a reverse swap the escrowing user's.
     pub maker: [u8; 20],
     pub token: [u8; 20],
     pub amount: u128,
     pub maker_share: PublicShare,
     pub user_share: PublicShare,
-    /// Who a claim pays, or for a payout into Railgun the swap's own key.
     pub user: [u8; 20],
     pub t0: u64,
     pub t1: u64,
-    /// The commitment to the Railgun note a claim pays; zero pays `user`'s balance.
     pub payout_note: [u8; 32],
 }
 
 impl Terms {
-    /// The contract's `hashTerms`: keccak-256 of the terms ABI-encoded as its `Terms` struct,
-    /// eleven words with each share as its two coordinates.
     pub fn hash(&self) -> [u8; 32] {
         keccak(&[
             &address(&self.maker),
@@ -38,8 +31,6 @@ impl Terms {
 }
 
 impl ReverseOpen {
-    /// The terms `openReverse` opens with: the escrowing user is their `maker` and the ZEC side
-    /// their `user`, each with the other's share, and the claim pays the ZEC side's balance.
     pub fn terms(&self) -> Terms {
         Terms {
             maker: self.user,
@@ -65,8 +56,6 @@ mod tests {
         core::array::from_fn(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
     }
 
-    /// The known answers `cargo run -p zecswap-client --example vectors` prints for wallets'
-    /// ports; the contract's tests hash the same terms to the same values.
     #[test]
     fn hashes_match_the_contracts_known_answers() {
         let user_share = derive_user_keys(&[7; 64], NetworkType::Test, 0, 0)

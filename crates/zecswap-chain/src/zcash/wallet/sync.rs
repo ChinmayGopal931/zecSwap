@@ -1,11 +1,3 @@
-//! `zcash_client_backend::sync::run` (0.25.0), except that it adds only the subtree roots the
-//! wallet lacks, and refreshes no transparent UTXOs.
-//!
-//! The library puts every pool's whole root list on each run, and merging that list into the
-//! stored tree hashes it again at every level: seconds of CPU per sync for mainnet's ~1,900 roots,
-//! of which a few change a day. The accounts here spend and report only Orchard-protocol funds
-//! (`transparent-inputs` is on only because `pczt` needs it), so UTXOs would be stored unread.
-
 use std::fmt::Display;
 
 use zcash_client_backend::data_api::chain::{
@@ -24,7 +16,6 @@ use crate::Error;
 use crate::zcash::cache::MemoryBlockCache;
 use crate::zcash::lightwalletd::{self, Lightwalletd};
 
-/// The subtrees of a note commitment tree: its depth, 32, less the shard height, 16.
 const SUBTREES: u64 = 1 << 16;
 
 pub(super) async fn run(
@@ -62,8 +53,6 @@ pub(super) async fn run(
     Ok(())
 }
 
-/// Adds a pool's subtree roots from the last one the wallet holds. That one is fetched again, so
-/// a root a reorganisation replaced conflicts as it would in the library's full put.
 async fn update_roots<H, E>(
     client: &mut Lightwalletd,
     db: &mut Db,
@@ -80,7 +69,6 @@ where
     add_roots(db, start, &roots, &get, &put)
 }
 
-/// Puts `roots`, fetched from index `start`, unless they only repeat the root held there.
 fn add_roots<H: PartialEq, E: Display>(
     db: &mut Db,
     start: u64,
@@ -95,8 +83,6 @@ fn add_roots<H: PartialEq, E: Display>(
     Ok(())
 }
 
-/// How many roots the wallet holds. Roots fill a tree from its first subtree, so those held are
-/// the first ones.
 fn held_roots<H, E: Display>(
     db: &mut Db,
     get: &impl Fn(&mut Db, u64) -> Result<Option<H>, E>,
@@ -113,7 +99,6 @@ fn held_roots<H, E: Display>(
     Ok(held)
 }
 
-/// Whether `roots`, fetched from the last root held, carry anything the wallet lacks.
 fn adds_to<H: PartialEq>(held: Option<&H>, roots: &[CommitmentTreeRoot<H>]) -> bool {
     match roots {
         [] => false,
@@ -150,7 +135,6 @@ async fn download_roots<H: HashSer>(
     Ok(roots)
 }
 
-/// One pass of the library's loop: true when scanning changed the ranges it was working through.
 async fn running(
     client: &mut Lightwalletd,
     network: &Network,
@@ -160,8 +144,6 @@ async fn running(
 ) -> Result<bool, Error> {
     let tip = lightwalletd::chain_tip(client).await?;
     db.update_chain_tip(tip)?;
-    // A range to verify always comes first, and is scanned until the wallet's view of its tip
-    // connects to the server's chain.
     let mut ranges = db.suggest_scan_ranges()?;
     while let Some(range) = ranges
         .first()
@@ -185,7 +167,6 @@ async fn running(
     Ok(false)
 }
 
-/// Splits `range` into runs of at most `size` blocks.
 fn batches(range: ScanRange, size: u32) -> impl Iterator<Item = ScanRange> {
     (0..).scan(range, move |rest, _| {
         if rest.is_empty() {
@@ -202,8 +183,6 @@ fn batches(range: ScanRange, size: u32) -> impl Iterator<Item = ScanRange> {
     })
 }
 
-/// Downloads and scans `range`: true when a reorganisation, or a range of higher priority that
-/// scanning added, invalidates the ranges being worked through.
 async fn scan(
     client: &mut Lightwalletd,
     network: &Network,
@@ -235,7 +214,6 @@ async fn scan(
         .map_err(|e| Error::Wallet(format!("lightwalletd's tree state: {e}")))?;
     let changed = match scan_cached_blocks(network, cache, db, from, &state, range.len()) {
         Err(ChainError::Scan(e)) if e.is_continuity_error() => {
-            // The library's heuristic: rewind ten blocks below the break.
             let rewind = e.at_height().saturating_sub(10);
             tracing::info!(at = %e.at_height(), %rewind, "Zcash chain reorganised; rewinding");
             db.truncate_to_height(rewind)?;
@@ -293,10 +271,8 @@ mod tests {
             Wallet::open(dir.path().join("wallet.sqlite"), Network::MainNetwork).unwrap();
         let chain = roots(5);
         assert_eq!(held(&mut wallet), 0);
-        // A new wallet fetches from the first root, as the library does on every sync.
         add(&mut wallet, 0, &chain[..3]);
         assert_eq!(held(&mut wallet), 3);
-        // Later, from the last root held: it comes back with any completed since.
         add(&mut wallet, 2, &chain[2..]);
         assert_eq!(held(&mut wallet), 5);
         for (index, root) in chain.iter().enumerate() {

@@ -8,7 +8,6 @@ use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// Test wallet files. The seed is stored in the clear: testnet use only.
 pub(crate) struct Store {
     dir: PathBuf,
 }

@@ -8,8 +8,6 @@ import {IRailgun} from "../src/ShieldVault.sol";
 import {MockRailgun} from "./utils/MockRailgun.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
-/// Drives random deposits, returns from Railgun and rescues, honest and altered on the way, and
-/// records where every token went.
 contract DepositsHandler is Test {
     uint256 internal constant DEPOSITORS = 3;
     bytes32 internal constant RESCUE_TYPEHASH = keccak256(
@@ -25,12 +23,8 @@ contract DepositsHandler is Test {
     address[] public depositors;
     uint256[] internal keys;
     mapping(address vault => address) public ownerOf;
-    /// The notes each depositor signed for, by `noteKey`.
     mapping(address depositor => mapping(bytes32 note => bool)) public signedFor;
-    /// The nonces of each depositor's authorizations that landed. The nonce commits to the note, the
-    /// fee and the relayer, and the token takes each once.
     mapping(address depositor => mapping(bytes32 nonce => bool)) internal landed;
-    /// The fees signed for the relayer, of what landed.
     uint256 public fees;
     uint256 public minted;
     bool public alteredLanded;
@@ -48,9 +42,6 @@ contract DepositsHandler is Test {
         }
     }
 
-    /// Some token arrives at a deposit address, whose owner signs to shield its whole balance;
-    /// sent as signed, or with its sender, fee or note altered. Signed again for a note, fee and
-    /// relayer that landed before, it is that authorization again and must not land twice.
     function deposit(uint256 who, uint96 amount, uint96 fee, uint256 seed, uint8 alteration) external {
         uint256 i = who % DEPOSITORS;
         address from = depositors[i];
@@ -76,7 +67,6 @@ contract DepositsHandler is Test {
         }
     }
 
-    /// Railgun sends a note back to the vault it came from.
     function returnToVault(uint256 who, uint96 amount) external {
         address vault = deposits.vaultOf(depositors[who % DEPOSITORS]);
         if (vault.code.length == 0) return;
@@ -115,7 +105,6 @@ contract DepositsHandler is Test {
         return DEPOSITORS;
     }
 
-    /// A note and the hash of its ciphertext, as `MockRailgun` records them.
     function noteKey(bytes32 npk, IRailgun.ShieldCiphertext memory c) public pure returns (bytes32) {
         return keccak256(abi.encode(npk, keccak256(abi.encode(c))));
     }
@@ -200,8 +189,6 @@ contract DepositsInvariantTest is Test {
         assertEq(usdc.balanceOf(address(deposits)), 0);
     }
 
-    /// Into Railgun from a depositor's own vault, to a note that depositor signed for, or to the
-    /// relayer the signatures name, for the fees they name: nowhere else.
     function invariant_tokensLeaveOnlyToTheSignedNoteOrTheBoundRelayer() public view {
         assertFalse(handler.alteredLanded(), "an altered or replayed request landed");
         assertFalse(handler.honestFailed(), "a request sent as signed failed");

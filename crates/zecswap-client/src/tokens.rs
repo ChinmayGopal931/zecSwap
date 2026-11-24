@@ -1,8 +1,3 @@
-//! Pays for each accept with a Privacy Pass token when the maker asks for one, fetching a batch
-//! from the issuer when none is held, and asks for it back: a swap the user pays into hands its
-//! token back, signed blind under the maker's return key. Neither the issuer nor the maker can
-//! tell which of this device's tokens paid for which swap.
-
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,17 +12,12 @@ use zecswap_api::tokens::{
 };
 use zecswap_tokens::{Challenge, Pending, Token, TokenKey, day, read_www_authenticate};
 
-/// How far the maker's clock may be from ours around midnight, when the day it asks tokens
-/// for turns.
 const CLOCK_SKEW: u64 = 10 * 60;
 
-/// How this install proves to the issuer that it is genuine: its attestation of a request
-/// carrying `blinded`, for the issuer's `challenge` (base64url, as given).
 pub trait Attest: Send + Sync {
     fn attest(&self, challenge: &str, blinded: &[Vec<u8>]) -> Result<Attestation>;
 }
 
-/// A device id the issuer's `insecure-test` mode takes on trust: for tests.
 pub struct Unattested(pub Vec<u8>);
 
 impl Attest for Unattested {
@@ -44,8 +34,6 @@ pub struct Tokens {
     issuer: String,
     attest: Box<dyn Attest>,
     batch: usize,
-    /// The key the maker hands tokens back under, pinned: one a maker gave only some devices
-    /// would mark their returned tokens.
     return_key: TokenKey,
     http: reqwest::Client,
     state: Mutex<State>,
@@ -53,16 +41,11 @@ pub struct Tokens {
 
 #[derive(Default)]
 struct State {
-    /// Unspent tokens, by the challenge they answer, its day included, and the key they are
-    /// under.
     held: HashMap<(Challenge, [u8; 32]), Vec<Token>>,
-    /// Each accept's request for its token back, by swap: more than one if it was retried.
     returns: HashMap<B256, Vec<(Challenge, Pending)>>,
-    /// The day the issuer said this device's allowance was spent.
     exhausted: Option<u64>,
 }
 
-/// What an accept pays with: a token, and the request for it back that the accept carries.
 pub(crate) struct Payment {
     pub(crate) token: Token,
     pub(crate) request: String,
@@ -71,9 +54,6 @@ pub(crate) struct Payment {
 }
 
 impl Tokens {
-    /// Fetches `batch` tokens at a time from the issuer API at `issuer`, for the install
-    /// `attest` speaks for, and asks for tokens back under `return_key` (base64url SPKI), the
-    /// maker's published one.
     pub fn new(
         issuer: impl Into<String>,
         attest: impl Attest + 'static,
@@ -93,13 +73,9 @@ impl Tokens {
         })
     }
 
-    /// A token for what the maker's `WWW-Authenticate` asks, and a request for it back. The
-    /// issuer's tokens go first: a returned one spent soon after it came back could be tied
-    /// to the swap that returned it.
     pub(crate) async fn pay(&self, asked: &str) -> Result<Payment> {
         let (challenge, key) = read_www_authenticate(asked)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        // A day only some devices were asked for would mark their tokens.
         ensure!(
             (day(now.saturating_sub(CLOCK_SKEW))..=day(now + CLOCK_SKEW))
                 .contains(&challenge.day()),
@@ -108,8 +84,6 @@ impl Tokens {
         let today = challenge.day();
         {
             let mut state = self.state();
-            // Earlier days' tokens are refused, and so would be the tokens their requests
-            // become.
             state.held.retain(|(held, _), _| held.day() >= today);
             state.returns.retain(|_, requests| {
                 requests.retain(|(challenge, _)| challenge.day() >= today);
@@ -137,11 +111,6 @@ impl Tokens {
         })
     }
 
-    /// Settles an accept paid with `payment` once the maker answers `status`, or none if the
-    /// answer was lost. Refused before the maker took its quote, the accept left the token
-    /// spendable: it is kept, to go first next time; if the maker took the quote after all, it
-    /// refuses the token then and the next goes. Unless the maker refused the token itself,
-    /// the swap may still hand one back.
     pub(crate) fn settle(&self, swap_id: B256, payment: Payment, status: Option<StatusCode>) {
         let Payment {
             token,
@@ -164,7 +133,6 @@ impl Tokens {
             .push((challenge, pending));
     }
 
-    /// Holds the token a swap's status hands back, if it does: whether one is now held.
     pub(crate) fn collect(&self, swap_id: B256, token_return: Option<&str>) -> Result<bool> {
         let Some(token_return) = token_return else {
             return Ok(false);
@@ -175,7 +143,6 @@ impl Tokens {
             .returns
             .remove(&swap_id)
             .context("no request for this swap's token is pending")?;
-        // The maker signed one of the swap's requests, the one it took the quote with.
         for (challenge, pending) in requests {
             if let Ok(token) = pending.finalize(&self.return_key, &signature) {
                 let held = (challenge, self.return_key.id());
@@ -198,11 +165,7 @@ impl Tokens {
             .ok_or_else(|| anyhow!("this device's tokens for today are spent"))
     }
 
-    /// A token from a new batch, the rest held; none if the device's allowance for the day is
-    /// spent.
     async fn fetch(&self, challenge: &Challenge, key: &TokenKey) -> Result<Option<Token>> {
-        // A key only some devices were asked to use would mark their tokens: take only the one
-        // the issuer publishes to everyone.
         let published: Published = self
             .http
             .get(format!("{}/v1/token-key", self.issuer))
@@ -248,7 +211,6 @@ impl Tokens {
             response.text().await?
         );
         let issued: TokenResponses = response.json().await?;
-        // The issuer signs no more than the day has left.
         ensure!(
             (1..=pending.len()).contains(&issued.blind_signatures.len()),
             "the issuer signed another number of tokens"
@@ -260,7 +222,6 @@ impl Tokens {
             .collect::<Result<Vec<_>>>()
             .context("the issuer's signatures")?;
         let token = tokens.pop().expect("a batch of at least one");
-        // Added to, not replaced: another accept may have fetched a batch meanwhile.
         self.state()
             .held
             .entry((challenge.clone(), key.id()))
@@ -295,25 +256,18 @@ pub(crate) mod tests {
     use super::*;
     use crate::MakerApi;
 
-    /// Every accept of it is refused.
     const REFUSED: B256 = B256::repeat_byte(0xff);
 
-    /// A maker's accepts and forward statuses: an accept keeps its token and opens the swap its
-    /// quote id names, unless it is `REFUSED`; a swap marked paid hands its token back.
     struct Maker {
         gate: Arc<Gate>,
-        /// Every token sent, whether or not the gate took it.
         sent: Mutex<Vec<Token>>,
         requests: Mutex<Vec<(B256, String)>>,
         paid: Mutex<Vec<B256>>,
     }
 
-    /// An issuer as its API reads to wallets: it publishes its key, and signs each device's
-    /// requests up to its allowance for the day, answering `429` once that is spent.
     struct Issuer {
         key: IssuerKey,
         per_day: usize,
-        /// Tokens signed, by the attestation's chain: the device it names.
         issued: Mutex<HashMap<Vec<String>, usize>>,
     }
 
@@ -452,11 +406,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Asked for a token, the client pays with one of the issuer's, fetched in a batch, and
-    /// asks for it back; a refused accept's token pays for the next. A swap paid into hands its
-    /// token back, which the client spends only once the issuer's allowance for the day is
-    /// gone; one for an earlier day is dropped unsent, and a challenge for another day or under
-    /// a key the issuer does not publish gets nothing.
     #[tokio::test]
     async fn accepts_spend_the_issuers_tokens_then_those_handed_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -505,7 +454,6 @@ pub(crate) mod tests {
             "the issuer had none left"
         );
 
-        // A swap accepted yesterday hands back a token for yesterday.
         let challenge = fake.gate.challenge(today());
         let (pending, blinded) = Pending::new(&return_key, &challenge.on(today() - 1)).unwrap();
         let stale = B256::repeat_byte(4);

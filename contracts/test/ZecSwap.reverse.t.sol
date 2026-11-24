@@ -19,9 +19,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(token.balanceOf(address(swaps)), 0);
     }
 
-    /// A maker that opens the forward swap a user verified as a reverse escrow instead, signing
-    /// as its own escrowing user with that swap's shares and terms, would leave the user no claim
-    /// after `t0`. The escrow takes an id of its own: the forward id the user reads stays empty.
     function test_reverseEscrowCannotStandInForAForwardSwap() public {
         (address evil, uint256 evilKey) = makeAddrAndKey("evil");
         address victim = makeAddr("victim");
@@ -38,13 +35,11 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         ZecSwap.Terms memory forward =
             ZecSwap.Terms(evil, address(usdc), AMOUNT, [e.x, e.y], [z.x, z.y], victim, t0, t1, bytes32(0));
         assertEq(swaps.getSwap(id).termsHash, swaps.hashTerms(forward));
-        // The id wallets compute: keccak256(abi.encode(userAuthAddress, makerShare, true)).
         assertEq(id, keccak256(abi.encode(evil, z.x, z.y, true)));
         assertEq(swaps.reverseSwapId(evil, [z.x, z.y]), id);
         assertEq(uint8(swaps.getSwap(swaps.swapId(evil, [z.x, z.y])).stage), uint8(ZecSwap.Stage.None));
     }
 
-    /// A deposit of a token that delivers less than it was asked for credits nothing.
     function test_depositRejectsShortTokenTransfers() public {
         ShortToken token = new ShortToken();
         vm.expectRevert(ZecSwap.InsufficientBalance.selector);
@@ -52,8 +47,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(swaps.balanceOf(address(this), address(token)), 0);
     }
 
-    /// More than a Railgun note holds could never leave after the claim, so it never opens; all a
-    /// note holds does, and a swap that pays an account has no such cap.
     function test_openRefusesRailgunPayoutsANoteCannotHold() public {
         uint128 amount = uint128(type(uint120).max) + 1;
         usdc.mint(maker, 2 * uint256(amount));
@@ -67,8 +60,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.stopPrank();
     }
 
-    /// What arrives must be exactly what is credited: a token that delivers more than it was asked
-    /// for is refused, as one that delivers less is.
     function test_tokensThatDeliverMoreAreRefused() public {
         LongToken token = new LongToken();
         vm.expectRevert(ZecSwap.InsufficientBalance.selector);
@@ -81,8 +72,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(token.balanceOf(address(swaps)), 0);
     }
 
-    /// The escrowing user's `Ready` signature authorises nothing else of its: not the payout of
-    /// its refund, which it signs for separately.
     function test_reverseReadySignatureAuthorisesOnlyReady() public {
         bytes32 id = funded();
         bytes memory signature = readySig(id, uint64(block.timestamp + 60));
@@ -95,8 +84,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertTrue(swaps.getSwap(id).paidOut);
     }
 
-    /// The escrow must leave its user `MIN_WINDOW` to sign ready before `t0`, as a forward open
-    /// leaves its maker to cancel.
     function test_reverseOpenLeavesTheUserAWindowToReadyBeforeT0() public {
         ZecSwap.ReverseOpen memory request = reverseOpen();
         request.t0 = uint64(block.timestamp + WINDOW - 1);
@@ -110,7 +97,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.stopPrank();
     }
 
-    /// A request the escrow could not settle as its user signed it is refused before a token moves.
     function test_reverseOpenRefusesRequestsItCouldNotSettle() public {
         ZecSwap.ReverseOpen memory request = reverseOpen();
         request.deadline = uint64(block.timestamp - 1);
@@ -123,8 +109,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         request.maker = address(0);
         assertRefused(swaps, request, ZecSwap.ZeroAddress.selector);
 
-        // With no refund note the escrow would read as a forward swap, which its ZEC maker may claim
-        // from `t0` without the user's ready.
         request = reverseOpen();
         request.refundNote = 0;
         assertRefused(swaps, request, ZecSwap.WrongNote.selector);
@@ -140,14 +124,11 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertRefused(swaps, request, ZecSwap.InvalidDeadlines.selector);
     }
 
-    /// Without Railgun a reverse refund could never be paid out, so no escrow opens.
     function test_reverseOpenNeedsRailgun() public {
         ZecSwap noRailgun = new ZecSwap(WINDOW, LATE, IRailgun(address(0)));
         assertRefused(noRailgun, reverseOpen(), ZecSwap.NoShieldedPayouts.selector);
     }
 
-    /// Each limit is the last value allowed: a request sent the second its signature expires, for
-    /// all a Railgun note holds, opens, and so does one signed to expire the second before `t0`.
     function test_reverseOpenAcceptsEachLimitExactly() public {
         ZecSwap.ReverseOpen memory request = reverseOpen();
         request.deadline = uint64(block.timestamp);
@@ -164,7 +145,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Open));
     }
 
-    /// An escrow's open leaves whatever its user's address already holds here as it was.
     function test_reverseOpenLeavesItsUsersBalance() public {
         usdc.mint(auth, AMOUNT);
         vm.startPrank(auth);
@@ -175,8 +155,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(swaps.balanceOf(auth, address(usdc)), AMOUNT);
     }
 
-    /// Only the escrowing user's signature readies its escrow. A ready the maker could make itself
-    /// would let it claim the escrow before `t1` without ever sending the ZEC.
     function test_reverseReadyTakesOnlyTheUsersSignature() public {
         bytes32 id = funded();
         uint64 deadline = uint64(block.timestamp + 5 minutes);
@@ -190,8 +168,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         swaps.claim(id, reverseTerms(), e.k);
     }
 
-    /// A signed ready is a reverse escrow's alone: a forward swap is readied by its maker's own call,
-    /// even when its maker signs. Each ready emits `MarkedReady`, from which the maker records it.
     function test_forwardSwapsTakeNoSignedReady() public {
         (address keyed, uint256 keyedKey) = makeAddrAndKey("keyed maker");
         usdc.mint(keyed, AMOUNT);
@@ -213,7 +189,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         assertEq(uint8(swaps.getSwap(id).stage), uint8(ZecSwap.Stage.Ready));
     }
 
-    /// The user's ready signature is good until its deadline, that second included.
     function test_reverseReadySignatureLastsUntilItsDeadline() public {
         bytes32 id = funded();
         uint64 deadline = uint64(block.timestamp + 5 minutes);
@@ -246,8 +221,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         );
     }
 
-    /// What `openReverse` stores: the escrowing user is the swap's maker, the ZEC side its user,
-    /// each with the other's share.
     function reverseTerms() internal view returns (ZecSwap.Terms memory) {
         return ZecSwap.Terms(auth, address(usdc), AMOUNT, [z.x, z.y], [e.x, e.y], maker, t0, t1, bytes32(0));
     }
@@ -280,7 +253,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         return fundedWith(reverseOpen());
     }
 
-    /// Relay Adapt's part: approve the exact amount and open.
     function fundedWith(ZecSwap.ReverseOpen memory request) internal returns (bytes32 id) {
         usdc.mint(relayer, request.amount);
         vm.startPrank(relayer);
@@ -289,8 +261,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         vm.stopPrank();
     }
 
-    /// Relay Adapt's open of `request`, signed by its user for `target`, refused with `error`, no
-    /// escrow recorded and no token taken.
     function assertRefused(ZecSwap target, ZecSwap.ReverseOpen memory request, bytes4 error) internal {
         bytes memory signature = signFor(target, openHash(request));
         usdc.mint(relayer, request.amount);
@@ -318,8 +288,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         return keccak256(abi.encode(keccak256("Ready(bytes32 id,uint64 deadline)"), id, deadline));
     }
 
-    /// The user's refund, which anyone may send: an unready escrow's at any time, a ready one's
-    /// from `t1`.
     function refundReverse(bytes32 id) internal {
         swaps.refund(id, reverseTerms(), z.k);
     }
@@ -428,8 +396,6 @@ contract ZecSwapReverseTest is ZecSwapRailgunTest {
         swaps.claim(id, reverseTerms(), e.k);
     }
 
-    /// A ready escrow is the maker's to claim until `t1` sharp, and the user's to refund from
-    /// then, for good.
     function test_reverseReadyProtectsMakerUntilRefundDeadline() public {
         bytes32 id = funded();
         readyReverse(id);

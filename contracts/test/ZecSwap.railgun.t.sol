@@ -8,7 +8,6 @@ import {MockRailgun} from "./utils/MockRailgun.sol";
 import {SpendAuthVectors} from "./utils/SpendAuthVectors.sol";
 import {TestToken} from "./utils/TestToken.sol";
 
-/// Swaps that pay into Railgun: the user is a per-swap key that only signs, relayers send.
 contract ZecSwapRailgunTest is SpendAuthVectors {
     uint256 internal constant WINDOW = 1 hours;
     uint256 internal constant LATE = 24 hours;
@@ -31,7 +30,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
     uint64 internal t1;
     bytes32 internal npk = keccak256("npk");
     IRailgun.ShieldCiphertext internal ciphertext;
-    /// Read once: `vm.prank` would apply to a `noteCommitment` call made among a call's arguments.
     bytes32 internal committedNote;
 
     function setUp() public virtual override {
@@ -54,8 +52,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         committedNote = swaps.noteCommitment(npk, ciphertext);
     }
 
-    // the claim, sent by a relayer
-
     function test_claim_isSentByAnyoneOnceReady() public {
         bytes32 id = open();
         vm.prank(relayer);
@@ -70,8 +66,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertEq(swaps.balanceOf(auth, address(usdc)), 0, "held for the payout, not credited");
     }
 
-    // the payout, on the user's signature
-
     function test_signatures_authoriseOnlyTheirSwapActionChainAndContract() public {
         bytes32 id = claimed();
         bytes memory sig = payoutSig(id, relayer, FEE);
@@ -85,7 +79,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.expectRevert(ZecSwap.BadSignature.selector);
         swaps.payout(other, otherTerms, npk, ciphertext, FEE, sig);
 
-        // A rescue signature over the same words is not a payout signature.
         bytes memory rescueAsPayout = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, relayer, FEE)));
         vm.prank(relayer);
         vm.expectRevert(ZecSwap.BadSignature.selector);
@@ -144,8 +137,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertTrue(swaps.getSwap(id).paidOut);
     }
 
-    // payout
-
     function test_claim_holdsAShieldedPayoutForRailgun() public {
         bytes32 id = claimed();
         ZecSwap.Swap memory s = swaps.getSwap(id);
@@ -177,7 +168,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertTrue(swaps.getSwap(id).paidOut);
     }
 
-    /// Only the committed note, whichever way another note's commitment compares with it.
     function test_payout_goesOnlyToTheCommittedNote() public {
         bytes32 id = claimed();
         bytes memory sig = payoutSig(id, relayer, FEE);
@@ -191,7 +181,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.payout(id, terms(), npk, cipher("another ciphertext"), FEE, sig);
     }
 
-    /// Two other npks whose notes, with `ciphertext`, commit below and above `note`.
     function npksAround(bytes32 note) internal view returns (bytes32 below, bytes32 above) {
         IRailgun.ShieldCiphertext memory c = ciphertext;
         for (uint256 i; below == 0 || above == 0; ++i) {
@@ -262,7 +251,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.payout(id, paysAccount, npk, ciphertext, FEE, payoutSig(id, address(this), FEE));
     }
 
-    /// A cancel before `t0`.
     function test_refund_ofARailgunSwapReturnsTheMakersInventory() public {
         bytes32 id = open();
         vm.startPrank(maker);
@@ -271,8 +259,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         vm.expectRevert(ZecSwap.WrongStage.selector);
         swaps.payout(id, terms(), npk, ciphertext, FEE, payoutSig(id, maker, FEE));
     }
-
-    // rescue
 
     function test_rescue_shieldsWhatRailgunSentBackToANoteTheUserSigns() public {
         bytes32 id = paidOut();
@@ -328,7 +314,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         );
     }
 
-    /// A vault shields everything it holds less the fee, up to all a Railgun note holds.
     function test_rescue_shieldsUpToAllANoteHolds() public {
         bytes32 id = paidOut();
         address vault = swaps.vaultOf(id);
@@ -396,7 +381,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.rescue(id, terms(), npk, ciphertext, FEE, 0, deadline, sig);
         assertEq(swaps.rescueNonces(id), 0);
 
-        // Good until its deadline, that second included.
         deadline = uint64(block.timestamp);
         bytes32 note = keccak256(abi.encode(npk, ciphertext));
         sig = sign(keccak256(abi.encode(RESCUE_TYPEHASH, id, note, relayer, FEE, uint64(0), deadline)));
@@ -438,7 +422,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertEq(swaps.rescueNonces(id), 1);
     }
 
-    // The same fixed vector as the Rust/JNI/Kotlin signer tests, decoded independently here.
     function testRescueTypedDataMatchesNativeSignerVector() public pure {
         bytes32 domain = keccak256(
             abi.encode(
@@ -471,8 +454,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         assertEq(recovered, address(0x757De38c2d9880E44AB59827D1622403fBF88Ff5));
     }
 
-    // helpers
-
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
         keccak256("Rescue(bytes32 id,bytes32 note,address relayer,uint128 fee,uint64 nonce,uint64 deadline)");
@@ -495,7 +476,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         );
     }
 
-    /// The terms `open` commits to, which every later call supplies.
     function terms() internal view returns (ZecSwap.Terms memory) {
         return termsWith(e, z);
     }
@@ -524,7 +504,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         swaps.ready(id, terms());
     }
 
-    /// The relayer sends the claim, in the user's window.
     function claimAs(bytes32 id) internal {
         claimAs(id, terms());
     }
@@ -584,7 +563,6 @@ contract ZecSwapRailgunTest is SpendAuthVectors {
         return abi.encodePacked(r, s, v);
     }
 
-    /// The EIP-712 digest a wallet computes for `swaps`, the contract under test.
     function digestOf(bytes32 structHash) internal view returns (bytes32) {
         return digestOf(swaps, structHash);
     }

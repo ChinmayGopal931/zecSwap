@@ -1,6 +1,3 @@
-//! The settlement client against a local anvil; skipped where Foundry isn't installed, or
-//! the contracts aren't built (`forge build` in `contracts/`).
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -12,12 +9,9 @@ use zecswap_chain::evm::{
 };
 use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
 
-/// The windows the tests deploy the contract with: an open must leave `MIN_WINDOW` before `t0`
-/// and from `t0` to `t1`, and the maker's refund lasts `LATE_WINDOW` from `t1`.
 const MIN_WINDOW: u64 = 600;
 const LATE_WINDOW: u64 = 1_200;
 
-/// The contract's creation code with its constructor's arguments.
 fn swap_code(artifacts: &Path, railgun: Address) -> Vec<u8> {
     let mut code = creation_code(artifacts, "ZecSwap");
     code.extend_from_slice(&U256::from(MIN_WINDOW).to_be_bytes::<32>());
@@ -45,8 +39,6 @@ async fn a_send_that_fails_leaves_no_nonce_gap() {
         .unwrap();
 }
 
-/// A send tips what the node suggests, so it pays the gas price that quotes and the relayer's
-/// fees charge, not the median of recent blocks' tips that alloy's own estimate tips.
 #[tokio::test]
 async fn a_send_pays_the_gas_price_quotes_charge() {
     use alloy::consensus::Transaction as _;
@@ -64,7 +56,6 @@ async fn a_send_pays_the_gas_price_quotes_charge() {
             anvil.keys()[1].clone(),
         )))
         .connect_http(url.parse().unwrap());
-    // Recent blocks tip far over the latest, as Sepolia's bots, tipping a flat gwei, often do.
     for gwei in [100, 100, 100, 2] {
         let tip = gwei * 1_000_000_000;
         let tx = TransactionRequest::default()
@@ -74,7 +65,6 @@ async fn a_send_pays_the_gas_price_quotes_charge() {
         let pending = others.send_transaction(tx).await.unwrap();
         assert!(pending.get_receipt().await.unwrap().status());
     }
-    // anvil suggests the latest block's least tip; alloy's estimate is their median, 100 gwei.
     let tip = others.get_max_priority_fee_per_gas().await.unwrap();
     assert_eq!(tip, 2_000_000_000);
 
@@ -93,9 +83,6 @@ async fn a_send_pays_the_gas_price_quotes_charge() {
     assert_eq!(receipt.effective_gas_price, price);
 }
 
-/// A claim or refund carries its share, and one the base fee outruns may land after its window
-/// closes, reverted with the share public. Each may pay its account's reveal headroom over the fee
-/// cap the account's other sends, a ready among them, keep to.
 #[tokio::test]
 async fn a_reveal_may_pay_its_headroom_over_the_usual_fee_cap() {
     use alloy::consensus::Transaction as _;
@@ -156,7 +143,6 @@ async fn a_reveal_may_pay_its_headroom_over_the_usual_fee_cap() {
         let id = swap_id(maker_account, &user_share.public());
         (id, terms, maker_share, user_share)
     };
-    // Each block mines its one transaction, so the cap read just before a send is the one it gets.
     let reader = ProviderBuilder::new().connect_http(url.parse().unwrap());
     let cap = async |sent: B256| {
         let tx = reader.get_transaction_by_hash(sent).await.unwrap().unwrap();
@@ -176,8 +162,6 @@ async fn a_reveal_may_pay_its_headroom_over_the_usual_fee_cap() {
     assert_eq!(cap(cancel).await, usual + headroom);
 }
 
-/// A swap paid into Railgun, settled by a relayer on the user's signatures: the Rust signer,
-/// swap id, note commitment and `Shield` decoding all agree with the contract.
 #[tokio::test]
 async fn a_railgun_swap_settles_on_the_users_signatures() {
     let Ok(anvil) = Anvil::new().block_time(1).try_spawn() else {
@@ -259,7 +243,6 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
         chain_id: user.chain_id().await.unwrap(),
         contract: contract.into(),
     };
-    // Ready, the swap is its user's to claim, whoever sends the claim.
     relayer.claim(id, &terms, &keys.share).await.unwrap();
     let fee = 20_000;
     let payout = keys
@@ -285,9 +268,6 @@ async fn a_railgun_swap_settles_on_the_users_signatures() {
     );
 }
 
-/// A pass reads any number of swaps, and accounts, in one call where Multicall3 is deployed, as
-/// on every chain the services use, and the same answers one at a time where it isn't; the
-/// contract's Railgun proxy, which it fixes at deployment, is read once.
 #[tokio::test]
 async fn many_swaps_and_balances_are_read_in_one_call() {
     use zecswap_chain::evm::BlockId;
@@ -377,7 +357,6 @@ async fn many_swaps_and_balances_are_read_in_one_call() {
     assert_eq!(usage.failed, 0);
 }
 
-/// Puts Multicall3's code where it is on every public chain, which a fresh anvil lacks.
 async fn install_multicall3(url: &str, key: &PrivateKeySigner) {
     use alloy::providers::bindings::IMulticall3;
     use alloy::providers::{MULTICALL3_ADDRESS, Provider, ProviderBuilder};
@@ -516,8 +495,6 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
         let deadline = maker.now().await.unwrap() + 60;
         if index == 0 {
             let signature = keys.auth.sign(&domain.ready(&id.0, deadline));
-            // With less than its margin left before its deadline, or before t0, a ready is
-            // never sent.
             let sent = async || {
                 provider
                     .get_transaction_count(relay_address)
@@ -559,7 +536,6 @@ async fn reverse_signatures_fund_claim_and_refund_the_committed_note() {
                 e.public()
             );
         } else {
-            // Unready, the escrow is its user's to refund at any time.
             relay.refund(id, &escrow, &keys.share).await.unwrap();
             let fee = 20_000;
             let signature =
@@ -624,9 +600,6 @@ async fn rpc(url: &str, method: &str, params: serde_json::Value) -> serde_json::
         .unwrap()
 }
 
-/// The windows Rust judges reveals by, at every edge, against what the contract itself does with
-/// the same reveal in the same block: forward and reverse, open and ready. At each moment one of a
-/// live swap's two reveals is open, never both.
 #[tokio::test]
 async fn the_windows_rust_judges_reveals_by_are_the_contracts() {
     use alloy::eips::BlockId;
@@ -687,7 +660,6 @@ async fn the_windows_rust_judges_reveals_by_are_the_contracts() {
     let start = maker.now().await.unwrap();
     let (t0, t1) = (start + 3_600, start + 7_200);
     let seed = [5; 64];
-    // Each case: the swap, its terms, whether it is reverse, and the two shares.
     let mut cases: Vec<(&str, _, Terms, bool, SecretShare, SecretShare)> = Vec::new();
     for (index, ready) in [(0u32, false), (1, true)] {
         let user = derive_user_keys(&seed, NetworkType::Test, 0, index).unwrap();
@@ -750,7 +722,6 @@ async fn the_windows_rust_judges_reveals_by_are_the_contracts() {
         } else {
             "reverse open"
         };
-        // The escrow's terms keep the contract's roles: the claim reveals the ZEC maker's share.
         cases.push((name, id, open.terms(), true, m, user.share));
     }
 
@@ -818,8 +789,6 @@ async fn the_windows_rust_judges_reveals_by_are_the_contracts() {
     }
 }
 
-/// A reveal whose window is shut, or ends sooner than its account's margin, is refused before
-/// anything goes out: its share stays secret. One with the margin to spare lands.
 #[tokio::test]
 async fn a_reveal_outside_its_window_is_never_sent() {
     use alloy::providers::{Provider, ProviderBuilder};
@@ -880,10 +849,8 @@ async fn a_reveal_outside_its_window_is_never_sent() {
     let sent = async |account| chain.get_transaction_count(account).await.unwrap();
     let (user_sent, maker_sent) = (sent(user_account).await, sent(maker_account).await);
 
-    // Open and before t0, the swap is the maker's to cancel: no claim goes out.
     let claimed = user.claim(id, &terms, &user_share).await;
     assert!(matches!(claimed, Err(Error::Late("claim"))), "{claimed:?}");
-    // The cancel's window ends at t0, an hour off: under a margin of an hour, it never goes out.
     maker.reveal_with_margin(3_600);
     let cancelled = maker.refund(id, &terms, &maker_share).await;
     assert!(
@@ -899,8 +866,6 @@ async fn a_reveal_outside_its_window_is_never_sent() {
     assert_eq!(swap.stage, Stage::Refunded);
 }
 
-/// A send priced at the base fee then, which a rising base fee leaves out of the blocks after it,
-/// goes again at the same nonce at the fees then, and lands: one transaction, not two.
 #[tokio::test]
 async fn a_public_send_left_unmined_goes_again_at_the_fees_then() {
     use alloy::consensus::Transaction as _;
@@ -956,7 +921,6 @@ async fn a_public_send_left_unmined_goes_again_at_the_fees_then() {
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // The base fee leaps a hundredfold over what the open was priced at.
     let spike = 100_000_000_000u128;
     rpc(
         &url,
@@ -993,9 +957,6 @@ async fn a_public_send_left_unmined_goes_again_at_the_fees_then() {
     assert_eq!(swap.unwrap().stage, Stage::Open);
 }
 
-/// A contract call that fails says whether anything went out. Nothing did where the node ran its
-/// simulation and it reverts, or could not be asked; once a node has the transaction, the error
-/// names it. And an inventory read at a block shows what that block held.
 #[tokio::test]
 async fn a_failed_send_says_whether_anything_went_out() {
     use alloy::network::{EthereumWallet, TransactionBuilder};
@@ -1046,7 +1007,6 @@ async fn a_failed_send_says_whether_anything_went_out() {
     };
     let before = sent().await;
 
-    // No swap is there to ready, and nothing listens where the second connection asks.
     let nowhere = {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}", free.local_addr().unwrap())
@@ -1065,7 +1025,6 @@ async fn a_failed_send_says_whether_anything_went_out() {
     assert!(reverts.unwrap_err().nothing_sent() && unasked.unwrap_err().nothing_sent());
     assert_eq!(sent().await, before);
 
-    // The inventory as of the block before an open, and after it.
     let earlier = maker.head().await.unwrap();
     maker.open(&first).await.unwrap();
     let held = |at| maker.balance_of_at(account, token, at);
@@ -1073,7 +1032,6 @@ async fn a_failed_send_says_whether_anything_went_out() {
     assert_eq!(held(BlockId::latest()).await.unwrap(), 1);
     assert_eq!(maker.balance_of(account, token).await.unwrap(), 1);
 
-    // An open is out and unmined when another of the account's transactions takes its nonce.
     let nonce = sent().await;
     rpc(&url, "evm_setAutomine", serde_json::json!([false])).await;
     let opening = tokio::spawn({
@@ -1106,8 +1064,6 @@ async fn a_failed_send_says_whether_anything_went_out() {
     assert!(!dropped.unwrap_err().nothing_sent());
 }
 
-/// Sent through a private RPC, a call that RPC answers with a refusal went nowhere, and one whose
-/// answer is lost may be out until the blocks it is tried for have passed.
 #[tokio::test]
 async fn a_private_send_says_whether_its_rpc_took_it() {
     use alloy::providers::{Provider, ProviderBuilder};
@@ -1151,14 +1107,12 @@ async fn a_private_send_says_whether_its_rpc_took_it() {
     let chain = ProviderBuilder::new().connect_http(url.parse().unwrap());
     let before = chain.get_transaction_count(account).await.unwrap();
 
-    // A node of another chain refuses the transaction outright.
     let mut refused = Settlement::connect(&url, contract, key.clone()).unwrap();
     refused.broadcast_privately(&other.endpoint()).unwrap();
     let opened = refused.open(&terms).await;
     assert!(matches!(&opened, Err(Error::Unsent(_))), "{opened:?}");
     assert!(opened.unwrap_err().nothing_sent());
 
-    // Nothing answers: the transaction counts as out for the block it is tried for, and a margin.
     let nowhere = {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}/?blockRange=1", free.local_addr().unwrap())
@@ -1173,8 +1127,6 @@ async fn a_private_send_says_whether_its_rpc_took_it() {
     assert_eq!(chain.get_transaction_count(account).await.unwrap(), before);
 }
 
-/// A windows client reads its windows from the contract, and finds none on the lock contract
-/// deployed before, whose swap records and rules are another's.
 #[tokio::test]
 async fn the_lock_contract_has_no_windows_to_read() {
     let Ok(anvil) = Anvil::new().try_spawn() else {
