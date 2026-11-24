@@ -106,6 +106,13 @@ pub struct Published {
     pub landed: Option<bool>,
 }
 
+#[derive(Clone, Debug)]
+pub struct Logged {
+    pub block: u64,
+    pub tx: B256,
+    pub log: Log,
+}
+
 #[derive(Debug)]
 pub struct Refusal {
     pub code: i64,
@@ -145,6 +152,7 @@ struct Inner {
     clears: u64,
     shaky: bool,
     ambushed: bool,
+    eases: bool,
     trace: Vec<String>,
 }
 
@@ -240,7 +248,11 @@ impl Inner {
         }
         let last = *self.fees.last().expect("genesis fee");
         if self.weather.fee_swing == 0 {
-            return last;
+            let eased = (last - last / 8).max(2 * GWEI);
+            return match self.eases && last > eased {
+                true => eased,
+                false => last,
+            };
         }
         let era = number / 8;
         let rising = self.seed.chance("fee-era", era, self.weather.fee_swing);
@@ -854,6 +866,7 @@ impl Node {
             clears: u64::MAX,
             shaky: false,
             ambushed: false,
+            eases: false,
             trace: Vec::new(),
         })))
     }
@@ -985,6 +998,10 @@ impl Node {
         self.0.lock().unwrap().clears = timestamp;
     }
 
+    pub fn ease_fees(&self) {
+        self.0.lock().unwrap().eases = true;
+    }
+
     pub fn head(&self) -> (u64, u64) {
         let inner = self.0.lock().unwrap();
         (inner.head().number, inner.head().timestamp)
@@ -996,6 +1013,21 @@ impl Node {
 
     pub fn trace(&self) -> Vec<String> {
         self.0.lock().unwrap().trace.clone()
+    }
+
+    pub fn logs(&self) -> Vec<Logged> {
+        let inner = self.0.lock().unwrap();
+        let mut logs = Vec::new();
+        for block in &inner.blocks {
+            for mined in &block.mined {
+                logs.extend(mined.logs.iter().map(|log| Logged {
+                    block: block.number,
+                    tx: mined.tx.hash,
+                    log: log.clone(),
+                }));
+            }
+        }
+        logs
     }
 
     pub fn note(&self, what: String) {

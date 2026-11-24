@@ -74,7 +74,7 @@ impl Relayer {
         })
     }
 
-    fn failed(error: Error) -> Answer {
+    pub(crate) fn failed(error: Error) -> Answer {
         let why = error.to_string();
         match error {
             Error::WouldRevert(_) | Error::Late(_) => Answer::refuse(422, ErrorCode::Rejected, why),
@@ -207,15 +207,15 @@ struct Sending {
     refunded: bool,
 }
 
-struct Funder {
+pub(crate) struct Funder {
     provider: DynProvider,
     wallet: EthereumWallet,
     account: Address,
 }
 
 impl Funder {
-    fn new(node: &Node, signer: PrivateKeySigner) -> Self {
-        let client = RpcClient::new(node.rpc("funder"), false);
+    pub(crate) fn new(node: &Node, name: &str, signer: PrivateKeySigner) -> Self {
+        let client = RpcClient::new(node.rpc(name), false);
         Self {
             provider: ProviderBuilder::new()
                 .disable_recommended_fillers()
@@ -226,13 +226,22 @@ impl Funder {
         }
     }
 
-    async fn send(&self, to: Address, data: Bytes) -> Option<B256> {
-        let provider = &self.provider;
-        let tx = TransactionRequest::default()
+    fn call(&self, to: Address, data: Bytes) -> TransactionRequest {
+        TransactionRequest::default()
             .with_from(self.account)
             .with_to(to)
-            .with_input(data);
-        let gas = provider.estimate_gas(tx.clone()).await.ok()?;
+            .with_input(data)
+    }
+
+    async fn send(&self, to: Address, data: Bytes) -> Option<B256> {
+        let call = self.call(to, data.clone());
+        let gas = self.provider.estimate_gas(call).await.ok()?;
+        self.forced(to, data, gas).await
+    }
+
+    pub(crate) async fn forced(&self, to: Address, data: Bytes, gas: u64) -> Option<B256> {
+        let provider = &self.provider;
+        let tx = self.call(to, data);
         let nonce = provider
             .get_transaction_count(self.account)
             .pending()
@@ -291,11 +300,11 @@ pub struct ReverseRelayer {
     heard: Mutex<Vec<Heard>>,
 }
 
-fn sent(transactions: Vec<B256>) -> Answer {
+pub(crate) fn sent(transactions: Vec<B256>) -> Answer {
     Answer::ok(&Sent { transactions })
 }
 
-fn unavailable(why: impl std::fmt::Display) -> Answer {
+pub(crate) fn unavailable(why: impl std::fmt::Display) -> Answer {
     Answer::refuse(503, ErrorCode::Unavailable, why.to_string()).after(5)
 }
 
@@ -305,7 +314,7 @@ impl ReverseRelayer {
         relayer: Arc<Relayer>,
         funder: PrivateKeySigner,
     ) -> Arc<Self> {
-        let funder = Funder::new(&relayer.chain.node, funder);
+        let funder = Funder::new(&relayer.chain.node, "funder", funder);
         Arc::new(Self {
             relayer,
             service,

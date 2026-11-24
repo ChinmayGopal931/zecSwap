@@ -27,7 +27,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `regressions.txt` and `reverse-regressions.txt` hold seeds that once failed |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `regressions.txt`, `reverse-regressions.txt` and `deposit-regressions.txt` hold seeds that once failed |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
 | `scripts/` | `build-android.sh` (the Android libraries), `deploy-contract.sh` (a mainnet contract) |
@@ -36,10 +36,10 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # hunt both ways: ~0.4 s a seed each way; a range, or seeds by comma (every_seed or every_reverse_seed for one way)
-ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap)
-ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey likewise)
-scripts/sim-mutants.py 0..150                           # breaks 25 client rules in turn, in place, and names the seeds that catch each; a run cut short is undone by the next; names after the range pick mutants
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # hunt all three runs: ~0.4 s a seed each; a range, or seeds by comma (every_seed, every_reverse_seed or every_deposit_seed for one)
+ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits)
+ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey and deposit_survey likewise)
+scripts/sim-mutants.py 0..150                           # breaks 45 client rules in turn, in place, and names the seeds that catch each (two hours; a run cut short is undone by the next); names after the range pick mutants
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
 (cd contracts && FOUNDRY_PROFILE=soak forge test --no-match-path 'test/{fork,ffi}/*')  # ~1 h: 4096×256 stateful runs, 65536 fuzz runs; the coverage corpus in cache/ carries over
@@ -95,6 +95,30 @@ No hand-written example tests (Conventions). These stand in for them:
   the ZEC arrives, on the busy relayer; the deposit spendable around the last moment to ready; a
   short deposit; a two-block reorg behind every transaction; a claim seconds before `t1`; a lying
   quote.
+- **Deposits and rescues** (`deposits.rs`, its wallet, relayer and paid-out swap in `deposits/`).
+  The same seed run by `deposits::run` is an hour of one wallet's deposit addresses: public tUSD
+  arriving at them (at the address shown, at one used before, some addresses ahead, past the gap,
+  twice within seconds, under the minimum and topped up, after a rescue), the real `Depositor`
+  recovering from the seed, signing, posting and resuming shields and rescues against the real
+  `Deposits.sol`, a wallet that works as `zecswap-cli deposit` does (each request saved before it is
+  posted and posted again after a crash, one pending for each address), and a relayer that checks
+  each request as `docs/deposits.md` says and sends it with `Settlement::send_deposit`. The seed
+  picks the relayer (honest; asks a fee over the cap; names another Deposits contract, token or
+  chain; takes no deposits; names a minimum of 1; shows terms that lag a new fee; sits on requests;
+  answers and never sends; sends and loses its answers; sends with another fee, note or value,
+  which reverts; answers with another deposit's transaction, an older one of the same address or
+  one of another address), its terms (a max validity of some twenty minutes, a fee repriced under
+  or over the cap), the wallet's cap, Multicall3 or none, how often Railgun sends a shielded note
+  back to its vault (the simulation mints the note's value there), the forward faults, crashes and
+  a skewed clock. A quarter of the unfocused seeds, and of those where every shield is sent back,
+  also hold a swap whose payout, forward or reverse, Railgun sends back once or twice: its rescue
+  is signed with `Domain::rescue` and posted by hand, as `zecswap-client` has no call for one. Three quarters of seeds are focused, a sixteenth each: a
+  short validity on a relayer that sits; lagging terms after a new fee; the two wrong transactions;
+  a gap closed late (addresses 3, 47, then 22); every shield sent back, half with the fee then
+  repriced over the cap; the minimum; a second arrival seconds after the first, with a third of
+  transactions lost; a fee over the cap; another deployment; a tampered send; a relayer that goes
+  silent, with a third of transactions lost. Base fees ease back once the weather clears
+  (`Node::ease_fees`, for this run only).
 - **What it checks.** Every block: the windows the client judges by are the contract's, the two
   sides never may reveal at once, and the user's share is never public while the maker may still
   refund. At the end: no open fee over the cap, outside Orchard or built twice; no deposit to terms
@@ -110,10 +134,22 @@ No hand-written example tests (Conventions). These stand in for them:
   maker's only once claimed and never while the user may refund (but for the maker that ignores its
   margin); a claimed escrow left the wallet the whole deposit, a refunded one paid the refund note in
   full less the fee; nothing left stuck once the weather has cleared and `t1` has had time to pass.
-  The same seed gives the same trace.
+  Deposits, at the end, from the token's and the contracts' own events: nothing left a deposit
+  address but on an authorization the wallet signed, for that value, fee and validity; every deposit
+  and rescue that landed was to a note and for a fee the wallet signed together, and none landed
+  twice; nothing left a vault but to Railgun or as that fee; every note shielded from a vault opens
+  with the wallet's keys; no fee signed over the cap or leaving nothing, no deposit under the
+  minimum, none for a relayer whose terms lie, none valid for longer than the relayer takes; every
+  request the relayer heard was saved first and had time to land; every deposit the wallet believed
+  shows in the contract's events for its address, and one to another note than it asked only where
+  the relayer named a conflict; no rescue signed for a vault holding no more than its fee; a scan
+  from the seed finds what the chain holds, and shows the first address never deposited from;
+  nothing a relayer that delivers could shield is left at an address the scan reaches, in its vault
+  or in the swap's once the weather has cleared; the swap's rescue nonce counts its rescues. The
+  same seed gives the same trace.
 - **Working with it.** A failing seed prints its plan and last events: replay it with
   `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt` (or
-  `reverse-regressions.txt`), which every `cargo test` replays. A new behaviour is tested by a new
+  `reverse-regressions.txt`, `deposit-regressions.txt`), which every `cargo test` replays. A new behaviour is tested by a new
   fault, maker behaviour or check there, never by an example test. Faults stay within what the
   design assumes (reorgs two deep, a reveal landing inside `CLAIM_MARGIN`): past that a seed fails
   by design, not by a bug.
@@ -124,8 +160,13 @@ No hand-written example tests (Conventions). These stand in for them:
   refund before sending them, no refund while a signed ready may land or before `t1` when ready,
   the quote's deployment, amounts, user and note, deadlines and maker proof, the day's limit on a
   lock, the maker's ready depth and claim margin, both reverse windows, and judging a reverse
-  escrow's reveals by its own windows. `regressions.txt` and `reverse-regressions.txt` also list
-  seeds that caught each, so every `cargo test` would. A change to a plan or to a fault reshuffles
+  escrow's reveals by its own windows; deposits, the terms' chain and deployment, the minimum, the
+  fee cap, a fee that leaves nothing, the relayer's max validity, saving a request before posting it
+  (the first, one signed again when stale, one signed again when refused, and a rescue), signing
+  again when stale, posting again when a transaction never lands, believing a deposit only of this
+  address and only to this note, a rescue's fee cap, no rescue of nothing, the scan's gap, the
+  address shown, what counts as a used address, and the digest a swap's rescue signs. The three
+  regressions lists also name seeds that caught each, so every `cargo test` would. A change to a plan or to a fault reshuffles
   what each seed does: run the script again and replace those seeds. The script touches every file
   it restores, so cargo rebuilds it: a mutant never stays compiled in after it is undone.
 - **Its seams**, compiled only with the `sim` feature of chain and client: `evm::simulate_wall`
@@ -133,24 +174,33 @@ No hand-written example tests (Conventions). These stand in for them:
   `broadcast_privately_over` (an alloy transport in place of a URL), `MakerApi::over` and
   `RelayerApi::over` (a `Wire` in place of the network), and `ReverseUser::ready_with_spendable`
   (`ready` from its deposit check on, on a spendable balance the caller gives in place of the Zcash
-  wallet's; `ready` runs the same code after its wallet sync). Waits measure with tokio's clock, so a
+  wallet's; `ready` runs the same code after its wallet sync). Deposits need none: `Depositor`
+  takes a `Settlement` and a `RelayerApi`. Waits measure with tokio's clock, so a
   paused runtime moves them. Not seeded: the OS randomness in the client's proofs, which no
   decision depends on. A whole-workspace build turns the feature on for every crate, inert until
   one of these is called; a `-p` build, as the scripts and `cargo run -p zecswap-cli` make, leaves
   it out.
-- **Not simulated yet**, and so without tests beyond the known answers: deposits (`Depositor`),
-  tokens, the Zcash wallet and lightwalletd client (so neither the wallet half of
-  `ReverseUser::ready` nor `watch_deposit`), PCZT signing's refusals, the relayer-side request
-  checks (`evm/funding.rs`, `evm/canonical.rs`, the policies in `evm/railgun.rs` and
-  `evm/deposits.rs`), the Railgun cross-contract funding of an escrow and its proof (the relayer
-  funds from tokens of its own), rescues, reverse status and token returns, relayers that serve
-  another deployment, ask over the fee cap or are the maker, the CLI's own resume logic (the
-  simulation's wallets mirror it) and the JNI bindings.
+- **Not simulated yet**, and so without tests beyond the known answers: tokens, the Zcash wallet
+  and lightwalletd client (so neither the wallet half of `ReverseUser::ready` nor `watch_deposit`),
+  PCZT signing's refusals, the relayer-side request checks (`evm/funding.rs`, `evm/canonical.rs`,
+  the policies in `evm/railgun.rs`; of `evm/deposits.rs`, the gas-price cap, the ETH check and
+  `covers`, which the deposit relayer never trips), the Railgun cross-contract funding of an escrow
+  and its proof (the relayer funds from tokens of its own), reverse status and token returns, swap
+  relayers that serve another deployment, ask over the fee cap or are the maker, the CLI's own
+  resume logic (the simulation's wallets mirror it) and the JNI bindings. Of deposits: the
+  sanctions oracle, a deposit address with code, fees priced by gas (`feeExpiresAt`), deposits sent
+  privately, a relayer's hour-long hold after a revert (five minutes here), and Railgun's screening
+  itself. A swap payout's rescue has no caller in `zecswap-client`: the simulation's wallet is the
+  only one, written from `docs/reverse-flow.md`.
 - **Open finding.** Reverse seed 182 fails (`the escrow is stuck at stage 1`), on a defect not yet
   fixed: `Settlement` raises the lowest nonce it signs privately at the first receipt it sees
   (`landed_privately`) and never lowers it, so a private send reorged out for good leaves every
   later one from that account a nonce too high, unminable until the process restarts. Add the seed
-  to `reverse-regressions.txt` with the fix.
+  to `reverse-regressions.txt` with the fix. A public sender has a milder form: `submit` prices
+  again only the transaction it is waiting on, so one it saw mined, then reorged out and left under
+  the base fee, holds back every later nonce of its account until fees fall. Deposit seed 461
+  showed it while that run's base fee stayed where the weather left it; the run now eases fees
+  (`Node::ease_fees`) and passes.
 - **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
   deposit addresses, the Privacy Pass RFC's token, the contract's hashes, Railgun's SDK funding
   vector, the audit's 97 window cases (`windows_spec.rs`), librustzcash's NU7 heights and circuit,

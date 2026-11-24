@@ -1,3 +1,4 @@
+pub mod deposits;
 mod maker;
 mod net;
 mod node;

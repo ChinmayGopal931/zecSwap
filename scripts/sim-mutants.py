@@ -12,9 +12,13 @@ JUDGE = "crates/zecswap-chain/src/evm/judge.rs"
 EVM = "crates/zecswap-chain/src/evm.rs"
 USER = "crates/zecswap-client/src/user.rs"
 REVERSE = "crates/zecswap-client/src/reverse.rs"
+DEPOSITS = "crates/zecswap-client/src/deposits.rs"
+CHAIN_DEPOSITS = "crates/zecswap-chain/src/evm/deposits.rs"
+AUTH = "crates/zecswap-core/src/auth.rs"
 BACKUP = ROOT / "target" / "sim-mutants"
 FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
+DEPOSIT = ("deposit_survey", "deposit seed ")
 
 READY_SENT = """        self.relayer
             .ready_reverse(
@@ -213,6 +217,138 @@ MUTANTS = {
             EVM,
             "let reverse = !funding.refundNote.is_zero();",
             "let reverse = funding.refundNote.is_zero() && false;",
+        ),
+    ]),
+    "deposit-any-chain": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        ensure!(\n            terms.chain_id == self.deployment.chain_id,\n            \"the relayer serves another chain\"\n        );\n",
+            "",
+        ),
+    ]),
+    "deposit-any-deployment": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        ensure!(\n            (deposits.contract, deposits.token)\n                == (self.deployment.contract, self.deployment.token),\n            \"the relayer takes deposits for another deployment\"\n        );\n",
+            "",
+        ),
+    ]),
+    "deposit-under-the-minimum": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        if value < terms.min_value {\n            return Ok(None);\n        }\n",
+            "",
+        ),
+    ]),
+    "deposit-any-fee": (DEPOSIT, [
+        (DEPOSITS, "            fee <= cap && fee < value,\n", "            fee < value,\n"),
+    ]),
+    "deposit-fee-of-everything": (DEPOSIT, [
+        (DEPOSITS, "            fee <= cap && fee < value,\n", "            fee <= cap,\n"),
+    ]),
+    "deposit-valid-too-long": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "    VALIDITY.min(terms.max_validity.saturating_sub(CLOCK_SLACK))",
+            "    VALIDITY.min(terms.max_validity.max(VALIDITY))",
+        ),
+    ]),
+    "deposit-unsaved": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        keep(&request)?;\n        let give_up = Instant::now() + PATIENCE;\n        let (mut wait, mut signed_again) = (BACKOFF, false);\n",
+            "        let give_up = Instant::now() + PATIENCE;\n        let (mut wait, mut signed_again) = (BACKOFF, false);\n",
+        ),
+    ]),
+    "deposit-signed-again-unsaved": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "                request = self.sign_again(index).await?;\n                keep(&request)?;\n",
+            "                request = self.sign_again(index).await?;\n",
+        ),
+    ]),
+    "deposit-refused-unsaved": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "                        .with_context(|| format!(\"the relayer refused the deposit: {reason}\"))?;\n                    keep(&request)?;\n",
+            "                        .with_context(|| format!(\"the relayer refused the deposit: {reason}\"))?;\n",
+        ),
+    ]),
+    "deposit-posted-stale": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "            if request.valid_before < now() + LANDING + CLOCK_SLACK {\n                request = self.sign_again(index).await?;\n                keep(&request)?;\n            }\n",
+            "",
+        ),
+    ]),
+    "deposit-never-posted-again": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "            if Instant::now() >= deadline {\n                return Ok(None);\n            }\n",
+            "",
+        ),
+    ]),
+    "deposit-believed-of-another-address": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "                .any(|landed| landed.from == from && ours(landed.note)),",
+            "                .any(|landed| ours(landed.note)),",
+        ),
+    ]),
+    "deposit-believed-to-another-note": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        let ours = |commitment: B256| expected.is_none_or(|expected| commitment == expected);",
+            "        let ours = |commitment: B256| expected.is_none_or(|expected| commitment == expected || true);",
+        ),
+    ]),
+    "rescue-any-fee": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        ensure!(\n            fee <= self.cap.fee,\n            \"the relayer asks a fee of {fee}, over the {} this wallet pays\",\n            self.cap.fee\n        );\n",
+            "",
+        ),
+    ]),
+    "rescue-of-nothing": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        if held <= fee {\n            return Ok(None);\n        }\n",
+            "        let _ = held;\n",
+        ),
+    ]),
+    "rescue-unsaved": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        keep(&request)?;\n        let give_up = Instant::now() + PATIENCE;\n        let mut wait = BACKOFF;\n",
+            "        let give_up = Instant::now() + PATIENCE;\n        let mut wait = BACKOFF;\n",
+        ),
+    ]),
+    "recover-one-window": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "            if !found {\n                return Ok(used);\n            }\n",
+            "            if !found || first == 0 {\n                return Ok(used);\n            }\n",
+        ),
+    ]),
+    "shows-an-address-deposited-from": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "                .any(|(used, state)| *used == index && state.deposited)",
+            "                .any(|(used, state)| *used == index && state.deposited && index > 0)",
+        ),
+    ]),
+    "payout-rescue-signed-otherwise": (DEPOSIT, [
+        (
+            AUTH,
+            "            &keccak(&[RESCUE_TYPE]),\n            id,\n            note,\n            &address(relayer),\n            &uint(fee),\n            &uint(authorization.nonce.into()),\n            &uint(authorization.deadline.into()),\n",
+            "            &keccak(&[RESCUE_TYPE]),\n            id,\n            note,\n            &address(relayer),\n            &uint(fee),\n            &uint(authorization.deadline.into()),\n            &uint(authorization.nonce.into()),\n",
+        ),
+    ]),
+    "deposited-address-unused": (DEPOSIT, [
+        (
+            CHAIN_DEPOSITS,
+            "        self.balance > 0 || self.deposited",
+            "        self.balance > 0",
         ),
     ]),
 }

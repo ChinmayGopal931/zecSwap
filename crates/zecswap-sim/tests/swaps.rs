@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use zecswap_sim::{End, Plan, Report, reverse, run, run_with};
+use zecswap_sim::{End, Plan, Report, deposits, reverse, run, run_with};
 
 fn seeds(var: &str, default: std::ops::Range<u64>) -> Vec<u64> {
     match std::env::var(var) {
@@ -203,4 +203,70 @@ fn plain_reverse_story() {
 #[test]
 fn a_reverse_seed_replays_to_the_same_trace() {
     replays(reverse::run);
+}
+
+#[test]
+fn a_deposit_with_nothing_wrong_reaches_the_wallets_note() {
+    let report = deposits::run_with(1, deposits::Plan::plain());
+    assert!(report.failures.is_empty(), "{}", report.story());
+    let ended = report.ended.as_ref().expect("a tally");
+    assert!(
+        ended.private > 0 && ended.waiting == 0 && ended.believed == 1,
+        "{}",
+        report.story()
+    );
+}
+
+#[test]
+fn every_deposit_seed_keeps_the_invariants() {
+    hold(
+        seeds("ZECSWAP_SIM_SEEDS", 0..16)
+            .into_iter()
+            .map(deposits::run),
+    );
+}
+
+#[test]
+fn deposit_seeds_that_once_failed_still_hold() {
+    hold(
+        regressions(include_str!("../deposit-regressions.txt"))
+            .into_iter()
+            .map(deposits::run),
+    );
+}
+
+#[test]
+#[ignore = "tells a deposit seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim deposit_story -- --ignored --nocapture"]
+fn deposit_story() {
+    tell(deposits::run);
+}
+
+#[test]
+#[ignore = "one line a deposit seed: ZECSWAP_SIM_SEEDS=0..200 cargo test -p zecswap-sim deposit_survey -- --ignored --nocapture"]
+fn deposit_survey() {
+    for seed in seeds("ZECSWAP_SIM_SEEDS", 0..24) {
+        let report = deposits::run(seed);
+        println!(
+            "deposit seed {seed}: {:?} {} arrivals, {} in 1000 returned, {:?} -> {:?} | {} | {}",
+            report.plan.service,
+            report.plan.arrivals.len(),
+            report.plan.returned,
+            report.plan.payout,
+            report.ended,
+            tally(&report.trace),
+            report.failures.join("; "),
+        );
+    }
+}
+
+#[test]
+#[ignore = "tells the story of a deposit with nothing wrong"]
+fn plain_deposit_story() {
+    let report = deposits::run_with(1, deposits::Plan::plain());
+    println!("{}\n{}", report.story(), report.trace.join("\n"));
+}
+
+#[test]
+fn a_deposit_seed_replays_to_the_same_trace() {
+    replays(deposits::run);
 }

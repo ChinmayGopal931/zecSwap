@@ -51,7 +51,16 @@ sol! {
         bytes32 ciphertextHash;
     }
 
+    struct CiphertextWords {
+        bytes32[3] encryptedBundle;
+        bytes32 shieldKey;
+    }
+
     function mint(address to, uint256 amount) external;
+    function open(address token, uint128 amount, uint256[2] makerKey, uint256[2] userKey, address user, uint64 t0, uint64 t1, bytes32 payoutNote) external returns (bytes32 id);
+    function ready(bytes32 id, TermsWords terms) external;
+    function payout(bytes32 id, TermsWords terms, bytes32 npk, CiphertextWords ciphertext, uint128 fee, bytes signature) external;
+    function refundPayout(bytes32 id, TermsWords terms, bytes32 npk, CiphertextWords ciphertext, uint128 fee, bytes signature) external;
     function approve(address spender, uint256 amount) external returns (bool);
     function deposit(address token, uint256 amount) external;
     function balanceOf(address owner) external view returns (uint256);
@@ -145,6 +154,16 @@ impl Chain {
         }
     }
 
+    pub fn deploy_deposits(&self) -> Address {
+        let deployer = address!("d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0");
+        let mut code = artifact("Deposits");
+        code.extend_from_slice(&(self.token, RAILGUN, Address::ZERO).abi_encode());
+        self.node
+            .transact(deployer, None, code.into())
+            .1
+            .expect("a deployed contract")
+    }
+
     pub fn context(&self, quote_id: B256) -> SwapContext {
         SwapContext {
             chain_id: CHAIN_ID,
@@ -228,9 +247,14 @@ impl Chain {
     }
 
     pub fn token_balance(&self, owner: Address) -> u128 {
+        self.token_balance_at(owner, self.node.head().0)
+    }
+
+    pub fn token_balance_at(&self, owner: Address, block: u64) -> u128 {
+        let call = balanceOfCall { owner }.abi_encode();
         let out = self
             .node
-            .view(self.token, balanceOfCall { owner }.abi_encode().into())
+            .view_at(block, self.token, call.into())
             .expect("the token answers balanceOf");
         balanceOfCall::abi_decode_returns(&out)
             .expect("a balance")
@@ -238,9 +262,17 @@ impl Chain {
     }
 
     pub fn shielded(&self) -> Vec<(B256, u128)> {
+        let notes = self.notes_at(self.node.head().0);
+        notes
+            .into_iter()
+            .map(|(_, npk, value)| (npk, value))
+            .collect()
+    }
+
+    pub fn notes_at(&self, block: u64) -> Vec<(Address, B256, u128)> {
         let read = |data: Vec<u8>| {
             self.node
-                .view(RAILGUN, data.into())
+                .view_at(block, RAILGUN, data.into())
                 .expect("Railgun answers")
         };
         let count: u64 = countCall::abi_decode_returns(&read(countCall {}.abi_encode()))
@@ -253,7 +285,7 @@ impl Chain {
                 };
                 let note = shieldedCall::abi_decode_returns(&read(call.abi_encode()))
                     .expect("a shielded note");
-                (note.npk, note.value.to())
+                (note.from, note.npk, note.value.to())
             })
             .collect()
     }
