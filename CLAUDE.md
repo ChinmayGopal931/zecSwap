@@ -27,7 +27,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `regressions.txt` holds seeds that once failed |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `regressions.txt` and `reverse-regressions.txt` hold seeds that once failed |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
 | `scripts/` | `build-android.sh` (the Android libraries), `deploy-contract.sh` (a mainnet contract) |
@@ -36,10 +36,10 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_seed            # hunt: ~0.3 s a seed; a range, or seeds by comma
-ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --ignored --nocapture   # one seed's plan, verdict and every event
-ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --ignored --nocapture   # one line a seed: what was planned, how it ended
-scripts/sim-mutants.py 0..150                           # breaks seven client rules in turn, in place, and names the seeds that catch each; a run cut short is undone by the next
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # hunt both ways: ~0.4 s a seed each way; a range, or seeds by comma (every_seed or every_reverse_seed for one way)
+ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap)
+ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey likewise)
+scripts/sim-mutants.py 0..150                           # breaks 25 client rules in turn, in place, and names the seeds that catch each; a run cut short is undone by the next; names after the range pick mutants
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
 (cd contracts && FOUNDRY_PROFILE=soak forge test --no-match-path 'test/{fork,ffi}/*')  # ~1 h: 4096×256 stateful runs, 65536 fuzz runs; the coverage corpus in cache/ carries over
@@ -75,35 +75,82 @@ No hand-written example tests (Conventions). These stand in for them:
   calm weather, where the swap must end as its maker's behaviour dictates; a tenth press the claim
   margin (a public claim seconds before `t1` on a chain that delays), and a tenth the ready depth
   (a two-block reorg behind every transaction).
+- **Reverse swaps** (`reverse.rs`, its wallet in `reverse/wallet.rs`). The same seed run by
+  `reverse::run` is one whole reverse swap: the real `ReverseUser` and `Settlement` against the
+  same chain and ledger, a maker that quotes, pays its ZEC into the joint account and claims by
+  `judge::reverse_claim`, and a relayer that funds the escrow with the two calls `funding_calls`
+  returns, as Relay Adapt calldata but from tokens of its own, and sends `readyWithSig`, refunds
+  and their payouts. The seed picks the plan (`reverse::Plan::from_seed`): the maker (honest, never
+  pays in, pays in short, pays in late, never claims, claims late, claims at the last second
+  regardless of its margin, quotes a lock of a day, lies in its quote about deadlines, refund note,
+  user, amounts, deployment or share proof, reports another swap), the relayer (honest: holds a
+  refund while a ready it sent may land and refuses a ready after a refund; skips payouts; sends the
+  approval and not the open; hears refunds but answers busy for ten minutes; sends readies but
+  loses its answers; careless: no holds, no refusals, no margin), private sends, the forward faults,
+  a wallet back long after `t1`'s late window, and a user who wants its USDC back some time after
+  funding or after confirming the ZEC, or stalls until seconds around the last moment to sign a
+  ready or around `t1`. The wallet asks for a ready on every poll and lets the client refuse. A
+  fifth of seeds run calm; seven twelfths are focused, a twelfth each: a refund asked just after
+  confirming the ZEC, mostly on the relayer that loses its answers to readies; a refund asked before
+  the ZEC arrives, on the busy relayer; the deposit spendable around the last moment to ready; a
+  short deposit; a two-block reorg behind every transaction; a claim seconds before `t1`; a lying
+  quote.
 - **What it checks.** Every block: the windows the client judges by are the contract's, the two
   sides never may reveal at once, and the user's share is never public while the maker may still
   refund. At the end: no open fee over the cap, outside Orchard or built twice; no deposit to terms
   the user didn't agree or with under `MIN_TIME_TO_T0` left; a claimed swap carries the user's
   share and paid the user's note or account in full; a refunded one was swept back; a deposit is
-  never left stuck once the weather has cleared. The same seed gives the same trace.
+  never left stuck once the weather has cleared. Reverse, every block: the same windows and
+  exclusion, no transaction carrying either share just reverted, and the relayer never holds the
+  user's share while the maker may claim. At the end: no funding asked for a lying quote, to another
+  deployment, or locking the USDC more than a day; every ready signed with the whole deposit
+  spendable, ending before `t0`, and none after a refund was asked; no refund asked while a signed
+  ready may land, as the wallet saved it and as the relayer heard it, and no ready heard after a
+  refund; the user's share public only once refunded and never while the maker may claim, the
+  maker's only once claimed and never while the user may refund (but for the maker that ignores its
+  margin); a claimed escrow left the wallet the whole deposit, a refunded one paid the refund note in
+  full less the fee; nothing left stuck once the weather has cleared and `t1` has had time to pass.
+  The same seed gives the same trace.
 - **Working with it.** A failing seed prints its plan and last events: replay it with
-  `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt`, which every
-  `cargo test` replays. A new behaviour is tested by a new fault, maker behaviour or check there,
-  never by an example test. Faults stay within what the design assumes (reorgs two deep, a reveal
-  landing inside `CLAIM_MARGIN`): past that a seed fails by design, not by a bug.
-- **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client (the ready depth, the
-  claim margin, the deposit deadline, the terms check, the fee cap, the claim window's start, the
-  maker's hour after `t1`) and fails if no seed notices. `regressions.txt` also lists seeds that
-  caught each, so every `cargo test` would. A change to `Plan::from_seed` or to a fault reshuffles
-  what each seed does: run the script again and replace those seeds.
+  `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt` (or
+  `reverse-regressions.txt`), which every `cargo test` replays. A new behaviour is tested by a new
+  fault, maker behaviour or check there, never by an example test. Faults stay within what the
+  design assumes (reorgs two deep, a reveal landing inside `CLAIM_MARGIN`): past that a seed fails
+  by design, not by a bug.
+- **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client and fails if no seed
+  notices: forward, the ready depth, the claim margin, the deposit deadline, the terms check, the
+  fee cap, the claim window's start, the maker's hour after `t1`; reverse, no ready after a refund,
+  the whole deposit before a ready, a ready's life before `t0`, saving a ready's deadline and a
+  refund before sending them, no refund while a signed ready may land or before `t1` when ready,
+  the quote's deployment, amounts, user and note, deadlines and maker proof, the day's limit on a
+  lock, the maker's ready depth and claim margin, both reverse windows, and judging a reverse
+  escrow's reveals by its own windows. `regressions.txt` and `reverse-regressions.txt` also list
+  seeds that caught each, so every `cargo test` would. A change to a plan or to a fault reshuffles
+  what each seed does: run the script again and replace those seeds. The script touches every file
+  it restores, so cargo rebuilds it: a mutant never stays compiled in after it is undone.
 - **Its seams**, compiled only with the `sim` feature of chain and client: `evm::simulate_wall`
   (the wall clock, per task with `world::Skewed`), `Settlement::over` and
   `broadcast_privately_over` (an alloy transport in place of a URL), `MakerApi::over` and
-  `RelayerApi::over` (a `Wire` in place of the network). Waits measure with tokio's clock, so a
+  `RelayerApi::over` (a `Wire` in place of the network), and `ReverseUser::ready_with_spendable`
+  (`ready` from its deposit check on, on a spendable balance the caller gives in place of the Zcash
+  wallet's; `ready` runs the same code after its wallet sync). Waits measure with tokio's clock, so a
   paused runtime moves them. Not seeded: the OS randomness in the client's proofs, which no
   decision depends on. A whole-workspace build turns the feature on for every crate, inert until
   one of these is called; a `-p` build, as the scripts and `cargo run -p zecswap-cli` make, leaves
   it out.
-- **Not simulated yet**, and so without tests beyond the known answers: reverse swaps
-  (`ReverseUser::ready` wants a real `Wallet`), deposits (`Depositor`), tokens, the Zcash wallet
-  and lightwalletd client, PCZT signing's refusals, the relayer-side request checks
-  (`evm/funding.rs`, `evm/canonical.rs`, the policies in `evm/railgun.rs` and `evm/deposits.rs`),
-  the CLI's own resume logic (the simulation's wallet mirrors it) and the JNI bindings.
+- **Not simulated yet**, and so without tests beyond the known answers: deposits (`Depositor`),
+  tokens, the Zcash wallet and lightwalletd client (so neither the wallet half of
+  `ReverseUser::ready` nor `watch_deposit`), PCZT signing's refusals, the relayer-side request
+  checks (`evm/funding.rs`, `evm/canonical.rs`, the policies in `evm/railgun.rs` and
+  `evm/deposits.rs`), the Railgun cross-contract funding of an escrow and its proof (the relayer
+  funds from tokens of its own), rescues, reverse status and token returns, relayers that serve
+  another deployment, ask over the fee cap or are the maker, the CLI's own resume logic (the
+  simulation's wallets mirror it) and the JNI bindings.
+- **Open finding.** Reverse seed 182 fails (`the escrow is stuck at stage 1`), on a defect not yet
+  fixed: `Settlement` raises the lowest nonce it signs privately at the first receipt it sees
+  (`landed_privately`) and never lowers it, so a private send reorged out for good leaves every
+  later one from that account a nonce too high, unminable until the process restarts. Add the seed
+  to `reverse-regressions.txt` with the fix.
 - **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
   deposit addresses, the Privacy Pass RFC's token, the contract's hashes, Railgun's SDK funding
   vector, the audit's 97 window cases (`windows_spec.rs`), librustzcash's NU7 heights and circuit,

@@ -2,6 +2,7 @@ mod maker;
 mod net;
 mod node;
 mod relayer;
+pub mod reverse;
 mod rpc;
 mod run;
 mod seed;

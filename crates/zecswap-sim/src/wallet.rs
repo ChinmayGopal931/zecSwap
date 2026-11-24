@@ -69,7 +69,7 @@ pub struct Wallet {
     pub saved: Arc<Mutex<Saved>>,
 }
 
-fn refused(error: &anyhow::Error) -> bool {
+pub(crate) fn refused(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ServiceError>()
         .is_some_and(ServiceError::refused)

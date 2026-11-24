@@ -179,22 +179,52 @@ impl ReverseUser {
         account: AccountUuid,
         save: impl FnOnce(&ReverseSwap) -> Result<()>,
     ) -> Result<()> {
+        if !self.needs_ready(swap).await? {
+            return Ok(());
+        }
+        ensure!(
+            wallet.tracks_joint(account, &self.joint(swap)?)?,
+            "wrong deposit account"
+        );
+        wallet.sync(client).await?;
+        let spendable = wallet.funds(account)?.spendable;
+        self.authorize_ready(swap, spendable, save).await
+    }
+
+    #[cfg(feature = "sim")]
+    pub async fn ready_with_spendable(
+        &self,
+        swap: &mut ReverseSwap,
+        spendable: u64,
+        save: impl FnOnce(&ReverseSwap) -> Result<()>,
+    ) -> Result<()> {
+        if !self.needs_ready(swap).await? {
+            return Ok(());
+        }
+        self.authorize_ready(swap, spendable, save).await
+    }
+
+    async fn needs_ready(&self, swap: &ReverseSwap) -> Result<bool> {
         ensure!(
             !swap.refunding,
             "a refund was asked for; the escrow is never readied after it"
         );
         let chain = self.state(swap).await?;
         if matches!(chain.stage, Stage::Ready | Stage::Claimed) {
-            return Ok(());
+            return Ok(false);
         }
         ensure!(chain.stage == Stage::Open, "escrow cannot be readied");
+        Ok(true)
+    }
+
+    async fn authorize_ready(
+        &self,
+        swap: &mut ReverseSwap,
+        spendable: u64,
+        save: impl FnOnce(&ReverseSwap) -> Result<()>,
+    ) -> Result<()> {
         ensure!(
-            wallet.tracks_joint(account, &self.joint(swap)?)?,
-            "wrong deposit account"
-        );
-        wallet.sync(client).await?;
-        ensure!(
-            wallet.funds(account)?.spendable >= swap.quote.terms.deposit_zat,
+            spendable >= swap.quote.terms.deposit_zat,
             "ZEC deposit is not confirmed in full"
         );
         let (chain, head) = self

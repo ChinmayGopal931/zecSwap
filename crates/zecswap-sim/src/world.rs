@@ -9,7 +9,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_chain::evm::{simulate_wall, wall_now};
-use zecswap_core::{PublicShare, SecretShare, Terms};
+use zecswap_core::{PublicShare, SecretShare, SwapContext, Terms};
 
 use crate::node::Node;
 use crate::seed::Seed;
@@ -145,18 +145,28 @@ impl Chain {
         }
     }
 
+    pub fn context(&self, quote_id: B256) -> SwapContext {
+        SwapContext {
+            chain_id: CHAIN_ID,
+            contract: self.contract.into(),
+            quote_id: quote_id.0,
+        }
+    }
+
     pub fn fund(&self, who: Address) {
         self.node.fund(who, U256::from(10 * ETHER));
     }
 
+    pub fn mint(&self, to: Address, amount: u128) {
+        let amount = U256::from(amount);
+        let call = mintCall { to, amount }.abi_encode();
+        self.node.transact(to, Some(self.token), call.into());
+    }
+
     pub fn stock(&self, maker: Address, amount: u128) {
+        self.mint(maker, amount);
         let amount = U256::from(amount);
         let call = |from, to, data: Vec<u8>| self.node.transact(from, Some(to), data.into());
-        call(
-            maker,
-            self.token,
-            mintCall { to: maker, amount }.abi_encode(),
-        );
         let approval = approveCall {
             spender: self.contract,
             amount,
@@ -188,13 +198,17 @@ impl Chain {
     }
 
     pub fn would_claim(&self, id: B256, terms: &Terms, z: &SecretShare) -> bool {
+        self.would_claim_at(id, terms, z, self.node.head().0)
+    }
+
+    pub fn would_claim_at(&self, id: B256, terms: &Terms, z: &SecretShare, block: u64) -> bool {
         let call = claimCall {
             id,
             terms: terms_words(terms),
             userSecret: U256::from_be_bytes(z.to_be_bytes()),
         };
         self.node
-            .view(self.contract, call.abi_encode().into())
+            .view_at(block, self.contract, call.abi_encode().into())
             .is_ok()
     }
 
