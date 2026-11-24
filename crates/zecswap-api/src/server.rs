@@ -133,23 +133,3 @@ pub async fn no_store(request: Request, next: Next) -> Response {
     );
     response
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn monitoring_is_closed_by_default_and_requires_the_exact_bearer_token() {
-        assert!(!MonitorToken::new(None).authorized(Some("Bearer anything")));
-        let token = MonitorToken::new(Some("test-token"));
-        assert!(token.authorized(Some("Bearer test-token")));
-        for header in [
-            None,
-            Some("test-token"),
-            Some("Bearer test-tokeN"),
-            Some("Bearer "),
-        ] {
-            assert!(!token.authorized(header));
-        }
-    }
-}

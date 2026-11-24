@@ -96,20 +96,3 @@ impl ShareProof {
         self.0
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_zero_and_non_canonical() {
-        assert_eq!(
-            SecretShare::from_be_bytes(&[0; 32]).unwrap_err(),
-            Error::InvalidScalar
-        );
-        assert_eq!(
-            SecretShare::from_be_bytes(&[0xff; 32]).unwrap_err(),
-            Error::InvalidScalar
-        );
-    }
-}

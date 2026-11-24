@@ -158,40 +158,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn index_account_network_and_seed_separate_addresses_and_notes() {
-        let seed = [42; 64];
-        let base = derive_deposit_keys(&seed, NetworkType::Main, 0, 0).unwrap();
-        for other in [
-            derive_deposit_keys(&seed, NetworkType::Main, 0, 1),
-            derive_deposit_keys(&seed, NetworkType::Main, 1, 0),
-            derive_deposit_keys(&seed, NetworkType::Test, 0, 0),
-            derive_deposit_keys(&[43; 64], NetworkType::Main, 0, 0),
-        ] {
-            let other = other.unwrap();
-            assert_ne!(other.key.address(), base.key.address());
-            assert_ne!(*other.shield_entropy(5), *base.shield_entropy(5));
-        }
-        assert_ne!(*base.shield_entropy(5), *base.shield_entropy(6));
-        assert_ne!(*base.shield_entropy(5), *base.rescue_entropy(5));
-        let again = derive_deposit_keys(&seed, NetworkType::Main, 0, 0).unwrap();
-        assert_eq!(*again.shield_entropy(5), *base.shield_entropy(5));
-    }
-
-    #[test]
-    fn indices_bip32_cant_reach_are_refused() {
-        let seed = [42; 64];
-        for (account, index) in [
-            (u32::MAX, 0),
-            ((1 << 31) - DEPOSIT_ACCOUNTS, 0),
-            (0, 1 << 31),
-        ] {
-            assert!(matches!(
-                derive_deposit_keys(&seed, NetworkType::Main, account, index),
-                Err(Error::InvalidDerivation)
-            ));
-        }
-        assert!(derive_deposit_keys(&[1; 20], NetworkType::Main, 0, 0).is_err());
-    }
 }

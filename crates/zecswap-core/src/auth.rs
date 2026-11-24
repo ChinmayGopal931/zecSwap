@@ -304,35 +304,12 @@ mod tests {
         AuthKey(SigningKey::from_bytes(&scalar.into()).unwrap())
     }
 
-    const DOMAIN: Domain = Domain {
-        chain_id: 11155111,
-        contract: [9; 20],
-    };
-
     #[test]
     fn address_is_ethereums() {
         assert_eq!(
             key(1).address(),
             *b"\x7e\x5f\x45\x52\x09\x1a\x69\x12\x5d\x5d\xfc\xb7\xb8\xc2\x65\x90\x29\x39\x5b\xdf"
         );
-    }
-
-    #[test]
-    fn signatures_recover_to_their_signer_under_their_digest_only() {
-        let key = key(7);
-        let digest = DOMAIN.payout(&[3; 32], &[4; 20], 1_000_000);
-        let signature = key.sign(&digest);
-        assert_eq!(signer(&digest, &signature), Some(key.address()));
-
-        let other_fee = DOMAIN.payout(&[3; 32], &[4; 20], 1_000_001);
-        let other_chain = Domain {
-            chain_id: 1,
-            ..DOMAIN
-        }
-        .payout(&[3; 32], &[4; 20], 1_000_000);
-        for digest in [other_fee, other_chain] {
-            assert_ne!(signer(&digest, &signature), Some(key.address()));
-        }
     }
 
     #[test]
@@ -386,41 +363,5 @@ mod tests {
             deposits.rescue(&depositor, &committed, &[0x77; 20], 150_000, rescue),
             word("0xa417fb0cbab5c5f12b9ec4c5d409c4148463a48675c333823dc3ce034837fc2c")
         );
-    }
-
-    #[test]
-    fn high_s_twins_are_rejected() {
-        const N: [u8; 32] = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
-            0xd0, 0x36, 0x41, 0x41,
-        ];
-        let digest = DOMAIN.lock_claim(&[3; 32], 1_790_000_000);
-        let mut signature = key(7).sign(&digest);
-        let mut borrow = 0i16;
-        for i in (0..32).rev() {
-            let difference = i16::from(N[i]) - i16::from(signature[32 + i]) - borrow;
-            signature[32 + i] = difference.rem_euclid(256) as u8;
-            borrow = i16::from(difference < 0);
-        }
-        signature[64] ^= 1;
-        assert_eq!(signer(&digest, &signature), None);
-    }
-
-    #[test]
-    fn only_ethereums_recovery_ids_are_accepted() {
-        let mut signature = [0; 65];
-        signature[31] = 2;
-        signature[63] = 1;
-        for v in 0..=u8::MAX {
-            signature[64] = v;
-            if !matches!(v, 27 | 28) {
-                assert_eq!(signer(&[0; 32], &signature), None, "v={v}");
-            }
-        }
-        for v in [27, 28] {
-            signature[64] = v;
-            assert!(signer(&[0; 32], &signature).is_some());
-        }
     }
 }

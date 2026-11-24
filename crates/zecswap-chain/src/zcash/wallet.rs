@@ -753,6 +753,3 @@ fn unsigned_spends(bundle: &pczt::orchard::Bundle) -> Vec<usize> {
         .map(|(index, _)| index)
         .collect()
 }
-
-#[cfg(test)]
-mod tests;

@@ -109,7 +109,6 @@ dependencies = [
  "alloy-genesis",
  "alloy-json-rpc",
  "alloy-network",
- "alloy-node-bindings",
  "alloy-provider",
  "alloy-rpc-client",
  "alloy-rpc-types",
@@ -316,19 +315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloy-hardforks"
-version = "0.2.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165210652f71dfc094b051602bafd691f506c54050a174b1cba18fb5ef706a3"
-dependencies = [
- "alloy-chains",
- "alloy-eip2124",
- "alloy-primitives",
- "auto_impl",
- "dyn-clone",
-]
-
-[[package]]
 name = "alloy-json-abi"
 version = "1.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -395,28 +381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alloy-node-bindings"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9b2fda91b56bb08907cd44c5068130360e027e46a8c17612d386869fa7940be"
-dependencies = [
- "alloy-genesis",
- "alloy-hardforks",
- "alloy-network",
- "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
- "k256",
- "libc",
- "rand 0.8.8",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "alloy-primitives"
 version = "1.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -457,10 +421,8 @@ dependencies = [
  "alloy-json-rpc",
  "alloy-network",
  "alloy-network-primitives",
- "alloy-node-bindings",
  "alloy-primitives",
  "alloy-rpc-client",
- "alloy-rpc-types-anvil",
  "alloy-rpc-types-eth",
  "alloy-signer",
  "alloy-sol-types",
@@ -536,18 +498,6 @@ name = "alloy-rpc-types"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4faad925d3a669ffc15f43b3deec7fbdf2adeb28a4d6f9cf4bc661698c0f8f4b"
-dependencies = [
- "alloy-primitives",
- "alloy-rpc-types-eth",
- "alloy-serde",
- "serde",
-]
-
-[[package]]
-name = "alloy-rpc-types-anvil"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47df51bedb3e6062cb9981187a51e86d0d64a4de66eb0855e9efe6574b044ddf"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-eth",
@@ -6949,7 +6899,6 @@ dependencies = [
  "axum",
  "blake2b_simd",
  "serde",
- "serde_json",
  "zcash_protocol",
  "zecswap-core",
  "zecswap-railgun",
@@ -6964,9 +6913,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
  "async-trait",
- "hex",
  "http-body",
- "incrementalmerkletree",
  "orchard",
  "pczt",
  "rand 0.10.3",
@@ -6976,7 +6923,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tonic",
@@ -7002,11 +6948,9 @@ dependencies = [
  "anyhow",
  "clap",
  "hex",
- "http",
  "rand 0.10.3",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing-subscriber",
  "zcash_address",
@@ -7025,16 +6969,13 @@ version = "0.1.0"
 dependencies = [
  "alloy-primitives",
  "anyhow",
- "axum",
  "base64 0.22.1",
  "hex",
  "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
- "zcash_address",
  "zecswap-api",
  "zecswap-chain",
  "zecswap-core",
@@ -7051,7 +6992,6 @@ dependencies = [
  "blake2b_simd",
  "ff 0.14.0",
  "group 0.14.0",
- "incrementalmerkletree",
  "k256",
  "orchard",
  "pasta_curves",
@@ -7062,10 +7002,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3 0.10.9",
- "shardtree",
  "zcash_address",
  "zcash_note_encryption",
- "zcash_primitives",
  "zcash_protocol",
  "zeroize",
 ]
@@ -7119,9 +7057,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tower",
  "tracing",
  "zecswap-api",
 ]

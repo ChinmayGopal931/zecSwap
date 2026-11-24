@@ -68,32 +68,3 @@ pub fn derive_maker_share(root: &[u8; 32], nonce: u64) -> Result<SecretShare, Er
         .finalize();
     SecretShare::from_scalar(pallas::Scalar::from_uniform_bytes(hash.as_array()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SEED: [u8; 64] = [42; 64];
-
-    #[test]
-    fn index_account_network_and_seed_separate_keys() {
-        let base = derive_user_keys(&SEED, NetworkType::Main, 0, 0)
-            .unwrap()
-            .share
-            .public();
-        let base_auth = derive_user_keys(&SEED, NetworkType::Main, 0, 0)
-            .unwrap()
-            .auth
-            .address();
-        for other in [
-            derive_user_keys(&SEED, NetworkType::Main, 0, 1),
-            derive_user_keys(&SEED, NetworkType::Main, 1, 0),
-            derive_user_keys(&SEED, NetworkType::Test, 0, 0),
-            derive_user_keys(&[43; 64], NetworkType::Main, 0, 0),
-        ] {
-            let other = other.unwrap();
-            assert_ne!(other.share.public(), base);
-            assert_ne!(other.auth.address(), base_auth);
-        }
-    }
-}

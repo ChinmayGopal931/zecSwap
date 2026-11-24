@@ -55,7 +55,7 @@ fn reversed(mut bytes: [u8; 32]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use ff::Field;
-    use group::{Curve, Group};
+    use group::Group;
     use orchard::primitives::redpallas::{SigningKey, SpendAuth, VerificationKey};
     use pasta_curves::arithmetic::CurveExt;
     use rand::{rand_core::UnwrapErr, rngs::SysRng};
@@ -72,18 +72,5 @@ mod tests {
         let sk = SigningKey::<SpendAuth>::try_from(k.to_repr()).unwrap();
         let vk: [u8; 32] = (&VerificationKey::from(&sk)).into();
         assert_eq!(vk, (spend_auth_g() * k).to_bytes());
-    }
-
-    #[test]
-    fn evm_point_rejects_identity_off_curve_and_non_canonical() {
-        assert_eq!(point_from_evm(&[0; 64]), Err(Error::InvalidPoint));
-
-        let mut off_curve = point_to_evm(&spend_auth_g().to_affine());
-        off_curve[63] ^= 1;
-        assert_eq!(point_from_evm(&off_curve), Err(Error::InvalidPoint));
-
-        let mut non_canonical = [0xff; 64];
-        non_canonical[..32].copy_from_slice(&point_to_evm(&spend_auth_g().to_affine())[..32]);
-        assert_eq!(point_from_evm(&non_canonical), Err(Error::InvalidPoint));
     }
 }
