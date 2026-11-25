@@ -15,10 +15,16 @@ REVERSE = "crates/zecswap-client/src/reverse.rs"
 DEPOSITS = "crates/zecswap-client/src/deposits.rs"
 CHAIN_DEPOSITS = "crates/zecswap-chain/src/evm/deposits.rs"
 AUTH = "crates/zecswap-core/src/auth.rs"
+WALLET = "crates/zecswap-chain/src/zcash/wallet.rs"
+LIGHTWALLETD = "crates/zecswap-chain/src/zcash/lightwalletd.rs"
+SWEEP = "crates/zecswap-core/src/sweep.rs"
 BACKUP = ROOT / "target" / "sim-mutants"
 FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
+ZCASH = ("zcash_survey", "zcash seed ")
+OPEN = {"zcash_survey"}
+SOUND = {}
 
 READY_SENT = """        self.relayer
             .ready_reverse(
@@ -351,6 +357,221 @@ MUTANTS = {
             "        self.balance > 0",
         ),
     ]),
+    "wallet-synced-with-no-account": (ZCASH, [
+        (
+            WALLET,
+            "        if self.db.get_account_ids()?.is_empty() {\n            return Ok(());\n        }\n        self.check_server(client).await?;\n        let tip = lightwalletd::chain_tip(client).await?;",
+            "        self.check_server(client).await?;\n        let tip = lightwalletd::chain_tip(client).await?;",
+        ),
+    ]),
+    "wallet-synced-born-above-the-tip": (ZCASH, [
+        (
+            WALLET,
+            "        if self.born_above(tip)? {\n            return Ok(());\n        }\n",
+            "        let _ = (tip, Self::born_above);\n",
+        ),
+    ]),
+    "joint-imported-twice": (ZCASH, [
+        (
+            WALLET,
+            "        if let Some(account) = self.find_joint(joint, &ufvk)? {\n            return Ok(account);\n        }\n        self.check_server(client).await?;\n        let birthday = Self::birthday_at_tip(client).await?;\n        let purpose",
+            "        self.check_server(client).await?;\n        let birthday = Self::birthday_at_tip(client).await?;\n        let purpose",
+        ),
+    ]),
+    "any-joint-tracked": (ZCASH, [
+        (
+            WALLET,
+            "        .map(|fvk| fvk.to_bytes())\n        == Some(joint.fvk().to_bytes())",
+            "        .map(|fvk| fvk.to_bytes() == joint.fvk().to_bytes())\n        .is_some()",
+        ),
+    ]),
+    "funds-of-one-pool": (ZCASH, [
+        (
+            WALLET,
+            "let pools = [balance.orchard_balance(), balance.ironwood_balance()];",
+            "let pools = [balance.orchard_balance(), balance.orchard_balance()];",
+        ),
+    ]),
+    "sweep-over-the-fee-ceiling": (ZCASH, [
+        (
+            WALLET,
+            "        if fee > SWEEP_FEE_CEILING {\n            return Err(Error::SweepFee {\n                fee,\n                ceiling: SWEEP_FEE_CEILING,\n            });\n        }\n",
+            "",
+        ),
+    ]),
+    "sweep-told-to-the-joint-key": (ZCASH, [
+        (
+            WALLET,
+            "self.store_proposal(prover, account, &proposal, OvkPolicy::Discard, sign)",
+            "self.store_proposal(prover, account, &proposal, OvkPolicy::Sender, sign)",
+        ),
+    ]),
+    "sweep-to-a-used-address": (ZCASH, [
+        (
+            WALLET,
+            "        let (address, _) = self\n            .db\n            .get_next_available_address(account, UnifiedAddressRequest::ORCHARD)?\n            .ok_or_else(|| Error::Wallet(\"account cannot generate an Orchard address\".into()))?;\n        Ok(address.encode(&self.network))",
+            "        self.address(account)",
+        ),
+    ]),
+    "payment-proved-unheld": (ZCASH, [
+        (
+            WALLET,
+            "        let proposal = self.propose_payment(account, payments, &policy, Some(hold))?;",
+            "        let proposal = self.propose_payment(account, payments, &policy, None)?;\n        let _ = hold;",
+        ),
+    ]),
+    "payment-not-proved-again-from-its-notes": (ZCASH, [
+        (
+            WALLET,
+            "        let policy =\n            SpendPolicy::default().with_locked_input_policy(LockedInputPolicy::PreferLocked(own));",
+            "        let policy = SpendPolicy::default();\n        let _ = own;",
+        ),
+    ]),
+    "payment-held-for-good": (ZCASH, [
+        (
+            WALLET,
+            "        Ok(payment.held_until >= next && (expiry == 0 || BlockHeight::from(expiry) >= next))",
+            "        Ok(payment.held_until >= payment.held_until && (expiry == 0 || BlockHeight::from(expiry) >= next))",
+        ),
+    ]),
+    "failed-payment-keeps-its-notes": (ZCASH, [
+        (
+            WALLET,
+            "        if stored.is_err() {\n            self.give_back(&proposal, holder);\n        }\n        stored",
+            "        let _ = (&proposal, holder);\n        stored",
+        ),
+    ]),
+    "released-payment-keeps-its-notes": (ZCASH, [
+        (
+            WALLET,
+            "        Ok(unlock_proposal_inputs(\n            &mut self.db,\n            &payment.proposal,\n            payment.holder,\n        )?)\n    }\n\n    fn give_back(",
+            "        let _ = payment;\n        Ok(())\n    }\n\n    fn give_back(",
+        ),
+    ]),
+    "confirmed-a-block-early": (ZCASH, [
+        (
+            WALLET,
+            "                .is_some_and(|depth| depth >= self.confirmations.untrusted().get() - 1)",
+            "                .is_some_and(|depth| depth + 2 >= self.confirmations.untrusted().get())",
+        ),
+    ]),
+    "expired-a-block-early": (ZCASH, [
+        (
+            WALLET,
+            "                .is_some_and(|block| block.block_height() > tx.expiry_height()))",
+            "                .is_some_and(|block| block.block_height() >= tx.expiry_height()))",
+        ),
+    ]),
+    "expiry-past-the-upgrade": (ZCASH, [
+        (
+            WALLET,
+            "    Some(default.min(upgrade - 1))\n}",
+            "    let _ = upgrade;\n    Some(default)\n}",
+        ),
+    ]),
+    "received-while-unmined": (ZCASH, [
+        (
+            WALLET,
+            "                 WHERE to_account_uuid = ?1 AND tx_mined_height IS NOT NULL\n",
+            "                 WHERE to_account_uuid = ?1\n",
+        ),
+    ]),
+    "inventory-of-another-seed": (ZCASH, [
+        (
+            WALLET,
+            "            None if self.has_account_named(INVENTORY)? => Err(Error::Wallet(\n                \"inventory seed does not match the wallet\".into(),\n            )),\n",
+            "",
+        ),
+    ]),
+    "own-account-made-twice": (ZCASH, [
+        (
+            WALLET,
+            "        match self.account_of(&key)? {\n            Some(account) => Ok((account, key)),\n            None => self.create_account(client, seed, name).await,\n        }\n    }\n\n    pub async fn inventory_account(",
+            "        let _ = (key, Self::account_of);\n        self.create_account(client, seed, name).await\n    }\n\n    pub async fn inventory_account(",
+        ),
+    ]),
+    "no-deadline-on-a-call": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "        if self.total.as_mut().poll(cx).is_ready() || self.idle.as_mut().poll(cx).is_ready() {",
+            "        if self.idle.as_mut().poll(cx).is_ready() {",
+        ),
+    ]),
+    "no-deadline-on-silence": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "        if self.total.as_mut().poll(cx).is_ready() || self.idle.as_mut().poll(cx).is_ready() {",
+            "        if self.total.as_mut().poll(cx).is_ready() {",
+        ),
+    ]),
+    "any-network-served": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "    if served != expected {\n        return Err(Error::Config(format!(\n            \"lightwalletd serves Zcash's {served} network, not {expected}\"\n        )));\n    }\n    Ok(())",
+            "    let _ = (served, expected);\n    Ok(())",
+        ),
+    ]),
+    "refusal-not-looked-up": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "    if let Ok(Ok(known)) = tokio::time::timeout(Duration::from_secs(5), lookup).await\n        && !data.is_empty()\n        && known.data == data\n        && known.height != u64::MAX\n    {\n        return Ok(());\n    }\n",
+            "    drop((lookup, data));\n",
+        ),
+    ]),
+    "orphan-taken-for-held": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "        && known.height != u64::MAX\n",
+            "",
+        ),
+    ]),
+    "any-answer-taken-for-accepted": (ZCASH, [
+        (
+            LIGHTWALLETD,
+            "    if response.error_code == 0 {\n        return Ok(());\n    }\n    if let Ok(Ok(known))",
+            "    if response.error_code == 0 || !response.error_message.is_empty() {\n        return Ok(());\n    }\n    if let Ok(Ok(known))",
+        ),
+    ]),
+    "sweep-signed-to-any-receiver": (ZCASH, [
+        (
+            SWEEP,
+            "                if output.recipient().as_ref() != Some(&self.recipient) {\n                    return Err(OrchardError::Custom(policy(\n                        \"sweep output or change goes to another receiver\",\n                    )));\n                }\n",
+            "",
+        ),
+    ]),
+    "sweep-signed-at-any-fee": (ZCASH, [
+        (
+            SWEEP,
+            "            || totals.fee < 0\n            || totals.fee > i128::from(self.maximum_fee)\n",
+            "            || totals.fee < 0\n",
+        ),
+    ]),
+    "sweep-signed-for-any-amount": (ZCASH, [
+        (
+            SWEEP,
+            "        if totals.received < u128::from(self.minimum_received)\n            || totals.fee < 0",
+            "        if totals.fee < 0",
+        ),
+    ]),
+    "sweep-signed-unreadable-by-its-receiver": (ZCASH, [
+        (
+            SWEEP,
+            "                verify_ciphertext(action, pool).map_err(OrchardError::Custom)?;\n",
+            "",
+        ),
+    ]),
+    "sweep-signed-to-a-forged-receiver": (ZCASH, [
+        (
+            SWEEP,
+            "            output.verify_note_commitment(spend)?;\n",
+            "",
+        ),
+        (
+            SWEEP,
+            "                verify_ciphertext(action, pool).map_err(OrchardError::Custom)?;\n",
+            "",
+        ),
+    ]),
 }
 
 
@@ -396,6 +617,10 @@ def main():
             ran, seeds = survey(test, prefix)
         finally:
             restore()
+        if test in OPEN and test not in SOUND:
+            SOUND[test] = set(survey(test, prefix)[1])
+            print(f"{test}: seeds failing unchanged, not counted: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
+        seeds = [seed for seed in seeds if seed not in SOUND.get(test, ())]
         print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
         if not seeds:
             escaped.append(name)

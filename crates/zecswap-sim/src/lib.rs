@@ -1,4 +1,5 @@
 pub mod deposits;
+pub mod lightwallet;
 mod maker;
 mod net;
 mod node;

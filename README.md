@@ -102,7 +102,7 @@ doesn't take their word for anything: it checks every term against the contract 
 | `crates/zecswap-tokens` | Privacy Pass tokens: fetching, spending and checking them |
 | `crates/zecswap-jni` | The Android bindings, built as `libzecswap.so` |
 | `crates/zecswap-cli` | A testnet wallet and swap CLI |
-| `crates/zecswap-sim` | Whole swaps, both ways, and a wallet's deposits, simulated from one seed: the real client against a simulated chain, maker and relayer |
+| `crates/zecswap-sim` | Whole swaps, both ways, a wallet's deposits and its Zcash wallet, simulated from one seed: the real client against a simulated chain, maker, relayer and lightwalletd |
 
 ## Build and test
 
@@ -111,7 +111,7 @@ You need Rust (pinned in `rust-toolchain.toml`) and [Foundry](https://getfoundry
 ```sh
 (cd contracts && forge build && forge test)   # build the contracts, then their stateful invariants and known answers
 cargo test --workspace                        # the swap and deposit simulation, the audit's cases, and known answers from Railgun's engine, ethers and the RFC
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_   # hunt: each seed is one whole swap each way and a wallet's deposits, under its own faults
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_   # hunt: each seed is one whole swap each way, a wallet's deposits and a Zcash wallet's errands, under its own faults
 cargo build --release -p zecswap-core --example evm_vectors
 (cd contracts && FOUNDRY_PROFILE=ffi forge test)   # Pallas.sol fuzzed against the Rust implementation
 ```

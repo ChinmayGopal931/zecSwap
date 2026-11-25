@@ -281,7 +281,7 @@ pub(crate) async fn zcash_blocks(zcash: Zcash, seed: Seed, loss: u64, clears: In
 }
 
 pub(crate) async fn lives(
-    node: &Node,
+    note: &dyn Fn(String),
     start: Instant,
     horizon: u64,
     crashes: &[(u64, u64)],
@@ -303,10 +303,10 @@ pub(crate) async fn lives(
                 let (_, rest) = crashes.remove(0);
                 life.abort();
                 let _ = (&mut life).await;
-                node.note(format!("the wallet crashed, away {rest}s"));
+                note(format!("the wallet crashed, away {rest}s"));
                 sleep(Duration::from_secs(rest)).await;
                 rested = Instant::now();
-                node.note("the wallet is back".into());
+                note("the wallet is back".into());
                 life = live();
             }
             _ = &mut life => {
@@ -413,7 +413,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
             async move { world.observe().await }
         }),
     ];
-    lives(&node, start, HORIZON, &plan.crashes, || {
+    lives(&*notes(&node), start, HORIZON, &plan.crashes, || {
         spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
     })
     .await;

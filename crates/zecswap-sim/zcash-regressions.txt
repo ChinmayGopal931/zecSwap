@@ -1,0 +1,26 @@
+1 catches a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, the wallet's account made twice, a call with no deadline, and a silent call with no deadline
+2 catches funds read from one pool, a payment proved ahead and not held, a released payment keeping its notes, another seed taken for the inventory's, and a sweep signed to another receiver
+3 catches a sync with no account, a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, a sweep the joint viewing key can read, a transaction confirmed a block early, and a silent call with no deadline
+6 catches a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, a sweep the joint viewing key can read, a sweep to a used address, and a transaction confirmed a block early
+8 catches a sync by a wallet born above the tip, a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, and a sweep over the fee ceiling
+10 catches funds read from one pool, an expiry past the upgrade, another seed taken for the inventory's, and a silent call with no deadline
+20 catches funds read from one pool, a transaction confirmed a block early, a transaction expired a block early, the wallet's account made twice, an orphaned transaction taken for held, and a refusal taken for acceptance
+21 catches a sync with no account, a sweep signed over its fee, and a sweep signed for less than asked
+25 catches funds read from one pool, a transaction expired a block early, an expiry past the upgrade, another seed taken for the inventory's, a call with no deadline, and a refusal taken for acceptance
+39 catches funds read from one pool, a payment proved ahead and not held, a released payment keeping its notes, and the wallet's account made twice
+44 catches a sync with no account, a sync by a wallet born above the tip, a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, and a sweep over the fee ceiling
+45 catches a lightwalletd of another network
+48 catches funds read from one pool, a silent call with no deadline, a sweep signed that its receiver cannot read, and a sweep signed to a forged receiver
+52 catches a joint account imported twice, any joint account taken for the one tracked, funds read from one pool, a sweep the joint viewing key can read, a sweep to a used address, an expiry past the upgrade, a call with no deadline, and a refused broadcast not looked up
+65 catches a joint account imported twice, any joint account taken for the one tracked, a sweep the joint viewing key can read, a call with no deadline, a silent call with no deadline, an orphaned transaction taken for held, and a refusal taken for acceptance
+66 catches a sweep signed over its fee, a sweep signed that its receiver cannot read, and a sweep signed to a forged receiver
+68 catches a fee counted while unmined, and a silent call with no deadline
+69 catches a joint account imported twice, any joint account taken for the one tracked, a sweep over the fee ceiling, a sweep to a used address, a sweep signed over its fee, and a sweep signed for less than asked
+73 catches a lightwalletd of another network
+80 catches a payment proved ahead and not held, a held payment not proved again from its notes, a transaction confirmed a block early, and another seed taken for the inventory's
+81 catches a fee counted while unmined
+90 catches a payment proved ahead and not held, and a payment sent after its hold ran out
+94 catches a payment proved ahead and not held, a held payment not proved again from its notes, and the wallet's account made twice
+107 catches a refused broadcast not looked up
+112 catches a payment proved ahead and not held, and a failed payment keeping its notes
+125 catches a payment proved ahead and not held, a payment sent after its hold ran out, and a silent call with no deadline

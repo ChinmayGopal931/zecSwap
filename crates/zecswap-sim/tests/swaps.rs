@@ -1,6 +1,8 @@
 use std::fmt::Debug;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use zecswap_sim::{End, Plan, Report, deposits, reverse, run, run_with};
+use zecswap_sim::{End, Plan, Report, deposits, lightwallet, reverse, run, run_with};
 
 fn seeds(var: &str, default: std::ops::Range<u64>) -> Vec<u64> {
     match std::env::var(var) {
@@ -32,6 +34,23 @@ fn hold<P: Debug, E: Debug>(reports: impl Iterator<Item = Report<P, E>>) {
     );
 }
 
+fn spread<P: Send, E: Send>(seeds: &[u64], run: fn(u64) -> Report<P, E>) -> Vec<Report<P, E>> {
+    let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                while let Some(seed) = seeds.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let report = run(*seed);
+                    done.lock().unwrap().push(report);
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap();
+    done.sort_by_key(|report| seeds.iter().position(|seed| *seed == report.seed));
+    done
+}
+
 fn tell<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>) {
     for seed in seeds("ZECSWAP_SIM_SEEDS", 0..1) {
         let report = run(seed);
@@ -55,8 +74,8 @@ fn tally(trace: &[String]) -> String {
     )
 }
 
-fn replays<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>) {
-    for seed in seeds("ZECSWAP_SIM_REPLAY", 3..6) {
+fn replays<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>, some: std::ops::Range<u64>) {
+    for seed in seeds("ZECSWAP_SIM_REPLAY", some) {
         let (first, second) = (run(seed), run(seed));
         assert_eq!(first.trace, second.trace, "seed {seed} ran two ways");
         assert_eq!(
@@ -133,7 +152,7 @@ fn plain_story() {
 
 #[test]
 fn a_seed_replays_to_the_same_trace() {
-    replays(run);
+    replays(run, 3..6);
 }
 
 #[test]
@@ -202,7 +221,7 @@ fn plain_reverse_story() {
 
 #[test]
 fn a_reverse_seed_replays_to_the_same_trace() {
-    replays(reverse::run);
+    replays(reverse::run, 3..6);
 }
 
 #[test]
@@ -268,5 +287,63 @@ fn plain_deposit_story() {
 
 #[test]
 fn a_deposit_seed_replays_to_the_same_trace() {
-    replays(deposits::run);
+    replays(deposits::run, 3..6);
+}
+
+#[test]
+fn a_zcash_wallet_with_nothing_wrong_sweeps_its_deposit() {
+    let report = lightwallet::run_with(1, lightwallet::Plan::plain());
+    assert!(report.failures.is_empty(), "{}", report.story());
+    let ended = report.ended.as_ref().expect("a tally");
+    assert!(
+        ended.errands == [Some(lightwallet::End::Swept(500_000))] && ended.own == 1_490_000,
+        "{}",
+        report.story()
+    );
+}
+
+#[test]
+fn every_zcash_seed_keeps_the_invariants() {
+    let seeds = seeds("ZECSWAP_SIM_SEEDS", 0..6);
+    hold(spread(&seeds, lightwallet::run).into_iter());
+}
+
+#[test]
+fn zcash_seeds_that_once_failed_still_hold() {
+    let seeds = regressions(include_str!("../zcash-regressions.txt"));
+    hold(spread(&seeds, lightwallet::run).into_iter());
+}
+
+#[test]
+#[ignore = "tells a Zcash wallet seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim zcash_story -- --ignored --nocapture"]
+fn zcash_story() {
+    tell(lightwallet::run);
+}
+
+#[test]
+#[ignore = "one line a Zcash wallet seed: ZECSWAP_SIM_SEEDS=0..200 cargo test -p zecswap-sim zcash_survey -- --ignored --nocapture"]
+fn zcash_survey() {
+    let seeds = seeds("ZECSWAP_SIM_SEEDS", 0..24);
+    for report in spread(&seeds, lightwallet::run) {
+        println!(
+            "zcash seed {}: {} -> {:?} | {} | {}",
+            report.seed,
+            report.plan.brief(),
+            report.ended,
+            tally(&report.trace),
+            report.failures.join("; "),
+        );
+    }
+}
+
+#[test]
+#[ignore = "tells the story of a Zcash wallet with nothing wrong"]
+fn plain_zcash_story() {
+    let report = lightwallet::run_with(1, lightwallet::Plan::plain());
+    println!("{}\n{}", report.story(), report.trace.join("\n"));
+}
+
+#[test]
+fn a_zcash_seed_replays_to_the_same_trace() {
+    replays(lightwallet::run, 3..5);
 }

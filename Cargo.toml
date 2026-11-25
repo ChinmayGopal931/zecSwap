@@ -31,3 +31,6 @@ opt-level = 1
 
 [profile.test.package.zecswap-railgun]
 opt-level = 3
+
+[profile.test.package.zecswap-chain]
+opt-level = 3

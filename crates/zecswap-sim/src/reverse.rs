@@ -351,7 +351,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
             async move { world.observe().await }
         }),
     ];
-    lives(&node, start, HORIZON, &plan.crashes, || {
+    lives(&*notes(&node), start, HORIZON, &plan.crashes, || {
         spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
     })
     .await;
