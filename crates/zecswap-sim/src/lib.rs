@@ -1,8 +1,10 @@
+mod alerts;
 pub mod deposits;
 pub mod lightwallet;
 mod maker;
 mod net;
 mod node;
+mod panics;
 mod relayer;
 pub mod reverse;
 mod rpc;

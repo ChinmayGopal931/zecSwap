@@ -34,6 +34,7 @@ use zecswap_core::{PublicShare, ReverseOpen, SecretShare, Terms};
 use zecswap_railgun::{ShieldCiphertext, ShieldNote};
 
 use crate::Error;
+use crate::alert::{self, Alert, Alerts, Unlanded};
 
 pub use alloy::eips::BlockId;
 pub use alloy::primitives::{Address, B256, U256};
@@ -48,6 +49,7 @@ const PROTECT_BLOCKS: u64 = 25;
 const PROTECT_MARGIN_BLOCKS: u64 = 5;
 const REVEAL_GAS: u64 = 400_000;
 const REPRICE_BLOCKS: u64 = 3;
+const QUEUED_BLOCKS: u64 = 6;
 const NONCE_TAKEN_READS: u32 = 3;
 const LAND_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -454,15 +456,33 @@ pub struct Settlement {
     multicall: OnceCell<bool>,
     windows: OnceCell<Windows>,
     reveal_headroom: u128,
+    alerts: Option<Alerts>,
+    landed: std::sync::Mutex<Option<(u64, Unlanded)>>,
 }
 
 struct Private {
     provider: DynProvider,
     blocks: u64,
     least_nonce: AtomicU64,
+    watch: std::sync::Mutex<Watch>,
+}
+
+#[derive(Default)]
+struct Watch {
+    raised: Option<(B256, u64)>,
+    dropped: Option<B256>,
 }
 
 impl Private {
+    fn new(provider: DynProvider, blocks: u64) -> Self {
+        Self {
+            provider,
+            blocks,
+            least_nonce: AtomicU64::new(0),
+            watch: Default::default(),
+        }
+    }
+
     fn window(&self) -> u64 {
         self.blocks + PROTECT_MARGIN_BLOCKS
     }
@@ -497,7 +517,7 @@ struct Sent {
     cap: u128,
     tip: u128,
     priced_at: u64,
-    hashes: Vec<B256>,
+    hashes: Vec<(B256, u128)>,
 }
 
 #[derive(Default)]
@@ -581,6 +601,8 @@ impl Settlement {
             multicall: OnceCell::new(),
             windows: OnceCell::new(),
             reveal_headroom: 0,
+            alerts: None,
+            landed: Default::default(),
         }
     }
 
@@ -608,20 +630,22 @@ impl Settlement {
         let client = ClientBuilder::default()
             .layer(RpcMeter::default().layer())
             .transport(transport, false);
-        self.private = Some(Private {
-            provider: provider_over(client, None),
-            blocks,
-            least_nonce: AtomicU64::new(0),
-        });
+        self.private = Some(Private::new(provider_over(client, None), blocks));
+    }
+
+    #[cfg(feature = "sim")]
+    pub fn forget_sends(&self) {
+        if let Some(private) = &self.private {
+            private.least_nonce.store(0, Ordering::Relaxed);
+            *private.watch.lock().unwrap() = Watch::default();
+        }
+        *self.landed.lock().unwrap() = None;
     }
 
     pub fn broadcast_privately(&mut self, rpc_url: &str) -> Result<(), Error> {
         let blocks = protect_blocks(&private_url(rpc_url)?)?;
-        self.private = Some(Private {
-            provider: signing_provider(rpc_url, None, &RpcMeter::default())?,
-            blocks,
-            least_nonce: AtomicU64::new(0),
-        });
+        let provider = signing_provider(rpc_url, None, &RpcMeter::default())?;
+        self.private = Some(Private::new(provider, blocks));
         Ok(())
     }
 
@@ -631,6 +655,10 @@ impl Settlement {
 
     pub fn reveal_with_margin(&mut self, seconds: u64) {
         self.reveal_margin = seconds;
+    }
+
+    pub fn alerts_to(&mut self, alerts: Alerts) {
+        self.alerts = Some(alerts);
     }
 
     pub async fn check_private_rpc(&self) -> Result<(), Error> {
@@ -1479,8 +1507,9 @@ impl Settlement {
             },
             Some(private) => {
                 let gas = check.filter(|check| check.reveals()).map(|_| REVEAL_GAS);
-                let (signed, until) = self.send_privately(private, tx, headroom, gas).await?;
-                self.landed_privately(private, &signed, until).await
+                let (signed, until, above) =
+                    self.send_privately(private, tx, headroom, gas).await?;
+                self.landed_privately(private, &signed, until, above).await
             }
         })
     }
@@ -1548,7 +1577,7 @@ impl Settlement {
             cap,
             tip,
             priced_at,
-            hashes: vec![first.hash],
+            hashes: vec![(first.hash, cap)],
         })
     }
 
@@ -1559,17 +1588,25 @@ impl Settlement {
     ) -> Result<TransactionReceipt, Error> {
         let started = Instant::now();
         let mut taken = 0;
+        let (mut queued, mut told) = (None, None);
         loop {
             tokio::time::sleep(self.provider.client().poll_interval()).await;
-            let mined = self
+            let counted = self
                 .provider
                 .get_transaction_count(sent.account)
                 .latest()
                 .await
-                .unwrap_or_default();
-            for hash in &sent.hashes {
+                .ok();
+            let mined = counted.unwrap_or_default();
+            for (hash, cap) in &sent.hashes {
                 if let Ok(Some(receipt)) = self.provider.get_transaction_receipt(*hash).await {
                     let transaction_hash = receipt.transaction_hash;
+                    let unlanded = Unlanded {
+                        hash: transaction_hash,
+                        block: receipt.block_number.unwrap_or_default(),
+                        max_fee_per_gas: *cap,
+                    };
+                    *self.landed.lock().unwrap() = Some((sent.nonce, unlanded));
                     if receipt.status() {
                         info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
                         return Ok(receipt);
@@ -1578,7 +1615,7 @@ impl Settlement {
                     return Err(Error::Reverted(transaction_hash));
                 }
             }
-            let last = *sent.hashes.last().expect("one was sent");
+            let last = sent.hashes.last().expect("one was sent").0;
             if mined > sent.nonce {
                 taken += 1;
                 if taken == NONCE_TAKEN_READS {
@@ -1595,6 +1632,30 @@ impl Settlement {
             let Ok(head) = self.provider.get_block_number().await else {
                 continue;
             };
+            match counted {
+                Some(behind) if behind < sent.nonce => {
+                    let held = queued.filter(|(most, _)| behind <= *most);
+                    let (_, since) = *queued.insert(held.unwrap_or((behind, head)));
+                    if told != Some(behind) && head >= since + QUEUED_BLOCKS {
+                        told = Some(behind);
+                        let landed = self.landed.lock().unwrap().clone();
+                        let raised = Alert::SendQueued {
+                            account: sent.account,
+                            waiting: last,
+                            nonce: sent.nonce,
+                            behind,
+                            blocks: head - since,
+                            max_fee_per_gas: sent.cap,
+                            unlanded: landed
+                                .filter(|(nonce, _)| *nonce == behind)
+                                .map(|(_, unlanded)| unlanded),
+                        };
+                        alert::raise(self.alerts.as_ref(), raised);
+                    }
+                }
+                Some(_) => queued = None,
+                None => {}
+            }
             if head < sent.priced_at + REPRICE_BLOCKS {
                 continue;
             }
@@ -1615,7 +1676,7 @@ impl Settlement {
                     warn!(transaction_hash = %again.hash, outcome = "refused", "the node refused the repriced transaction: {e}")
                 }
             }
-            sent.hashes.push(again.hash);
+            sent.hashes.push((again.hash, sent.cap));
             sent.priced_at = head;
         }
     }
@@ -1626,7 +1687,7 @@ impl Settlement {
         tx: TransactionRequest,
         headroom: u128,
         gas: Option<u64>,
-    ) -> Result<(Signed, u64), Error> {
+    ) -> Result<(Signed, u64, bool), Error> {
         let unavailable = |what: &str| Error::Unsent(format!("{what} is unavailable"));
         let fees = fees(&self.provider).await?;
         let sent_at = self
@@ -1652,7 +1713,15 @@ impl Settlement {
             .with_max_fee_per_gas(fees.max_fee_per_gas + headroom)
             .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
         let least_nonce = private.least_nonce.load(Ordering::Relaxed);
-        let signed = self.sign_next(tx, least_nonce).await?;
+        let counted = self.pending_nonce().await?;
+        let signed = self.sign_at(tx, counted.max(least_nonce)).await?;
+        let handed = Self::hand_over(private, &signed).await;
+        self.tell_stuck(private, counted);
+        handed?;
+        Ok((signed, sent_at + private.window(), counted < least_nonce))
+    }
+
+    async fn hand_over(private: &Private, signed: &Signed) -> Result<(), Error> {
         let transaction_hash = signed.hash;
         match private.provider.send_raw_transaction(&signed.raw).await {
             Ok(_) => {
@@ -1671,7 +1740,28 @@ impl Settlement {
                 warn!(%transaction_hash, outcome = "unknown", "the private RPC's answer was lost; the transaction may still land");
             }
         }
-        Ok((signed, sent_at + private.window()))
+        Ok(())
+    }
+
+    fn tell_stuck(&self, private: &Private, chain: u64) {
+        let signing = private.least_nonce.load(Ordering::Relaxed);
+        let stuck = {
+            let mut watch = private.watch.lock().unwrap();
+            let dropped = watch.dropped.take().filter(|_| chain < signing);
+            watch.raised.zip(dropped)
+        };
+        if let (Some(account), Some(((raised_by, raised_at), dropped))) = (self.account, stuck) {
+            let raised = Alert::PrivateNonceStuck {
+                account,
+                signing,
+                chain,
+                window: private.window(),
+                raised_by,
+                raised_at,
+                dropped,
+            };
+            alert::raise(self.alerts.as_ref(), raised);
+        }
     }
 
     async fn landed_privately(
@@ -1679,6 +1769,7 @@ impl Settlement {
         private: &Private,
         signed: &Signed,
         until: u64,
+        above: bool,
     ) -> Result<TransactionReceipt, Error> {
         let transaction_hash = signed.hash;
         loop {
@@ -1688,9 +1779,15 @@ impl Settlement {
                 .get_transaction_receipt(transaction_hash)
                 .await
             {
-                private
-                    .least_nonce
-                    .fetch_max(signed.nonce + 1, Ordering::Relaxed);
+                let floor = signed.nonce + 1;
+                let before = private.least_nonce.fetch_max(floor, Ordering::Relaxed);
+                let mut watch = private.watch.lock().unwrap();
+                if before < floor {
+                    let block = receipt.block_number.unwrap_or_default();
+                    watch.raised = Some((transaction_hash, block));
+                }
+                watch.dropped = None;
+                drop(watch);
                 if receipt.status() {
                     info!(%transaction_hash, block_number = receipt.block_number, outcome = "mined", "transaction mined successfully");
                     return Ok(receipt);
@@ -1700,23 +1797,31 @@ impl Settlement {
             }
             if past {
                 warn!(%transaction_hash, outcome = "dropped", "the private RPC dropped the transaction unmined");
+                if above {
+                    private.watch.lock().unwrap().dropped = Some(transaction_hash);
+                    if let Ok(counted) = self.pending_nonce().await {
+                        self.tell_stuck(private, counted);
+                    }
+                }
                 return Err(Error::Dropped(transaction_hash));
             }
             tokio::time::sleep(self.provider.client().poll_interval()).await;
         }
     }
 
-    async fn sign_next(&self, tx: TransactionRequest, least_nonce: u64) -> Result<Signed, Error> {
+    async fn pending_nonce(&self) -> Result<u64, Error> {
         let Some(account) = self.account else {
             return Err(Error::Config("a read-only connection cannot send".into()));
         };
-        let nonce = self
-            .provider
+        self.provider
             .get_transaction_count(account)
             .pending()
             .await
-            .map_err(|_| Error::Contract("the account's nonce is unavailable".into()))?
-            .max(least_nonce);
+            .map_err(|_| Error::Contract("the account's nonce is unavailable".into()))
+    }
+
+    async fn sign_next(&self, tx: TransactionRequest, least_nonce: u64) -> Result<Signed, Error> {
+        let nonce = self.pending_nonce().await?.max(least_nonce);
         self.sign_at(tx, nonce).await
     }
 

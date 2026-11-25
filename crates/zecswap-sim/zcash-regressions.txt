@@ -19,8 +19,18 @@
 73 catches a lightwalletd of another network
 80 catches a payment proved ahead and not held, a held payment not proved again from its notes, a transaction confirmed a block early, and another seed taken for the inventory's
 81 catches a fee counted while unmined
+86 catches a young wallet wedged by a reorg, and a wallet alert on any reorg
 90 catches a payment proved ahead and not held, and a payment sent after its hold ran out
 94 catches a payment proved ahead and not held, a held payment not proved again from its notes, and the wallet's account made twice
 107 catches a refused broadcast not looked up
 112 catches a payment proved ahead and not held, and a failed payment keeping its notes
+121 catches a second tip under the wallet's birthday
 125 catches a payment proved ahead and not held, a payment sent after its hold ran out, and a silent call with no deadline
+160 catches a young wallet wedged by a reorg, and a wallet alert on any reorg
+229 catches a young wallet wedged by a reorg, a wallet alert on any reorg, and a step back on the tree state of another height
+346 catches a young wallet wedged by a reorg, a wallet alert on any reorg, and a step back on the tree state of another height
+412 catches a young wallet wedged by a reorg, a wallet alert on any reorg, and a step back on the tree state of another height
+469 catches a young wallet wedged by a reorg, a wallet alert on any reorg, and a step back on the tree state of another height
+501 catches a second tip under the wallet's birthday, and a sync by a wallet born above the tip
+747 catches a second tip under the wallet's birthday
+952 catches a young wallet wedged by a reorg, and a wallet alert on any reorg

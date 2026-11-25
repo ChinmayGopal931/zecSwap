@@ -107,6 +107,10 @@ pub struct Maker {
 }
 
 impl Maker {
+    pub(crate) fn settlement(&self) -> &Settlement {
+        &self.settlement
+    }
+
     pub fn new(
         seed: Seed,
         mood: Mood,
@@ -520,6 +524,10 @@ pub struct ReverseMaker {
 }
 
 impl ReverseMaker {
+    pub(crate) fn settlement(&self) -> &Settlement {
+        &self.settlement
+    }
+
     pub fn new(
         seed: Seed,
         mood: ReverseMood,

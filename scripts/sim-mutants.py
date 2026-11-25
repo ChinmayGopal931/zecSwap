@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import hashlib
+import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -18,7 +21,10 @@ AUTH = "crates/zecswap-core/src/auth.rs"
 WALLET = "crates/zecswap-chain/src/zcash/wallet.rs"
 LIGHTWALLETD = "crates/zecswap-chain/src/zcash/lightwalletd.rs"
 SWEEP = "crates/zecswap-core/src/sweep.rs"
+SYNC = "crates/zecswap-chain/src/zcash/wallet/sync.rs"
+ALERT = "crates/zecswap-chain/src/alert.rs"
 BACKUP = ROOT / "target" / "sim-mutants"
+UNDO = BACKUP / "undo.json"
 FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
@@ -80,6 +86,13 @@ MUTANTS = {
             "        let _ = now;\n",
         ),
     ]),
+    "deadline-check-panics": (FORWARD, [
+        (
+            USER,
+            "        check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1)?;\n",
+            "        check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1).unwrap();\n",
+        ),
+    ]),
     "any-terms": (FORWARD, [
         (EVM, "    if state.terms_hash != terms.hash() {", "    if false {"),
     ]),
@@ -115,6 +128,13 @@ MUTANTS = {
             REVERSE,
             "        ensure!(\n            !swap.refunding,\n            \"a refund was asked for; the escrow is never readied after it\"\n        );\n",
             "",
+        ),
+    ]),
+    "ready-after-refund-panics": (BACKWARD, [
+        (
+            REVERSE,
+            "        ensure!(\n            !swap.refunding,\n",
+            "        assert!(\n            !swap.refunding,\n",
         ),
     ]),
     "ready-short": (BACKWARD, [
@@ -230,6 +250,13 @@ MUTANTS = {
             DEPOSITS,
             "        ensure!(\n            terms.chain_id == self.deployment.chain_id,\n            \"the relayer serves another chain\"\n        );\n",
             "",
+        ),
+    ]),
+    "deposit-chain-check-panics": (DEPOSIT, [
+        (
+            DEPOSITS,
+            "        ensure!(\n            terms.chain_id == self.deployment.chain_id,\n",
+            "        assert!(\n            terms.chain_id == self.deployment.chain_id,\n",
         ),
     ]),
     "deposit-any-deployment": (DEPOSIT, [
@@ -367,8 +394,27 @@ MUTANTS = {
     "wallet-synced-born-above-the-tip": (ZCASH, [
         (
             WALLET,
-            "        if self.born_above(tip)? {\n            return Ok(());\n        }\n",
-            "        let _ = (tip, Self::born_above);\n",
+            "        if sync::born_above(&self.db, tip)? {\n            return Ok(());\n        }\n",
+            "        let _ = tip;\n",
+        ),
+        (
+            SYNC,
+            "    if born_above(db, tip)? {\n        return Ok(false);\n    }\n",
+            "    let _ = born_above;\n",
+        ),
+    ]),
+    "second-tip-under-the-birthday": (ZCASH, [
+        (
+            SYNC,
+            "    if born_above(db, tip)? {\n        return Ok(false);\n    }\n",
+            "",
+        ),
+    ]),
+    "stepped-back-to-any-height": (ZCASH, [
+        (
+            SYNC,
+            "                    if state.block_height() != safe {\n",
+            "                    if state.block_height() != safe && false {\n",
         ),
     ]),
     "joint-imported-twice": (ZCASH, [
@@ -572,6 +618,75 @@ MUTANTS = {
             "",
         ),
     ]),
+    "stuck-private-sender-unalerted": (BACKWARD, [
+        (EVM, "            watch.raised.zip(dropped)\n", "            watch.raised.zip(dropped).filter(|_| false)\n"),
+    ]),
+    "private-alert-with-no-send-dropped": (BACKWARD, [
+        (
+            EVM,
+            "            watch.raised.zip(dropped)\n",
+            """            watch
+                .raised
+                .filter(|_| chain < signing)
+                .map(|raised| (raised, dropped.unwrap_or(raised.0)))
+""",
+        ),
+    ]),
+    "private-alert-at-the-next-send": (BACKWARD, [
+        (
+            EVM,
+            "                    if let Ok(counted) = self.pending_nonce().await {\n",
+            "                    if let Ok(counted) = self.pending_nonce().await && false {\n",
+        ),
+    ]),
+    "failing-sink-let-through": (DEPOSIT, [
+        (
+            ALERT,
+            "    if catch_unwind(AssertUnwindSafe(|| alerts(&alert))).is_err() {\n",
+            "    alerts(&alert);\n    if catch_unwind(AssertUnwindSafe(|| ())).is_err() {\n",
+        ),
+    ]),
+    "queued-sender-unalerted": (DEPOSIT, [
+        (
+            EVM,
+            "                    if told != Some(behind) && head >= since + QUEUED_BLOCKS {\n",
+            "                    if told != Some(behind) && head >= since + QUEUED_BLOCKS && false {\n",
+        ),
+    ]),
+    "queue-alert-at-once": (DEPOSIT, [
+        (
+            EVM,
+            "                    if told != Some(behind) && head >= since + QUEUED_BLOCKS {\n",
+            "                    if told != Some(behind) && head >= since {\n",
+        ),
+    ]),
+    "queue-alert-while-draining": (DEPOSIT, [
+        (
+            EVM,
+            "                    let held = queued.filter(|(most, _)| behind <= *most);\n",
+            "                    let held = queued.filter(|(most, _)| behind <= *most || true);\n",
+        ),
+    ]),
+    "refused-rewind-kept-refused": (ZCASH, [
+        (SYNC, "                }) if safe + 1 < at => {\n", "                }) if safe + 1 < at && false => {\n"),
+    ]),
+    "wallet-alert-on-any-reorg": (ZCASH, [
+        (
+            SYNC,
+            "            let kept = kept.inspect_err(|refusal| {\n",
+            """            alert::raise(
+                watch.alerts,
+                Alert::WalletRewindRefused {
+                    wallet: watch.wallet.to_owned(),
+                    reorg_at: at.into(),
+                    rewind: rewind.into(),
+                    refusal: String::new(),
+                },
+            );
+            let kept = kept.inspect_err(|refusal| {
+""",
+        ),
+    ]),
 }
 
 
@@ -587,40 +702,81 @@ def survey(test, prefix):
     if not lines:
         sys.exit(run.stderr[-3000:])
     failing = [line for line in lines if not line.rstrip().endswith("|")]
-    return len(lines), [line.split(":")[0].removeprefix(prefix) for line in failing]
+    return len(lines), {line.split(":")[0].removeprefix(prefix): line.rsplit(" | ", 1)[-1] for line in failing}
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def put(path, text):
+    new = BACKUP / "new"
+    new.write_text(text)
+    if path.exists():
+        shutil.copymode(path, new)
+    os.replace(new, path)
 
 
 def restore():
-    for saved in sorted(BACKUP.glob("*")):
-        restored = ROOT / saved.name.replace("__", "/")
-        shutil.move(saved, restored)
-        os.utime(restored)
+    if not UNDO.exists():
+        return False
+    theirs = []
+    for path, (original, mutated) in json.loads(UNDO.read_text()).items():
+        source = ROOT / path
+        now = source.read_text() if source.exists() else None
+        if now is not None and digest(now) == mutated:
+            put(source, original)
+        elif now == original:
+            os.utime(source)
+        else:
+            theirs.append(path)
+    if theirs:
+        sys.exit(
+            f"not undone, as edited since the mutant went in: {' '.join(theirs)}. "
+            f"Take the mutant out by hand ({UNDO} holds each file as it was), then delete {UNDO}"
+        )
+    UNDO.unlink()
+    return True
+
+
+def edited(name, edits):
+    files = {}
+    for path, old, new in edits:
+        text = files[path] if path in files else (ROOT / path).read_text()
+        if text.count(old) != 1:
+            sys.exit(f"{name}: {path} no longer has the line this mutant changes")
+        files[path] = text.replace(old, new)
+    return files
+
+
+def stopped(number, _):
+    sys.exit(128 + number)
 
 
 def main():
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, stopped)
     BACKUP.mkdir(parents=True, exist_ok=True)
-    if any(BACKUP.iterdir()):
-        restore()
+    if restore():
         print("undid the mutant an earlier run left in place", flush=True)
+    (BACKUP / "new").unlink(missing_ok=True)
     escaped = []
     for name, ((test, prefix), edits) in MUTANTS.items():
         if ONLY and name not in ONLY:
             continue
+        files = edited(name, edits)
+        held = {path: ((ROOT / path).read_text(), digest(text)) for path, text in files.items()}
         try:
-            for path in sorted({path for path, _, _ in edits}):
-                shutil.copy(ROOT / path, BACKUP / path.replace("/", "__"))
-            for path, old, new in edits:
-                text = (ROOT / path).read_text()
-                if text.count(old) != 1:
-                    sys.exit(f"{name}: {path} no longer has the line this mutant changes")
-                (ROOT / path).write_text(text.replace(old, new))
+            put(UNDO, json.dumps(held))
+            for path, text in files.items():
+                put(ROOT / path, text)
             ran, seeds = survey(test, prefix)
         finally:
             restore()
         if test in OPEN and test not in SOUND:
-            SOUND[test] = set(survey(test, prefix)[1])
-            print(f"{test}: seeds failing unchanged, not counted: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
-        seeds = [seed for seed in seeds if seed not in SOUND.get(test, ())]
+            SOUND[test] = survey(test, prefix)[1]
+            print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
+        seeds = [seed for seed, how in seeds.items() if SOUND.get(test, {}).get(seed) != how]
         print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
         if not seeds:
             escaped.append(name)

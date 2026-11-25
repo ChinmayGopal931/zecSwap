@@ -42,6 +42,7 @@ use super::cache::MemoryBlockCache;
 use super::lightwalletd::{self, Lightwalletd};
 use super::prover::{Circuit, Prover};
 use crate::Error;
+use crate::alert::Alerts;
 
 mod sync;
 
@@ -74,6 +75,7 @@ pub struct Wallet {
     blocks: MemoryBlockCache,
     confirmations: ConfirmationsPolicy,
     server_checked: bool,
+    alerts: Option<Alerts>,
 }
 
 impl Wallet {
@@ -95,12 +97,17 @@ impl Wallet {
             blocks: MemoryBlockCache::default(),
             confirmations: ConfirmationsPolicy::default(),
             server_checked: false,
+            alerts: None,
         })
     }
 
     pub fn with_confirmations(mut self, confirmations: NonZeroU32) -> Self {
         self.confirmations = ConfirmationsPolicy::new_symmetrical(confirmations, false);
         self
+    }
+
+    pub fn alerts_to(&mut self, alerts: Alerts) {
+        self.alerts = Some(alerts);
     }
 
     pub fn network(&self) -> Network {
@@ -121,15 +128,21 @@ impl Wallet {
         }
         self.check_server(client).await?;
         let tip = lightwalletd::chain_tip(client).await?;
-        if self.born_above(tip)? {
+        if sync::born_above(&self.db, tip)? {
             return Ok(());
         }
+        let watch = sync::Watch {
+            alerts: self.alerts.as_ref(),
+            wallet: self.views.path().unwrap_or_default(),
+            steps_back: 0,
+        };
         sync::run(
             client,
             &self.network,
             &self.blocks,
             &mut self.db,
             SYNC_BATCH_SIZE,
+            watch,
         )
         .await
     }
@@ -597,13 +610,6 @@ impl Wallet {
         let treestate = lightwalletd::tree_state(client, tip).await?;
         AccountBirthday::from_treestate(treestate, None)
             .map_err(|e| Error::Wallet(format!("account birthday: {e:?}")))
-    }
-
-    fn born_above(&self, tip: BlockHeight) -> Result<bool, Error> {
-        Ok(self
-            .db
-            .get_wallet_birthday()?
-            .is_some_and(|birthday| birthday > tip))
     }
 
     fn propose_payment(

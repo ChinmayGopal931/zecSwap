@@ -1,5 +1,15 @@
 [workspace]
 members = ["crates/*"]
+default-members = [
+    "crates/zecswap-api",
+    "crates/zecswap-chain",
+    "crates/zecswap-cli",
+    "crates/zecswap-client",
+    "crates/zecswap-core",
+    "crates/zecswap-jni",
+    "crates/zecswap-railgun",
+    "crates/zecswap-tokens",
+]
 resolver = "3"
 
 [workspace.package]

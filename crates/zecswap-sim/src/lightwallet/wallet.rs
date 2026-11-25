@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
@@ -12,6 +13,7 @@ use tokio::time::{Instant, sleep};
 use zcash_address::ZcashAddress;
 use zcash_protocol::consensus::{Network, NetworkType, Parameters};
 use zecswap_chain::Error;
+use zecswap_chain::alert::Alert;
 use zecswap_chain::zcash::{
     AccountUuid, Funds, Lightwalletd, ProvedPayment, SWEEP_FEE_CEILING, TxId, UnifiedSpendingKey,
     Wallet, address_at,
@@ -136,6 +138,7 @@ pub struct Saved {
     pub built: Vec<Built>,
     pub refused: Vec<(usize, u64, u64)>,
     pub said: BTreeMap<String, String>,
+    pub born: Option<u32>,
 }
 
 pub struct Joint {
@@ -228,16 +231,7 @@ pub struct Actor {
     pub start: Instant,
     pub saved: Rc<RefCell<Saved>>,
     pub failures: Rc<RefCell<Vec<(u8, String)>>>,
-}
-
-struct Dying(Rc<Actor>);
-
-impl Drop for Dying {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            self.0.fail(21, "the wallet panicked".into());
-        }
-    }
+    pub heard: Arc<Mutex<Vec<Alert>>>,
 }
 
 struct Life {
@@ -304,17 +298,30 @@ impl Actor {
         }
     }
 
+    fn open(&self) -> Result<Wallet, Error> {
+        let confirmations = NonZeroU32::new(self.confirmations).expect("a depth");
+        let mut wallet = Wallet::open(&self.path, self.network)?.with_confirmations(confirmations);
+        let heard = self.heard.clone();
+        wallet.alerts_to(Arc::new(move |alert: &Alert| {
+            heard.lock().unwrap().push(alert.clone());
+        }));
+        Ok(wallet)
+    }
+
+    fn birth(&self) {
+        let born = self.server.told().0 + 1;
+        self.saved.borrow_mut().born.get_or_insert(born);
+    }
+
     pub async fn live(self: Rc<Self>) {
         self.saved.borrow_mut().lives += 1;
-        let confirmations = NonZeroU32::new(self.confirmations).expect("a depth");
-        let wallet = match Wallet::open(&self.path, self.network) {
-            Ok(wallet) => wallet.with_confirmations(confirmations),
+        let wallet = match self.open() {
+            Ok(wallet) => wallet,
             Err(e) => {
                 self.fail(1, format!("the wallet would not open: {}", brief(&e)));
                 return std::future::pending().await;
             }
         };
-        let _dying = Dying(self.clone());
         let mut life = Life {
             client: self.server.connect(),
             actor: self.clone(),
@@ -336,15 +343,13 @@ impl Actor {
     }
 
     pub async fn audit(self: Rc<Self>) -> bool {
-        let _dying = Dying(self.clone());
-        let confirmations = NonZeroU32::new(self.confirmations).expect("a depth");
-        let Ok(wallet) = Wallet::open(&self.path, self.network) else {
+        let Ok(wallet) = self.open() else {
             return false;
         };
         let mut life = Life {
             client: self.server.connect(),
             actor: self,
-            wallet: wallet.with_confirmations(confirmations),
+            wallet,
             own: None,
             proved: BTreeMap::new(),
             fresh: false,
@@ -355,7 +360,7 @@ impl Actor {
             life.own = Some((account, life.actor.keys.spending()));
         }
         life.actor.server.clear();
-        if let Err(e) = life.wallet.sync(&mut life.client).await {
+        if let Err(e) = life.sync().await {
             let actor = life.actor.clone();
             actor.say("the wallet", format!("no sync at the end: {}", brief(&e)));
             return false;
@@ -377,6 +382,56 @@ impl Life {
         self.actor.start.elapsed().as_secs()
     }
 
+    async fn sync(&mut self) -> Result<(), Error> {
+        let actor = self.actor.clone();
+        let before = actor.heard.lock().unwrap().len();
+        let misplaced = actor.server.misplaced();
+        let synced = self.wallet.sync(&mut self.client).await;
+        if synced.is_ok() && actor.server.misplaced() > misplaced {
+            actor.fail(
+                26,
+                "the wallet stepped back on the tree state of another height".into(),
+            );
+        }
+        let heard = actor.heard.lock().unwrap().clone();
+        let (earlier, raised) = heard.split_at(before);
+        let refused = synced
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("A rewind for your wallet"));
+        if refused && raised.is_empty() {
+            actor.fail(
+                24,
+                "the wallet could not step back after a reorg, and raised no alert".into(),
+            );
+        }
+        for alert in raised {
+            if earlier.iter().all(|told| told.key() != alert.key()) {
+                actor
+                    .ledger
+                    .note(format!("alert from the wallet: {}", alert.name()));
+            }
+            let born = actor.saved.borrow().born;
+            let fine = match alert {
+                Alert::WalletRewindRefused {
+                    reorg_at, rewind, ..
+                } => {
+                    synced.is_err()
+                        && actor.ledger.reorged(*reorg_at)
+                        && *rewind == reorg_at.saturating_sub(10)
+                        && born.is_some_and(|born| actor.ledger.reorged(born))
+                }
+                _ => false,
+            };
+            if !fine {
+                actor.fail(
+                    25,
+                    format!("a false alert from the wallet: {}", alert.name()),
+                );
+            }
+        }
+        synced
+    }
+
     async fn poll(&mut self) {
         let actor = self.actor.clone();
         if self.own.is_none() && actor.owns {
@@ -392,6 +447,7 @@ impl Life {
             match made {
                 Ok((account, usk)) => {
                     let known = actor.saved.borrow().own.is_some();
+                    actor.birth();
                     let before = actor.saved.borrow_mut().account.replace(account);
                     if before.is_some_and(|before| before != account) {
                         actor.fail(23, "the wallet made its own account a second time".into());
@@ -412,7 +468,7 @@ impl Life {
         if !actor.owns && actor.seasons > 0 && !self.seasoned().await {
             return;
         }
-        if let Err(e) = self.wallet.sync(&mut self.client).await {
+        if let Err(e) = self.sync().await {
             return actor.say("the wallet", format!("no sync: {}", brief(&e)));
         }
         actor.say("the wallet", "synced".into());
@@ -446,6 +502,7 @@ impl Life {
                         actor
                             .ledger
                             .note("the wallet has an earlier swap's account".into());
+                        actor.birth();
                         actor.saved.borrow_mut().earlier = Some(Some(*account));
                     }
                     Err(e) => actor.say("the wallet", format!("no account: {}", brief(e))),
@@ -764,9 +821,10 @@ impl Life {
                     actor.fail(11, format!("the wallet does not know {label} by its key"));
                 }
                 actor.ledger.note(format!("the wallet imported {label}"));
+                actor.birth();
                 actor.saved.borrow_mut().imported[index] = Some(Instant::now());
                 actor.set(index, Step::Imported { account });
-                if let Err(e) = self.wallet.sync(&mut self.client).await {
+                if let Err(e) = self.sync().await {
                     actor.say("the wallet", format!("no sync: {}", brief(&e)));
                 }
             }
@@ -1183,9 +1241,8 @@ impl Life {
             .note(format!("the wallet crashed, away {rest}s"));
         self.proved.clear();
         sleep(Duration::from_secs(rest)).await;
-        let confirmations = NonZeroU32::new(actor.confirmations).expect("a depth");
-        match Wallet::open(&actor.path, actor.network) {
-            Ok(wallet) => self.wallet = wallet.with_confirmations(confirmations),
+        match actor.open() {
+            Ok(wallet) => self.wallet = wallet,
             Err(e) => actor.fail(1, format!("the wallet would not open: {}", brief(&e))),
         }
         self.client = actor.server.connect();

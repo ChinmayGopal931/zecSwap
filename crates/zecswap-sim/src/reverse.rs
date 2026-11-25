@@ -9,12 +9,14 @@ use tokio::time::{Instant, sleep};
 use zecswap_chain::evm::{Reveal, Stage, Window, Windows, simulate_wall};
 use zecswap_core::{NetworkType, SecretShare, derive_user_keys};
 
+use crate::alerts::Alarms;
 pub use crate::maker::ReverseMood;
 use crate::maker::{
     Escrow, MAX_READY_WAIT, REVERSE_T0_TO_T1, REVERSE_TO_T0, ReverseMaker, ReverseMakerDoor,
 };
 use crate::net::{Line, Net};
 use crate::node::{Node, Published, SLOT, Weather};
+use crate::panics;
 pub use crate::relayer::ReverseService;
 use crate::relayer::{Errand, FEE, Relayer, ReverseRelayer, ReverseRelayerDoor, Service};
 use crate::run::{Report, SETTLE, connect, lives, notes, paused, shielded_to, ticks, zcash_blocks};
@@ -251,7 +253,7 @@ pub fn run(seed: u64) -> Report<Plan, Ended> {
 }
 
 pub fn run_with(seed: u64, plan: Plan) -> Report<Plan, Ended> {
-    paused(simulate(Seed(seed), plan))
+    paused(seed, plan, simulate)
 }
 
 struct World {
@@ -263,6 +265,7 @@ struct World {
     wallet: Arc<Wallet>,
     user_seed: [u8; 64],
     disagreements: Arc<Mutex<Vec<String>>>,
+    alarms: Arc<Alarms>,
 }
 
 async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
@@ -281,22 +284,31 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
     chain.mint(funder_key.address(), 100 * UNIT);
     node.clear_from(EPOCH + plan.clears);
     let zcash = Zcash::default();
+    let (alarms, mut operator) = Alarms::new(&node, seed);
     let maker = ReverseMaker::new(
         seed,
         plan.mood,
         chain.clone(),
         zcash.clone(),
-        connect(&node, &chain, "maker", maker_key, plan.private),
+        connect(&node, &chain, "maker", maker_key, plan.private, &alarms),
     );
     let relayer = ReverseRelayer::new(
         plan.service,
         Relayer::new(
             Service::Honest,
             chain.clone(),
-            connect(&node, &chain, "relayer", relayer_key, plan.private),
+            connect(&node, &chain, "relayer", relayer_key, plan.private, &alarms),
         ),
         funder_key,
     );
+    operator.restarts("maker", {
+        let maker = maker.clone();
+        move || maker.settlement().forget_sends()
+    });
+    operator.restarts("relayer", {
+        let relayer = relayer.clone();
+        move || relayer.settlement().forget_sends()
+    });
     let log = notes(&node);
     let clears = start + Duration::from_secs(plan.clears);
     let user_seed = seed.bytes::<64>("user-seed");
@@ -341,23 +353,30 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         wallet: wallet.clone(),
         user_seed,
         disagreements: Arc::default(),
+        alarms,
     });
     let background = [
-        spawn_local(ticks(node.clone(), start)),
-        spawn_local(zcash_blocks(zcash, seed, plan.zcash_loss, clears)),
-        spawn_local(maker.tend()),
-        spawn_local({
-            let world = world.clone();
-            async move { world.observe().await }
-        }),
+        ("the chain", spawn_local(ticks(node.clone(), start))),
+        ("the operator", spawn_local(operator.tend())),
+        (
+            "the Zcash chain",
+            spawn_local(zcash_blocks(zcash, seed, plan.zcash_loss, clears)),
+        ),
+        ("the maker", spawn_local(maker.tend())),
+        (
+            "the observer",
+            spawn_local({
+                let world = world.clone();
+                async move { world.observe().await }
+            }),
+        ),
     ];
-    lives(&*notes(&node), start, HORIZON, &plan.crashes, || {
+    let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
+    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
         spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
     })
     .await;
-    for task in background {
-        task.abort();
-    }
+    panics::end(background.into_iter().chain(life)).await;
     world.report()
 }
 
@@ -450,6 +469,7 @@ impl World {
         let heard = self.relayer.heard();
         let mut failures = self.disagreements.lock().unwrap().clone();
         failures.truncate(5);
+        failures.extend(self.alarms.failures(&[]));
         let mut fail = |what: String| failures.push(what);
 
         let funding: Vec<&Vec<_>> = heard

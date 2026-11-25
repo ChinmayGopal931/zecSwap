@@ -10,6 +10,7 @@ use zecswap_client::{
 };
 use zecswap_core::NetworkType;
 
+use crate::alerts::Alarms;
 use crate::seed::Seed;
 use crate::world::Chain;
 use crate::zcash::{PaymentId, Zcash};
@@ -67,6 +68,7 @@ pub struct Wallet {
     pub linger_verify: Option<i64>,
     pub linger_claim: Option<i64>,
     pub saved: Arc<Mutex<Saved>>,
+    pub(crate) alarms: Arc<Alarms>,
 }
 
 pub(crate) fn refused(error: &anyhow::Error) -> bool {
@@ -97,6 +99,7 @@ impl Wallet {
             Way::Account { key, private } => {
                 let mut settlement =
                     Settlement::over(node.rpc(&name), self.chain.contract, Some(key.clone()));
+                settlement.alerts_to(self.alarms.sink(&name, key));
                 if *private {
                     settlement.broadcast_privately_over(node.private_rpc(&name, 25), 25);
                 }

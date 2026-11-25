@@ -42,6 +42,7 @@ pub struct Service {
     pub lags: u64,
     pub deaf: u64,
     pub hangups: u64,
+    pub misplaces: u64,
     pub backwards: bool,
     pub another: bool,
     pub quiet: bool,
@@ -56,6 +57,7 @@ impl Service {
         lags: 0,
         deaf: 0,
         hangups: 0,
+        misplaces: 0,
         backwards: false,
         another: false,
         quiet: true,
@@ -73,6 +75,8 @@ pub struct Server {
     turn: Cell<u64>,
     told: Cell<(u32, [u8; 32])>,
     most: Cell<u32>,
+    stated: Cell<bool>,
+    misplaced: Cell<u64>,
     failures: RefCell<Vec<String>>,
 }
 
@@ -128,6 +132,8 @@ impl Server {
             turn: Cell::new(0),
             told: Cell::new(told),
             most: Cell::new(0),
+            stated: Cell::new(false),
+            misplaced: Cell::new(0),
             failures: RefCell::default(),
         })
     }
@@ -186,6 +192,10 @@ impl Server {
 
     fn rough(&self) -> bool {
         Instant::now() < self.clears && !self.cleared.get()
+    }
+
+    pub fn misplaced(&self) -> u64 {
+        self.misplaced.get()
     }
 
     pub fn faults(&self) -> u64 {
@@ -327,6 +337,7 @@ impl Server {
 
     fn reply(&self, method: &str, body: Bytes, call: u64) -> Reply {
         let malformed = |_| (UNIMPLEMENTED, "malformed");
+        let stated = self.stated.replace(method == "GetTreeState");
         match method {
             "GetLightdInfo" => {
                 let real = self.ledger.kind();
@@ -380,8 +391,20 @@ impl Server {
                 Ok(blocks.iter().map(frame).collect())
             }
             "GetTreeState" => {
-                let id = BlockId::decode(body).map_err(malformed)?;
-                let state = self.ledger.tree_state(id.height as u32);
+                let asked = BlockId::decode(body).map_err(malformed)?.height as u32;
+                let misplaced = stated && self.rolls("lwd-misplaces", call, self.service.misplaces);
+                let height = match misplaced.then(|| self.seed.below("lwd-misplaced", call, 3)) {
+                    None => asked,
+                    Some(0) => asked - 1,
+                    Some(1) => asked + 1,
+                    Some(_) => self.ledger.tip().0,
+                };
+                if height != asked {
+                    self.misplaced.set(self.misplaced.get() + 1);
+                    self.ledger
+                        .note("lightwalletd answered the tree state of another height".into());
+                }
+                let state = self.ledger.tree_state(height);
                 Ok(vec![frame(&state.ok_or((NOT_FOUND, "no such block"))?)])
             }
             "GetSubtreeRoots" => {

@@ -237,6 +237,7 @@ struct Inner {
     clears: u64,
     blocks: Vec<Block>,
     forks: u64,
+    reorged: Vec<(u32, u32)>,
     shards: [Vec<(MerkleHashOrchard, u32)>; 2],
     orphans: BTreeSet<[u8; 32]>,
     payments: Vec<Payment>,
@@ -622,6 +623,8 @@ impl Inner {
             return self.mine(time);
         }
         let from = self.tip().height - self.base();
+        let last = self.tip().height;
+        self.reorged.push((last + 1 - depth as u32, last));
         let removed = self.blocks.split_off(self.blocks.len() - depth);
         self.forks += 1;
         let tip = self.tip().height;
@@ -710,6 +713,7 @@ impl Ledger {
             clears,
             blocks: Vec::new(),
             forks: 0,
+            reorged: Vec::new(),
             shards: [orchard_shards, ironwood_shards],
             orphans: BTreeSet::new(),
             payments: Vec::new(),
@@ -755,6 +759,13 @@ impl Ledger {
 
     pub fn note(&self, what: String) {
         self.inner().note(what);
+    }
+
+    pub fn reorged(&self, at: u32) -> bool {
+        let reorged = &self.inner().reorged;
+        reorged
+            .iter()
+            .any(|(first, last)| *first < at && at <= last + 1)
     }
 
     pub fn trace(&self) -> Vec<String> {

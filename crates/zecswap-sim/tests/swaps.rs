@@ -63,8 +63,12 @@ fn tell<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>) {
 
 fn tally(trace: &[String]) -> String {
     let count = |what: &str| trace.iter().filter(|line| line.contains(what)).count();
+    let alerts = match count("alert from ") {
+        0 => String::new(),
+        alerts => format!(" alerts {alerts}"),
+    };
     format!(
-        "blocks {} reorgs {} crashes {} stops {} lost-rpc {} busy {}",
+        "blocks {} reorgs {} crashes {} stops {} lost-rpc {} busy {}{alerts}",
         count("block "),
         count("reorg of"),
         count("wallet crashed"),
@@ -266,8 +270,12 @@ fn deposit_survey() {
     for seed in seeds("ZECSWAP_SIM_SEEDS", 0..24) {
         let report = deposits::run(seed);
         println!(
-            "deposit seed {seed}: {:?} {} arrivals, {} in 1000 returned, {:?} -> {:?} | {} | {}",
+            "deposit seed {seed}: {:?}{} {} arrivals, {} in 1000 returned, {:?} -> {:?} | {} | {}",
             report.plan.service,
+            match report.plan.fees_stay {
+                true => " while fees stay",
+                false => "",
+            },
             report.plan.arrivals.len(),
             report.plan.returned,
             report.plan.payout,

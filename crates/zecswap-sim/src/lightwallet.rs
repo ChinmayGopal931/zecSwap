@@ -7,8 +7,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use orchard::ValuePool;
@@ -24,6 +24,7 @@ use zcash_protocol::consensus::{
 use zecswap_chain::zcash::{Prover, SWEEP_FEE_CEILING};
 use zecswap_core::{SweepIntent, sign_pczt_bytes};
 
+use crate::panics;
 use crate::run::{Report, lives, paused};
 use crate::seed::Seed;
 use crate::world::EPOCH;
@@ -38,7 +39,7 @@ pub use wallet::{Ahead, End, Errand, Home, Then};
 const SPACING: u64 = 75;
 const MOST_NOTES: usize = 64;
 const SEASON: u32 = 13;
-const STALE: Duration = Duration::from_secs(600);
+const STALE: Duration = Duration::from_secs(24 * 60 * 60);
 const FUNDS: usize = usize::MAX;
 
 static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
@@ -270,6 +271,7 @@ impl Plan {
                 lags: up_to("lwd-lags", 200),
                 deaf: up_to("lwd-deaf", 300),
                 hangups: up_to("lwd-hangups", 25),
+                misplaces: up_to("lwd-misplaces", 900),
                 backwards: roll("lwd-backwards", 80) == 0,
                 another: roll("lwd-another", 40) == 0,
                 quiet: roll("lwd-quiet", 2) == 0,
@@ -549,16 +551,20 @@ pub struct Ended {
 struct Scratch(PathBuf);
 
 impl Scratch {
+    fn shaped(name: &str) -> bool {
+        let numbers = name.strip_prefix("zecswap-sim-").unwrap_or_default();
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        numbers.split('-').count() == 3 && numbers.split('-').all(digits)
+    }
+
     fn new(seed: Seed) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let ours = format!("zecswap-sim-{}-", std::process::id());
         let stale = |entry: &std::fs::DirEntry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let touched = entry.metadata().and_then(|data| data.modified());
-            let age = touched.ok().and_then(|at| at.elapsed().ok());
-            name.starts_with("zecswap-sim-")
-                && !name.starts_with(&ours)
-                && age.is_some_and(|age| age > STALE)
+            let data = entry.metadata().ok().filter(|data| data.is_dir());
+            let age = data.and_then(|data| data.modified().ok()?.elapsed().ok());
+            Self::shaped(&name) && !name.starts_with(&ours) && age.is_some_and(|age| age > STALE)
         };
         let left = std::fs::read_dir(std::env::temp_dir())
             .into_iter()
@@ -589,7 +595,7 @@ pub fn run(seed: u64) -> Report<Plan, Ended> {
 }
 
 pub fn run_with(seed: u64, plan: Plan) -> Report<Plan, Ended> {
-    paused(simulate(Seed(seed), plan))
+    paused(seed, plan, simulate)
 }
 
 struct World {
@@ -646,6 +652,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         start,
         saved: Rc::new(RefCell::new(saved)),
         failures: Rc::default(),
+        heard: Arc::default(),
     });
     let world = Rc::new(World {
         seed,
@@ -658,22 +665,21 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         paid: RefCell::default(),
     });
     let mut background = vec![
-        spawn_local(world.clone().mine(start)),
-        spawn_local(world.clone().fund()),
+        ("the Zcash chain", spawn_local(world.clone().mine(start))),
+        ("the payer", spawn_local(world.clone().fund())),
     ];
     for index in 0..plan.errands.len() {
-        background.push(spawn_local(world.clone().sign(index)));
+        background.push(("the signer", spawn_local(world.clone().sign(index))));
     }
     let note = |what: String| ledger.note(what);
-    lives(&note, start, plan.blocks * SPACING, &plan.crashes, || {
+    let horizon = || start + Duration::from_secs(plan.blocks * SPACING);
+    let life = lives(&note, start, horizon, &plan.crashes, || {
         spawn_local(actor.clone().live())
     })
     .await;
-    for task in background {
-        task.abort();
-    }
-    let audited = spawn_local(actor.clone().audit()).await.unwrap_or(false);
-    world.report(audited)
+    panics::end(background.into_iter().chain(life)).await;
+    let audited = spawn_local(actor.clone().audit()).await;
+    world.report(panics::judge("the audit", audited).unwrap_or(false))
 }
 
 impl World {

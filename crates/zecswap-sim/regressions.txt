@@ -1,4 +1,4 @@
-32 catches a deposit made with too little time before t0
+32 catches a deposit made with too little time before t0, and that refusal turned into a panic
 35 catches an open fee paid over the cap
 39 catches a claim sent in the maker's hour after t1
 44 catches a claim sent in the maker's hour after t1
@@ -12,3 +12,4 @@
 105 catches a claim on a ready a reorg can still drop
 110 catches a claim on a ready a reorg can still drop
 129 catches a claim sent with no margin before t1
+3631 holds a private sender stuck until it is restarted

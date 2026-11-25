@@ -1,22 +1,37 @@
 use std::fmt::Display;
 
 use zcash_client_backend::data_api::chain::{
-    BlockCache, CommitmentTreeRoot, error::Error as ChainError, scan_cached_blocks,
+    BlockCache, ChainState, CommitmentTreeRoot, error::Error as ChainError, scan_cached_blocks,
 };
 use zcash_client_backend::data_api::scanning::{ScanPriority, ScanRange};
 use zcash_client_backend::data_api::{WalletCommitmentTrees, WalletRead, WalletWrite};
 use zcash_client_backend::proto::service::{
     BlockId, BlockRange, GetSubtreeRootsArg, ShieldedProtocol,
 };
+use zcash_client_sqlite::error::SqliteClientError;
 use zcash_primitives::merkle_tree::HashSer;
 use zcash_protocol::consensus::{BlockHeight, Network};
 
 use super::Db;
 use crate::Error;
+use crate::alert::{self, Alert, Alerts};
 use crate::zcash::cache::MemoryBlockCache;
 use crate::zcash::lightwalletd::{self, Lightwalletd};
 
 const SUBTREES: u64 = 1 << 16;
+const MOST_STEPS_BACK: u32 = 3;
+
+pub(super) struct Watch<'a> {
+    pub alerts: Option<&'a Alerts>,
+    pub wallet: &'a str,
+    pub steps_back: u32,
+}
+
+pub(super) fn born_above(db: &Db, tip: BlockHeight) -> Result<bool, Error> {
+    Ok(db
+        .get_wallet_birthday()?
+        .is_some_and(|birthday| birthday > tip))
+}
 
 pub(super) async fn run(
     client: &mut Lightwalletd,
@@ -24,6 +39,7 @@ pub(super) async fn run(
     cache: &MemoryBlockCache,
     db: &mut Db,
     batch_size: u32,
+    mut watch: Watch<'_>,
 ) -> Result<(), Error> {
     update_roots(
         client,
@@ -49,7 +65,7 @@ pub(super) async fn run(
         Db::put_ironwood_subtree_roots,
     )
     .await?;
-    while running(client, network, cache, db, batch_size).await? {}
+    while running(client, network, cache, db, batch_size, &mut watch).await? {}
     Ok(())
 }
 
@@ -141,8 +157,12 @@ async fn running(
     cache: &MemoryBlockCache,
     db: &mut Db,
     batch_size: u32,
+    watch: &mut Watch<'_>,
 ) -> Result<bool, Error> {
     let tip = lightwalletd::chain_tip(client).await?;
+    if born_above(db, tip)? {
+        return Ok(false);
+    }
     db.update_chain_tip(tip)?;
     let mut ranges = db.suggest_scan_ranges()?;
     while let Some(range) = ranges
@@ -150,7 +170,7 @@ async fn running(
         .filter(|range| range.priority() == ScanPriority::Verify)
         .cloned()
     {
-        if !scan(client, network, cache, db, &range).await? {
+        if !scan(client, network, cache, db, &range, watch).await? {
             break;
         }
         ranges = db.suggest_scan_ranges()?;
@@ -160,7 +180,7 @@ async fn running(
         .into_iter()
         .flat_map(|range| batches(range, batch_size))
     {
-        if scan(client, network, cache, db, &range).await? {
+        if scan(client, network, cache, db, &range, watch).await? {
             return Ok(true);
         }
     }
@@ -183,12 +203,20 @@ fn batches(range: ScanRange, size: u32) -> impl Iterator<Item = ScanRange> {
     })
 }
 
+async fn chain_state(client: &mut Lightwalletd, height: BlockHeight) -> Result<ChainState, Error> {
+    lightwalletd::tree_state(client, height)
+        .await?
+        .to_chain_state()
+        .map_err(|e| Error::Wallet(format!("lightwalletd's tree state: {e}")))
+}
+
 async fn scan(
     client: &mut Lightwalletd,
     network: &Network,
     cache: &MemoryBlockCache,
     db: &mut Db,
     range: &ScanRange,
+    watch: &mut Watch<'_>,
 ) -> Result<bool, Error> {
     let block = |height: BlockHeight| {
         Some(BlockId {
@@ -208,16 +236,50 @@ async fn scan(
     }
     let Ok(()) = cache.insert(blocks).await;
     let from = range.block_range().start;
-    let state = lightwalletd::tree_state(client, from - 1)
-        .await?
-        .to_chain_state()
-        .map_err(|e| Error::Wallet(format!("lightwalletd's tree state: {e}")))?;
+    let state = chain_state(client, from - 1).await?;
     let changed = match scan_cached_blocks(network, cache, db, from, &state, range.len()) {
         Err(ChainError::Scan(e)) if e.is_continuity_error() => {
-            let rewind = e.at_height().saturating_sub(10);
-            tracing::info!(at = %e.at_height(), %rewind, "Zcash chain reorganised; rewinding");
-            db.truncate_to_height(rewind)?;
-            let Ok(()) = cache.truncate(rewind).await;
+            let (at, rewind) = (e.at_height(), e.at_height().saturating_sub(10));
+            tracing::info!(%at, %rewind, "Zcash chain reorganised; rewinding");
+            let kept = match db.truncate_to_height(rewind) {
+                Err(SqliteClientError::RequestedRewindInvalid {
+                    safe_rewind_height: Some(safe),
+                    ..
+                }) if safe + 1 < at => {
+                    if watch.steps_back == MOST_STEPS_BACK {
+                        return Err(Error::Wallet(format!(
+                            "lightwalletd's chain still changed after {MOST_STEPS_BACK} steps back to height {safe}"
+                        )));
+                    }
+                    watch.steps_back += 1;
+                    let state = chain_state(client, safe).await?;
+                    if state.block_height() != safe {
+                        return Err(Error::Wallet(format!(
+                            "lightwalletd's tree state is of height {}, not {safe}",
+                            state.block_height()
+                        )));
+                    }
+                    db.truncate_to_chain_state(state).map(|()| safe)
+                }
+                outcome => outcome,
+            };
+            let kept = kept.inspect_err(|refusal| {
+                let lasts = matches!(
+                    refusal,
+                    SqliteClientError::RequestedRewindInvalid { .. }
+                        | SqliteClientError::TruncateCommitmentTree { .. }
+                );
+                if lasts {
+                    let refused = Alert::WalletRewindRefused {
+                        wallet: watch.wallet.to_owned(),
+                        reorg_at: at.into(),
+                        rewind: rewind.into(),
+                        refusal: refusal.to_string(),
+                    };
+                    alert::raise(watch.alerts, refused);
+                }
+            })?;
+            let Ok(()) = cache.truncate(kept).await;
             true
         }
         Ok(_) => db

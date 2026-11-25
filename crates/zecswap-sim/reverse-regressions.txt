@@ -9,7 +9,7 @@
 16 catches funding a quote whose maker proof is bad
 21 catches a maker's claim sent with no margin before t1, and one judged open after t1
 26 catches a ready signed to last until t0 or later
-27 catches a ready signed after a refund was asked, and a refund saved only after it was sent
+27 catches a ready signed after a refund was asked, one refused by a panic, and a refund saved only after it was sent
 30 catches funding a quote for another deployment
 35 catches a ready signed after a refund was asked, and a refund saved only after it was sent
 38 catches funding a quote with no amount, deposit or maker
@@ -25,4 +25,6 @@
 86 catches funding a quote for another user or refund note
 114 catches funding an escrow that locks the USDC over a day
 155 catches funding an escrow that locks the USDC over a day
+182 catches a stuck private sender never alerted, one alerted with no send dropped, and one alerted only at the next send
 222 catches funding an escrow that locks the USDC over a day
+3723 catches a stuck private sender never alerted, and holds one stuck for over an hour

@@ -20,6 +20,7 @@ pub const SLOT: u64 = 12;
 const GAS_LIMIT: u64 = 60_000_000;
 const GWEI: u64 = 1_000_000_000;
 const TIP: u64 = GWEI / 10;
+pub(crate) const PROTECT: u64 = 25;
 
 type State = CacheDB<EmptyDB>;
 
@@ -66,6 +67,7 @@ struct Tx {
     from: Address,
     envelope: TxEnvelope,
     private: bool,
+    sent: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +115,33 @@ pub struct Logged {
     pub log: Log,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Known {
+    pub from: Address,
+    pub nonce: u64,
+    pub private: bool,
+    pub sent: u64,
+    pub mined: Option<u64>,
+    pub pooled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Waiting {
+    pub to: Option<Address>,
+    pub input: Bytes,
+    pub value: U256,
+    pub gas: u64,
+    pub max_fee: u128,
+    pub tip: u128,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Queue {
+    pub from: Address,
+    pub behind: u64,
+    pub repriced: u64,
+}
+
 #[derive(Debug)]
 pub struct Refusal {
     pub code: i64,
@@ -146,6 +175,7 @@ struct Inner {
     pool: Vec<Pooled>,
     seen: BTreeMap<B256, Tx>,
     published: Vec<Published>,
+    rises: BTreeMap<(Address, u64), Vec<u64>>,
     fees: Vec<u64>,
     forks: u64,
     floor: u64,
@@ -356,6 +386,8 @@ impl Inner {
                 at: number,
                 landed: Some(ran.result.is_success()),
             });
+            let count = (pooled.tx.from, pooled.tx.envelope.nonce() + 1);
+            self.rises.entry(count).or_default().push(number);
             mined.push(Mined {
                 succeeded: ran.result.is_success(),
                 gas_used: ran.result.tx_gas_used(),
@@ -417,7 +449,7 @@ impl Inner {
             .map(|mined| Pooled {
                 tx: mined.tx.clone(),
                 arrived: back,
-                expires: None,
+                expires: mined.tx.private.then_some(back + PROTECT),
                 replayed: true,
             })
             .collect();
@@ -559,13 +591,14 @@ impl Inner {
             }
             self.pool.remove(rival);
         }
+        let number = self.head().number;
         let tx = Tx {
             hash,
             from,
             envelope,
             private: private.is_some(),
+            sent: number,
         };
-        let number = self.head().number;
         if private.is_none() {
             let key = u64::from_be_bytes(hash[..8].try_into().unwrap());
             self.ambushed |= self.seed.chance("ambush", key, self.weather.ambush);
@@ -593,6 +626,16 @@ impl Inner {
             replayed: false,
         });
         Ok(hash)
+    }
+
+    fn outs(&self, from: Address, nonce: u64) -> impl Iterator<Item = u64> + '_ {
+        let sent = self.published.iter().filter(move |sent| {
+            let numbered = self.seen.get(&sent.hash);
+            sent.landed.is_none()
+                && sent.from == from
+                && numbered.is_some_and(|tx| tx.envelope.nonce() == nonce)
+        });
+        sent.map(|sent| sent.at)
     }
 
     fn located(&self, hash: B256) -> Option<(&Block, usize)> {
@@ -860,6 +903,7 @@ impl Node {
             pool: Vec::new(),
             seen: BTreeMap::new(),
             published: Vec::new(),
+            rises: BTreeMap::new(),
             fees: vec![2 * GWEI],
             forks: 0,
             floor: 0,
@@ -1032,6 +1076,99 @@ impl Node {
 
     pub fn note(&self, what: String) {
         self.0.lock().unwrap().note(what);
+    }
+
+    pub(crate) fn nonce_at(&self, who: Address, back: u64) -> u64 {
+        let inner = self.0.lock().unwrap();
+        let number = inner.head().number.saturating_sub(back);
+        Inner::nonce(&inner.blocks[number as usize].state, who)
+    }
+
+    pub(crate) fn holds_privately(&self, who: Address, nonce: u64) -> bool {
+        self.0.lock().unwrap().pool.iter().any(|pooled| {
+            let tx = &pooled.tx;
+            tx.private && tx.from == who && tx.envelope.nonce() == nonce
+        })
+    }
+
+    pub(crate) fn missed(&self, who: &str, method: &str, since: u64) -> bool {
+        self.0.lock().unwrap().trace.iter().any(|line| {
+            let told = line.strip_prefix('#').and_then(|line| line.split_once(' '));
+            told.is_some_and(|(at, what)| {
+                at.parse().is_ok_and(|at: u64| at >= since)
+                    && what.split(' ').next() == Some(who)
+                    && what.ends_with(method)
+            })
+        })
+    }
+
+    pub(crate) fn rose(&self, who: Address, count: u64, after: u64) -> Option<u64> {
+        let inner = self.0.lock().unwrap();
+        let rises = inner.rises.get(&(who, count))?;
+        rises.iter().copied().filter(|at| *at > after).min()
+    }
+
+    pub(crate) fn known(&self, hash: B256) -> Option<Known> {
+        let inner = self.0.lock().unwrap();
+        let tx = inner.seen.get(&hash)?;
+        Some(Known {
+            from: tx.from,
+            nonce: tx.envelope.nonce(),
+            private: tx.private,
+            sent: tx.sent,
+            mined: inner.located(hash).map(|(block, _)| block.number),
+            pooled: inner.pool.iter().any(|pooled| pooled.tx.hash == hash),
+        })
+    }
+
+    pub(crate) fn out_since(&self, from: Address, nonce: u64) -> Option<u64> {
+        self.0.lock().unwrap().outs(from, nonce).min()
+    }
+
+    pub(crate) fn waiting(&self, from: Address, nonce: u64) -> Option<Waiting> {
+        let inner = self.0.lock().unwrap();
+        let pooled = inner.pool.iter().find(|pooled| {
+            let tx = &pooled.tx;
+            tx.from == from && !tx.private && tx.envelope.nonce() == nonce
+        })?;
+        let envelope = &pooled.tx.envelope;
+        Some(Waiting {
+            to: envelope.to(),
+            input: envelope.input().clone(),
+            value: envelope.value(),
+            gas: envelope.gas_limit(),
+            max_fee: envelope.max_fee_per_gas(),
+            tip: envelope.max_priority_fee_per_gas().unwrap_or(0),
+        })
+    }
+
+    pub(crate) fn queues(&self) -> Vec<Queue> {
+        let inner = self.0.lock().unwrap();
+        let open = inner.pool.iter().filter(|pooled| !pooled.tx.private);
+        let mut senders: Vec<Address> = open.clone().map(|pooled| pooled.tx.from).collect();
+        senders.sort_unstable();
+        senders.dedup();
+        let queued = senders.into_iter().filter_map(|from| {
+            let behind = Inner::nonce(&inner.head().state, from);
+            let level = inner.blocks.iter().rev();
+            let level = level.take_while(|block| Inner::nonce(&block.state, from) == behind);
+            let since = level.last()?.number;
+            let later = open
+                .clone()
+                .filter(|pooled| pooled.tx.from == from && pooled.tx.envelope.nonce() > behind);
+            let spans = later.map(|pooled| {
+                let outs = inner.outs(from, pooled.tx.envelope.nonce());
+                let outs: Vec<u64> = outs.filter(|at| *at >= since).collect();
+                let first = outs.iter().min().copied().unwrap_or(0);
+                outs.iter().max().map_or(0, |last| last - first)
+            });
+            Some(Queue {
+                from,
+                behind,
+                repriced: spans.max()?,
+            })
+        });
+        queued.collect()
     }
 
     pub(crate) fn weather(&self) -> (Seed, Weather) {

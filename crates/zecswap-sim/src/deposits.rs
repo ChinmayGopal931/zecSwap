@@ -18,8 +18,10 @@ use zecswap_client::FeeCap;
 use zecswap_core::{NetworkType, derive_deposit_keys};
 use zecswap_railgun::Keys as RailgunKeys;
 
+use crate::alerts::Alarms;
 use crate::net::{Line, Net};
 use crate::node::{Node, SLOT, Weather};
+use crate::panics;
 use crate::relayer::{FEE as SWAP_FEE, Funder};
 use crate::run::{Report, connect, lives, notes, paused, ticks};
 use crate::seed::Seed;
@@ -43,6 +45,8 @@ const FEE: u128 = 100_000;
 const FEE_BPS: u32 = 10;
 const MINIMUM: u128 = 2_000_000;
 const DAY: u64 = 24 * 60 * 60;
+const STAYS: u64 = 60;
+const QUEUED: u64 = 13 * 60;
 const ROOMY: FeeCap = FeeCap {
     fee: 150_000,
     fee_bps: 15,
@@ -87,6 +91,7 @@ pub struct Plan {
     pub skew: i64,
     pub clears: u64,
     pub payout: Option<Payout>,
+    pub fees_stay: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +125,7 @@ impl Plan {
             skew: 0,
             clears: 0,
             payout: None,
+            fees_stay: false,
         }
     }
 
@@ -230,6 +236,7 @@ impl Plan {
                 reverse: roll("payout-way", 2) == 1,
                 returns: 1 + roll("payout-returns", 2) as u32,
             }),
+            fees_stay: false,
         };
         let focus = roll("focus", 16);
         if focus < 12 {
@@ -353,6 +360,46 @@ impl Plan {
             }
             _ => {}
         }
+        if seed.chance("deposit-fees-hold", 0, STAYS) {
+            let near = 12 + roll("stay-first", 13);
+            let drains = roll("stay-drains", 3) == 1;
+            plan = Self {
+                weather: Weather {
+                    reorg_after_tx: 800,
+                    reorg_depth: 2,
+                    fork_delay: 1000,
+                    delay_blocks: 12,
+                    fee_swing: if drains { 0 } else { 1000 },
+                    ..Weather::CALM
+                },
+                service: Service::Sits(180 + roll("stay-sits", 61)),
+                arrivals: vec![
+                    Arrival {
+                        at: near,
+                        to: Where::Shown,
+                        amount: whole(0),
+                    },
+                    Arrival {
+                        at: near + 36 + roll("stay-gap", 37),
+                        to: Where::Shown,
+                        amount: whole(1),
+                    },
+                ],
+                clears: 108 + roll("stay-clears", 19),
+                fees_stay: true,
+                ..Self::plain()
+            };
+            if drains {
+                plan.clears += 240;
+                plan.arrivals = (0..3)
+                    .map(|n| Arrival {
+                        at: near + n,
+                        to: Where::Shown,
+                        amount: whole(n),
+                    })
+                    .collect();
+            }
+        }
         plan
     }
 
@@ -368,10 +415,11 @@ impl Plan {
             _ => 0,
         };
         let back = self.crashes.iter().map(|(at, rest)| at + rest);
+        let queued = QUEUED * u64::from(self.fees_stay);
         let arrived = self
             .arrivals
             .iter()
-            .map(|arrival| arrival.at + RESCAN.as_secs());
+            .map(|arrival| arrival.at + queued + RESCAN.as_secs());
         let returns = self.returned > 0 || self.payout.is_some();
         let busy = [self.clears, sits, RETURNS_UNTIL * u64::from(returns)];
         let last = busy.into_iter().chain(back).chain(arrived).max();
@@ -456,7 +504,7 @@ pub fn run(seed: u64) -> Report<Plan, Ended> {
 }
 
 pub fn run_with(seed: u64, plan: Plan) -> Report<Plan, Ended> {
-    paused(simulate(Seed(seed), plan))
+    paused(seed, plan, simulate)
 }
 
 struct World {
@@ -470,13 +518,19 @@ struct World {
     addresses: Vec<Address>,
     vaults: Vec<Address>,
     paid: Option<Paid>,
+    alarms: Arc<Alarms>,
+    returns_at_once: Address,
 }
 
 async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
     simulate_wall(Some(EPOCH as i64));
     let start = Instant::now();
     let node = Node::new(seed, CHAIN_ID, EPOCH - SLOT, plan.weather);
-    node.ease_fees();
+    if !plan.fees_stay {
+        node.ease_fees();
+    }
+    let (alarms, operator) = Alarms::new(&node, seed);
+    let returns_at_once = key(seed, "deposit-relayer").address();
     let chain = Chain::deploy(&node, plan.multicall);
     let deposits = chain.deploy_deposits();
     let [relayer_key, payer_key, screener_key] =
@@ -506,7 +560,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
     let relayer = Relayer::new(
         desk,
         chain.clone(),
-        connect(&node, &chain, "relayer", relayer_key.clone(), false),
+        connect(
+            &node,
+            &chain,
+            "relayer",
+            relayer_key.clone(),
+            false,
+            &alarms,
+        ),
         Funder::new(&node, "forcer", relayer_key),
     );
     let addresses: Vec<Address> = (0..REACH)
@@ -555,22 +616,27 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         addresses,
         chain: chain.clone(),
         paid,
+        alarms: alarms.clone(),
+        returns_at_once,
     });
-    let payer = connect(&node, &chain, "payer", payer_key, false);
-    let screener = connect(&node, &chain, "screener", screener_key, false);
+    let payer = connect(&node, &chain, "payer", payer_key, false, &alarms);
+    let screener = connect(&node, &chain, "screener", screener_key, false, &alarms);
     let background = [
-        spawn_local(ticks(node.clone(), start)),
-        spawn_local(world.clone().pay(payer, start)),
-        spawn_local(world.clone().screen(screener, start)),
+        ("the chain", spawn_local(ticks(node.clone(), start))),
+        ("the operator", spawn_local(operator.tend())),
+        ("the payer", spawn_local(world.clone().pay(payer, start))),
+        (
+            "the screener",
+            spawn_local(world.clone().screen(screener, start)),
+        ),
     ];
-    lives(&*notes(&node), start, HORIZON, &plan.crashes, || {
+    let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
+    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
         spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
     })
     .await;
     let scanned = world.scan().await;
-    for task in background {
-        task.abort();
-    }
+    panics::end(background.into_iter().chain(life)).await;
     world.report(scanned)
 }
 
@@ -698,7 +764,7 @@ impl World {
             let found = all.iter().position(|each| *each == one);
             found.map(|index| index as u32)
         };
-        let mut failures = Vec::new();
+        let mut failures = self.alarms.failures(&[self.returns_at_once]);
         let mut failed = BTreeSet::new();
         let mut fail = |check: u8, what: String| {
             if failed.insert(check) {

@@ -10,9 +10,11 @@ use zecswap_client::MIN_TIME_TO_T0;
 use zecswap_core::{NetworkType, SecretShare, derive_user_keys};
 use zecswap_railgun::Keys as RailgunKeys;
 
+use crate::alerts::Alarms;
 use crate::maker::{Fee, Maker, MakerDoor, Mood, T0_TO_T1, TO_T0};
 use crate::net::{Line, Net};
-use crate::node::{Node, SLOT, Weather};
+use crate::node::{Node, PROTECT, SLOT, Weather};
+use crate::panics::{self, Named};
 use crate::relayer::{FEE, Relayer, RelayerDoor, Service};
 use crate::seed::Seed;
 use crate::wallet::{End, Saved, Wallet, Way};
@@ -236,18 +238,32 @@ pub fn run(seed: u64) -> Report {
 }
 
 pub fn run_with(seed: u64, plan: Plan) -> Report {
-    paused(simulate(Seed(seed), plan))
+    paused(seed, plan, simulate)
 }
 
-pub(crate) fn paused<T>(simulation: impl Future<Output = T>) -> T {
+pub(crate) fn paused<P: Clone, E, F: Future<Output = Report<P, E>>>(
+    seed: u64,
+    plan: P,
+    simulate: impl FnOnce(Seed, P) -> F,
+) -> Report<P, E> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
         .build()
         .expect("a runtime");
-    let out = LocalSet::new().block_on(&runtime, simulation);
+    let simulation = simulate(Seed(seed), plan.clone());
+    let (report, panics) = panics::caught(|| LocalSet::new().block_on(&runtime, simulation));
     simulate_wall(None);
-    out
+    let mut report = report.unwrap_or(Report {
+        seed,
+        plan,
+        ended: None,
+        stage: None,
+        failures: Vec::new(),
+        trace: Vec::new(),
+    });
+    report.failures.extend(panics);
+    report
 }
 
 pub(crate) fn connect(
@@ -256,10 +272,13 @@ pub(crate) fn connect(
     name: &str,
     signer: PrivateKeySigner,
     private: bool,
+    alarms: &Arc<Alarms>,
 ) -> Settlement {
+    let sink = alarms.sink(name, &signer);
     let mut settlement = Settlement::over(node.rpc(name), chain.contract, Some(signer));
+    settlement.alerts_to(sink);
     if private {
-        settlement.broadcast_privately_over(node.private_rpc(name, 25), 25);
+        settlement.broadcast_privately_over(node.private_rpc(name, PROTECT), PROTECT);
     }
     settlement
 }
@@ -283,39 +302,40 @@ pub(crate) async fn zcash_blocks(zcash: Zcash, seed: Seed, loss: u64, clears: In
 pub(crate) async fn lives(
     note: &dyn Fn(String),
     start: Instant,
-    horizon: u64,
+    horizon: impl Fn() -> Instant,
     crashes: &[(u64, u64)],
     live: impl Fn() -> JoinHandle<()>,
-) {
-    let horizon = start + Duration::from_secs(horizon);
+) -> Option<Named> {
     let mut crashes = crashes.to_vec();
     crashes.sort_unstable();
     let mut rested = start;
     let mut life = live();
     loop {
+        let end = horizon();
         let crash = crashes
             .first()
             .map(|(at, _)| (start + Duration::from_secs(*at)).max(rested));
         tokio::select! {
             biased;
-            () = sleep_until(horizon) => break,
-            () = sleep_until(crash.unwrap_or(horizon)), if crash.is_some() => {
+            () = sleep_until(end) => if horizon() == end { break },
+            () = sleep_until(crash.unwrap_or(end)), if crash.is_some() => {
                 let (_, rest) = crashes.remove(0);
-                life.abort();
-                let _ = (&mut life).await;
+                panics::end([("the wallet", life)]).await;
                 note(format!("the wallet crashed, away {rest}s"));
                 sleep(Duration::from_secs(rest)).await;
                 rested = Instant::now();
                 note("the wallet is back".into());
                 life = live();
             }
-            _ = &mut life => {
+            ended = &mut life => {
+                panics::judge("the wallet", ended);
                 sleep(SETTLE).await;
-                break;
+                return None;
             }
         }
     }
     life.abort();
+    Some(("the wallet", life))
 }
 
 struct World {
@@ -327,6 +347,7 @@ struct World {
     wallet: Arc<Wallet>,
     user_seed: [u8; 64],
     disagreements: Arc<Mutex<Vec<String>>>,
+    alarms: Arc<Alarms>,
 }
 
 async fn simulate(seed: Seed, plan: Plan) -> Report {
@@ -342,19 +363,28 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
     chain.stock(maker_key.address(), 100 * UNIT);
     node.clear_from(EPOCH + plan.clears);
     let zcash = Zcash::default();
+    let (alarms, mut operator) = Alarms::new(&node, seed);
     let maker = Maker::new(
         seed,
         plan.mood,
         plan.fee,
         chain.clone(),
         zcash.clone(),
-        connect(&node, &chain, "maker", maker_key, plan.private),
+        connect(&node, &chain, "maker", maker_key, plan.private, &alarms),
     );
     let relayer = Relayer::new(
         plan.service,
         chain.clone(),
-        connect(&node, &chain, "relayer", relayer_key, plan.private),
+        connect(&node, &chain, "relayer", relayer_key, plan.private, &alarms),
     );
+    operator.restarts("maker", {
+        let maker = maker.clone();
+        move || maker.settlement().forget_sends()
+    });
+    operator.restarts("relayer", {
+        let relayer = relayer.clone();
+        move || relayer.settlement().forget_sends()
+    });
     let log = notes(&node);
     let clears = start + Duration::from_secs(plan.clears);
     let user_seed = seed.bytes::<64>("user-seed");
@@ -392,6 +422,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         linger_verify: plan.linger_verify,
         linger_claim: plan.linger_claim,
         saved: Arc::default(),
+        alarms: alarms.clone(),
     });
     let world = Arc::new(World {
         seed,
@@ -402,24 +433,31 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         wallet: wallet.clone(),
         user_seed,
         disagreements: Arc::default(),
+        alarms,
     });
 
     let background = [
-        spawn_local(ticks(node.clone(), start)),
-        spawn_local(zcash_blocks(zcash.clone(), seed, plan.zcash_loss, clears)),
-        spawn_local(maker.tend()),
-        spawn_local({
-            let world = world.clone();
-            async move { world.observe().await }
-        }),
+        ("the chain", spawn_local(ticks(node.clone(), start))),
+        ("the operator", spawn_local(operator.tend())),
+        (
+            "the Zcash chain",
+            spawn_local(zcash_blocks(zcash.clone(), seed, plan.zcash_loss, clears)),
+        ),
+        ("the maker", spawn_local(maker.tend())),
+        (
+            "the observer",
+            spawn_local({
+                let world = world.clone();
+                async move { world.observe().await }
+            }),
+        ),
     ];
-    lives(&*notes(&node), start, HORIZON, &plan.crashes, || {
+    let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
+    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
         spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
     })
     .await;
-    for task in background {
-        task.abort();
-    }
+    panics::end(background.into_iter().chain(life)).await;
     world.report()
 }
 
@@ -497,6 +535,7 @@ impl World {
         };
         let mut failures = self.disagreements.lock().unwrap().clone();
         failures.truncate(5);
+        failures.extend(self.alarms.failures(&[]));
         let mut fail = |what: String| failures.push(what);
 
         let fee_payments = self.zcash.payments_to(&self.maker.fee_address);

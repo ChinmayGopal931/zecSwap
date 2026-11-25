@@ -58,6 +58,10 @@ impl Relayer {
         })
     }
 
+    pub(crate) fn settlement(&self) -> &Settlement {
+        &self.settlement
+    }
+
     fn terms(&self) -> Answer {
         Answer::ok(&RelayerTerms {
             relayer: self.address,
@@ -267,6 +271,35 @@ impl Funder {
         Some(*envelope.tx_hash())
     }
 
+    pub(crate) async fn again(&self, node: &Node, nonce: u64) -> Option<B256> {
+        let waiting = node.waiting(self.account, nonce)?;
+        let provider = &self.provider;
+        let history = provider
+            .get_fee_history(1, BlockNumberOrTag::Latest, &[])
+            .await
+            .ok()?;
+        let outbid = |old: u128| old + old / 10 + 1;
+        let tip = provider.get_max_priority_fee_per_gas().await.ok()?;
+        let tip = tip.max(outbid(waiting.tip));
+        let fee = (2 * history.next_block_base_fee()? + tip).max(outbid(waiting.max_fee));
+        let envelope = TransactionRequest::default()
+            .with_from(self.account)
+            .with_to(waiting.to?)
+            .with_input(waiting.input)
+            .with_value(waiting.value)
+            .with_gas_limit(waiting.gas)
+            .with_nonce(nonce)
+            .with_chain_id(CHAIN_ID)
+            .with_max_fee_per_gas(fee)
+            .with_max_priority_fee_per_gas(tip)
+            .build(&self.wallet)
+            .await
+            .ok()?;
+        let raw = envelope.encoded_2718();
+        let taken = provider.send_raw_transaction(&raw).await;
+        taken.is_ok().then(|| *envelope.tx_hash())
+    }
+
     async fn landed(&self, hash: B256) -> Option<bool> {
         let receipt = self.provider.get_transaction_receipt(hash).await.ok()??;
         Some(receipt.status())
@@ -326,6 +359,10 @@ impl ReverseRelayer {
 
     pub fn heard(&self) -> Vec<Heard> {
         self.heard.lock().unwrap().clone()
+    }
+
+    pub(crate) fn settlement(&self) -> &Settlement {
+        self.relayer.settlement()
     }
 
     fn hear(&self, id: B256, errand: Errand) {
