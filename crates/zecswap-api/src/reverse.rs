@@ -42,14 +42,11 @@ impl Quote {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Authorization {
     pub swap_id: B256,
-    /// What `openReverse` stored: `Quote::open(..).terms()`.
     pub terms: crate::Terms,
     pub deadline: u64,
     pub signature: FixedBytes<65>,
 }
 
-/// `POST /v1/reverse/fund`: the locally proved, unsigned Relay Adapt transaction.
-/// Persist these exact bytes before sending. No spending keys or sender nonce are accepted.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Funding {
@@ -61,7 +58,6 @@ pub struct Funding {
     pub value: u128,
 }
 
-/// Names the same swap and terms as its payout.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Refund {
@@ -86,7 +82,6 @@ pub enum Phase {
     Expired,
 }
 
-/// Advisory progress only. The wallet verifies escrow and the ZEC deposit independently.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -95,7 +90,5 @@ pub struct Status {
     pub deposit_txid: Option<String>,
     pub ready_deadline: u64,
     pub refund_after: u64,
-    /// As the forward `Status` has it: the accept's token handed back once the escrow is
-    /// funded.
     pub token_return: Option<String>,
 }

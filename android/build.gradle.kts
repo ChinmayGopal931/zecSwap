@@ -21,8 +21,6 @@ android {
 
     testOptions {
         unitTests.all {
-            // The JVM tests load a host build of the same library (`cargo build -p zecswap-jni`)
-            // and skip themselves without one, since the app's builds carry no Rust toolchain.
             it.systemProperty("java.library.path", projectDir.resolve("../target/debug").path)
         }
     }

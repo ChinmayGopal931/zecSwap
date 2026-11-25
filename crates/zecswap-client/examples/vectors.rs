@@ -1,6 +1,3 @@
-//! Known answers a wallet's port must reproduce:
-//!   cargo run -p zecswap-client --example vectors
-
 use alloy_primitives::{Address, address};
 use zecswap_chain::evm::{reverse_swap_id, swap_id};
 use zecswap_core::{Domain, NetworkType, Terms, derive_maker_share, derive_user_keys};
@@ -150,7 +147,6 @@ fn print_terms(name: &str, terms: &Terms) {
     println!("    hash       {}", hex(&terms.hash()));
 }
 
-/// Prints Railgun wallet 0 of `seed` and the note built from `entropy` that pays it.
 fn print_note(seed_name: &str, seed: &[u8], entropy: &[u8; 32]) -> ShieldNote {
     let wallet = Keys::from_seed(seed, 0);
     let note = wallet.note(entropy).expect("note");

@@ -1,12 +1,3 @@
-// Proves private Railgun sends and withdrawals the way a wallet that uses a relayer as its
-// broadcaster does, with Railgun's own wallet SDK, for end-to-end runs:
-//   node send.cjs wallet               a new wallet: { mnemonic, seed }
-//   node send.cjs prove < request      each send's transaction: { chainId, to, data, value }
-//   node send.cjs balances < request   each wallet's balance of a token
-//   node send.cjs spendable < request  waits for a wallet to hold an amount it can spend
-// Requests come on stdin as JSON, since they carry mnemonics and seeds; nothing secret is
-// printed but the new wallet. On an anvil fork of Ethereum Sepolia, screening (POI) is off and
-// Railgun's history is taken up to the fork block, after which the fork's own blocks are read.
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -27,7 +18,6 @@ const POI_NODE = 'https://ppoi.fdi.network/';
 const V2 = TXIDVersion.V2_PoseidonMerkle;
 const { chain } = NETWORK_CONFIG[NETWORK];
 const started = Date.now();
-/** Progress on stderr, which the live suite shows when a step fails. */
 const log = (message) => console.error(`${((Date.now() - started) / 1000).toFixed(0)}s ${message}`);
 
 async function rpc(url, method, params = []) {
@@ -39,7 +29,6 @@ async function rpc(url, method, params = []) {
   return (await response.json()).result;
 }
 
-/** Proving keys, downloaded once into `dir`. */
 function artifactStore(dir) {
   const at = (file) => path.join(dir, file);
   return new W.ArtifactStore(
@@ -52,11 +41,6 @@ function artifactStore(dir) {
   );
 }
 
-/**
- * Starts the engine on `url`. A fork's notes never reach the screening nodes, and the quick-sync
- * history runs past the fork into blocks the fork never had: it is cut at the fork block, and
- * the engine scans on from there.
- */
 async function start(url, artifacts) {
   const fork = (await rpc(url, 'anvil_metadata').catch(() => undefined))?.forkedNetwork?.forkBlockNumber;
   if (fork !== undefined) {
@@ -93,7 +77,6 @@ async function start(url, artifacts) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Each wallet's latest balances by bucket, and how often it reported them. */
 const buckets = new Map();
 const reports = new Map();
 W.setOnBalanceUpdateCallback(({ railgunWalletID, balanceBucket, erc20Amounts }) => {
@@ -102,10 +85,6 @@ W.setOnBalanceUpdateCallback(({ railgunWalletID, balanceBucket, erc20Amounts }) 
   reports.set(railgunWalletID, (reports.get(railgunWalletID) ?? 0) + 1);
 });
 
-/**
- * Each wallet's unspent balance of `token`, in all and spendable, after a scan. A wallet
- * reports its balances once it has decrypted the scan, after the scan itself returns.
- */
 async function balances(ids, token) {
   const before = ids.map((id) => reports.get(id) ?? 0);
   await W.refreshBalances(chain, ids);
@@ -125,10 +104,6 @@ async function balances(ids, token) {
   });
 }
 
-/**
- * Waits until the sender can spend `needed`: on a live chain, once screening clears its notes.
- * The wallet submits the screening proofs of its own sends, as the SDK does after each scan.
- */
 async function spendable(id, token, needed, fork, waitSeconds) {
   const deadline = Date.now() + waitSeconds * 1000;
   for (;;) {
@@ -155,7 +130,6 @@ async function prove(request) {
   const sender = await W.createRailgunWallet(encryptionKey, request.mnemonic, {
     [NETWORK]: request.creationBlock,
   });
-  // Every send is proved from the same notes, so the largest must fit, its fee at least the floor.
   const floor = BigInt(request.broadcaster.fee);
   const needed = request.sends
     .map((send) => BigInt(send.amount) + BigInt(send.fee ?? floor))
@@ -193,11 +167,6 @@ async function prove(request) {
   return { address: sender.railgunAddress, available: available.toString(), transactions, fees };
 }
 
-/**
- * The fee a send pays, as the app works it out from the relayer's terms: the fixed floor, or, where
- * the relayer prices gas, what the SDK's own broadcaster estimate says its gas costs at
- * `feePerUnitGas` and the proof's gas price, if more.
- */
 async function priced(id, encryptionKey, broadcaster, to, recipients, gasDetails) {
   const floor = BigInt(broadcaster.fee);
   if (broadcaster.feePerUnitGas == null) return floor;
@@ -227,8 +196,6 @@ async function balancesOf(request) {
   return { balances: found.map(({ total, spendable }) => ({ total: total.toString(), spendable: spendable.toString() })) };
 }
 
-/** Waits until the wallet of `seed` can spend `needed` of `token`: where Railgun screens, once
- * the screening nodes have cleared its notes. */
 async function spendableOf(request) {
   const { fork } = await start(request.rpc, request.artifacts);
   const keys = await wallet(request.seed, 0);

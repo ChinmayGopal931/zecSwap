@@ -5,8 +5,6 @@ import {IRailgun} from "../../src/ShieldVault.sol";
 import {ZecSwap} from "../../src/ZecSwap.sol";
 import {SpendAuthVectors} from "../utils/SpendAuthVectors.sol";
 
-/// zecswap-core's `Terms::hash` against `hashTerms`, on random terms; see the `ffi` profile in
-/// foundry.toml. Wallets and relayers check swaps with the Rust hash.
 contract TermsFfiTest is SpendAuthVectors {
     ZecSwap internal swaps;
 

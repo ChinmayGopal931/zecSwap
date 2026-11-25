@@ -1,13 +1,9 @@
-//! A wallet's deposits, as the reference client plays them: public tokens sent to a deposit
-//! address derived from the wallet's seed, shielded into the wallet's own Railgun balance through
-//! a relayer, which pays the gas for the fee the deposit's authorization commits to. The relayer
-//! is taken on trust for nothing: what lands must be the wallet's own note.
-
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use alloy_primitives::{Address, B256};
 use anyhow::{Context as _, Result, bail, ensure};
 use tokio::sync::OnceCell;
+use tokio::time::Instant;
 use zecswap_api::Network;
 use zecswap_api::relayer::{DepositTerms, Note, RescueDeposit, ShieldDeposit, deposit_fee};
 use zecswap_chain::evm::deposits::{Deployment, Used};
@@ -22,27 +18,16 @@ use zeroize::Zeroizing;
 use crate::api::{Deposited, RelayerApi};
 use crate::user::RAILGUN_WALLET;
 
-/// How long an authorization is valid for once signed, where the relayer takes that long.
 const VALIDITY: u64 = 60 * 60;
-/// The relayer takes no authorization with less than this left to land.
 const LANDING: u64 = 15 * 60;
-/// How far the wallet's clock and the relayer's may differ.
 const CLOCK_SLACK: u64 = 60;
-/// How long a deposit is posted again while the relayer can't send it, or what it sent doesn't
-/// land.
 const PATIENCE: Duration = Duration::from_secs(30 * 60);
-/// The first wait between posts the relayer asked no wait for, doubling to `LONGEST_WAIT`.
 const BACKOFF: Duration = Duration::from_secs(15);
 const LONGEST_WAIT: Duration = Duration::from_secs(5 * 60);
-/// How long a transaction the relayer names may take to mine before the deposit is posted again:
-/// the relayer names it again while it may still land, and sends the deposit anew once it can't,
-/// as when Flashbots drops it.
 const REPOST: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_secs(3);
-/// Unused deposit addresses in a row past which a wallet restored from its seed stops looking.
 pub const GAP: u32 = 20;
 
-/// What a wallet pins of a deposits deployment: never what a relayer says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepositDeployment {
     pub chain_id: u64,
@@ -50,22 +35,18 @@ pub struct DepositDeployment {
     pub token: Address,
 }
 
-/// The most a wallet lets a relayer keep from a deposit: `fee`, and `fee_bps` of what it moves,
-/// so the cap grows with the deposit as the relayer's fee does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeeCap {
     pub fee: u128,
     pub fee_bps: u32,
 }
 
-/// A deposit or rescue that landed, and the note Railgun recorded for the wallet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Deposit {
     pub tx: B256,
     pub shielded: Shielded,
 }
 
-/// A wallet's deposit addresses, each shielded into the Railgun wallet of its Railgun seed.
 pub struct Depositor {
     seed: Zeroizing<Vec<u8>>,
     network: Network,
@@ -79,8 +60,6 @@ pub struct Depositor {
 }
 
 impl Depositor {
-    /// The deposit addresses of the seed's first account. `chain` reads the chain, sending
-    /// nothing: the relayer sends.
     pub fn new(
         seed: &[u8],
         railgun_seed: &[u8],
@@ -103,7 +82,6 @@ impl Depositor {
         }
     }
 
-    /// The deposit addresses of the wallet's ZIP 32 account `account` instead.
     pub fn with_account(mut self, account: u32) -> Self {
         self.account = account;
         self
@@ -122,12 +100,10 @@ impl Depositor {
         Ok(self.keys(index)?.key.address().into())
     }
 
-    /// The Railgun wallet deposits shield into.
     pub fn railgun(&self) -> &RailgunKeys {
         &self.railgun
     }
 
-    /// The relayer's deposit terms, for the pinned deployment.
     pub async fn terms(&self) -> Result<DepositTerms> {
         let terms = self.relayer.terms().await?;
         ensure!(
@@ -143,7 +119,6 @@ impl Depositor {
         Ok(deposits)
     }
 
-    /// Each address from `first` on, `count` of them: what it holds and whether it deposited.
     pub async fn scan(&self, first: u32, count: u32) -> Result<Vec<Used>> {
         let addresses = (first..first + count)
             .map(|index| self.address(index))
@@ -157,8 +132,6 @@ impl Depositor {
             .await?)
     }
 
-    /// Every address used, as a wallet restored from its seed finds them: scanned `GAP` at a
-    /// time until `GAP` in a row are unused.
     pub async fn recover(&self) -> Result<Vec<(u32, Used)>> {
         let (mut used, mut first) = (Vec::new(), 0);
         loop {
@@ -178,8 +151,6 @@ impl Depositor {
         }
     }
 
-    /// The address to show for the next deposit: the lowest never shielded from. One holding
-    /// under the minimum stays shown until more arrives and it is shielded.
     pub async fn showing(&self) -> Result<u32> {
         let used = self.recover().await?;
         let shielded = |index| {
@@ -189,8 +160,6 @@ impl Depositor {
         Ok((0..).find(|index| !shielded(*index)).unwrap_or(u32::MAX))
     }
 
-    /// Signs a shield of address `index`'s whole balance, valid for an hour, to a note of the
-    /// wallet's: the request to persist and then post. None while it holds under the minimum.
     pub async fn sign_shield(&self, index: u32) -> Result<Option<ShieldDeposit>> {
         let terms = self.terms().await?;
         let token = &self.contract().await?.token_domain;
@@ -235,9 +204,6 @@ impl Depositor {
         }))
     }
 
-    /// Shields address `index`'s balance: signs, hands each request to `keep` to persist before
-    /// it is posted, posts it as the relayer's answers say, and waits for it to land. None while
-    /// the address holds under the minimum.
     pub async fn shield(
         &self,
         index: u32,
@@ -249,10 +215,6 @@ impl Depositor {
         self.post_shield(index, request, keep).await.map(Some)
     }
 
-    /// Posts `request`, a shield of address `index` signed before, until it lands: the same
-    /// bytes again while the relayer can't send it or what it sent hasn't mined, signed again
-    /// once its fee or validity went stale, following whatever deposit of the address the relayer
-    /// names.
     pub async fn post_shield(
         &self,
         index: u32,
@@ -277,7 +239,6 @@ impl Depositor {
                     }
                     ensure!(Instant::now() < give_up, "the deposit never landed");
                 }
-                // Another deposit of the address, which shields to another of the wallet's notes.
                 Deposited::Conflict(sent) if !sent.is_empty() => {
                     if let Some(deposit) = self.landed(&sent, request.from, None).await? {
                         return Ok(deposit);
@@ -287,7 +248,6 @@ impl Depositor {
                 Deposited::Conflict(_) => bail!(
                     "the authorization is used in a transaction the relayer doesn't name: read the address's deposits from the chain"
                 ),
-                // A stale fee or validity is signed again once.
                 Deposited::Refused(reason) if !signed_again => {
                     signed_again = true;
                     request = self
@@ -311,8 +271,6 @@ impl Depositor {
         }
     }
 
-    /// Shields again what Railgun sent back to address `index`'s vault, to a note of the wallet's:
-    /// none while it holds no more than the relayer's fee.
     pub async fn rescue(
         &self,
         index: u32,
@@ -364,7 +322,6 @@ impl Depositor {
             .chain
             .token_balance(self.deployment.token, vault)
             .await?;
-        // A rescue pays the fee alone.
         let fee = terms.fee;
         ensure!(
             fee <= self.cap.fee,
@@ -408,9 +365,6 @@ impl Depositor {
             .context("the address no longer holds enough to deposit")
     }
 
-    /// The last of `sent`, once mined, if the pinned contract recorded it as a deposit or rescue
-    /// of `from`, to `note` where given, and Railgun as a note of the wallet's: a relayer naming
-    /// another transaction is not believed. None while it hasn't mined within `REPOST`.
     async fn landed(
         &self,
         sent: &[B256],
@@ -457,8 +411,6 @@ impl Depositor {
         Ok(Some(Deposit { tx, shielded }))
     }
 
-    /// The Deposits contract, read once and checked against the pin: its token, and the token's
-    /// domain from its own name and version.
     async fn contract(&self) -> Result<&Deployment> {
         self.contract
             .get_or_try_init(|| async {
@@ -481,12 +433,15 @@ impl Depositor {
     }
 }
 
-/// How long to sign for: an hour, or what the relayer takes if that is less.
 fn validity(terms: &DepositTerms) -> u64 {
     VALIDITY.min(terms.max_validity.saturating_sub(CLOCK_SLACK))
 }
 
 fn now() -> u64 {
+    #[cfg(feature = "sim")]
+    if let Some(now) = zecswap_chain::evm::simulated_wall() {
+        return now;
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock is after 1970")

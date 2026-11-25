@@ -7,8 +7,6 @@ import {MockRailgun} from "./MockRailgun.sol";
 import {SpendAuthVectors} from "./SpendAuthVectors.sol";
 import {TestToken} from "./TestToken.sol";
 
-/// The plumbing the windows audits' tests share: deployments, keys, opens in both directions,
-/// signatures, and calls tried and undone so one state can answer several questions.
 abstract contract WindowsBase is SpendAuthVectors {
     uint8 internal constant NONE = 0;
     uint8 internal constant OPEN = 1;
@@ -38,10 +36,10 @@ abstract contract WindowsBase is SpendAuthVectors {
         bool fwd;
         bytes32 id;
         ZecSwap.Terms terms;
-        uint256 claimShare; // z forward, the ZEC maker's m reverse
-        uint256 refundShare; // e forward, the user's u reverse
-        uint256 authKey; // reverse: the escrowing user's per-swap key (stored as terms.maker)
-        address zecMaker; // reverse: the ZEC maker (stored as terms.user)
+        uint256 claimShare;
+        uint256 refundShare;
+        uint256 authKey;
+        address zecMaker;
         bytes32 refundNote;
     }
 
@@ -69,7 +67,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         return (v.k, [v.x, v.y]);
     }
 
-    /// A forward swap by `maker_` with keys `ki` (e) and `kj` (z), paying an account.
     function openForward(ZecSwap swaps, address maker_, uint256 ki, uint256 kj, uint64 t0, uint64 t1)
         internal
         returns (Case memory c)
@@ -87,7 +84,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         c.id = swaps.open(address(usdc), AMOUNT, E, Z, user, t0, t1, bytes32(0));
     }
 
-    /// A reverse escrow: `ki` is the ZEC maker's key (m), `kj` the escrowing user's (u).
     function openReverse(
         ZecSwap swaps,
         address zecMaker,
@@ -106,7 +102,6 @@ abstract contract WindowsBase is SpendAuthVectors {
             ZecSwap.Terms(r.user, address(usdc), AMOUNT, r.userKey, r.makerKey, zecMaker, t0, t1, bytes32(0));
     }
 
-    /// The `ReverseOpen` a user signs; fills `c`'s shares, key and note.
     function reverseTerms(
         Case memory c,
         address zecMaker,
@@ -126,7 +121,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         r = ZecSwap.ReverseOpen(zecMaker, auth, address(usdc), AMOUNT, M, U, t0, t1, c.refundNote, deadline);
     }
 
-    /// Relay Adapt's part: approve the exact amount and open.
     function fundReverse(ZecSwap swaps, ZecSwap.ReverseOpen memory r, bytes memory sig)
         internal
         returns (bytes32 id)
@@ -169,7 +163,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         return abi.encodePacked(r, s, v);
     }
 
-    /// The EIP-712 digest a wallet computes for `swaps`.
     function digestOf(ZecSwap swaps, bytes32 structHash) internal view returns (bytes32) {
         bytes32 domain = keccak256(
             abi.encode(
@@ -193,8 +186,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         return uint8(c.swaps.getSwap(c.id).stage);
     }
 
-    /// Readies `c` the way its direction does: the maker's own call forward, the user's signature
-    /// (good until `sigDeadline`) sent by anyone in reverse. Not undone.
     function doReady(Case memory c, uint64 sigDeadline) internal returns (bool ok, bytes4 sel) {
         bytes memory ret;
         if (c.fwd) {
@@ -220,7 +211,6 @@ abstract contract WindowsBase is SpendAuthVectors {
         sel = selectorOf(ret);
     }
 
-    /// Whether the claim (with its true share) would succeed now; the state is left as it was.
     function claims(Case memory c) internal returns (bool ok, bytes4 sel) {
         uint256 snap = vm.snapshotState();
         (ok, sel) = doClaim(c, c.claimShare);

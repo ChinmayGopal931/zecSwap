@@ -1,7 +1,3 @@
-//! The third audit's port spec, replayed: in every case its oracle decides (`vectors.json`, which
-//! `port_spec.py` writes), whether a party may reveal now on one read, the judgements the relayer
-//! and clients call agree.
-
 use std::path::Path;
 
 use serde::Deserialize;
@@ -17,7 +13,6 @@ pub struct Vector {
     pub expect: Expect,
 }
 
-/// One read: the swap at the newest block, that block, and the wall clock.
 #[derive(Deserialize)]
 pub struct View {
     pub direction: String,
@@ -30,14 +25,12 @@ pub struct View {
     pub min_window: u64,
     pub late_window: u64,
     pub ready_block: Option<u64>,
-    /// -1 where the node gives no finalized block.
     pub finalized_number: i64,
     pub railgun_accepts: bool,
     pub deposit_confirmed: bool,
     pub wallet_synced: bool,
 }
 
-/// What the party recorded before sending.
 #[derive(Deserialize)]
 pub struct Own {
     pub ready_sent: bool,
@@ -70,7 +63,6 @@ fn vectors() -> Vec<Vector> {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
-/// The swap's stage, or none where it isn't on the chain.
 fn stage(stage: &str) -> Option<Stage> {
     match stage {
         "open" => Some(Stage::Open),
@@ -82,8 +74,6 @@ fn stage(stage: &str) -> Option<Stage> {
     }
 }
 
-/// Whether the reveal goes now, as the relayer and clients judge it, or none for the maker's
-/// forward reveals.
 fn may_send(vector: &Vector) -> Option<bool> {
     let (view, own, margins) = (&vector.view, &vector.own, &vector.margins);
     let windows = Windows {
@@ -97,13 +87,11 @@ fn may_send(vector: &Vector) -> Option<bool> {
     };
     let deadlines = (view.t0, view.t1);
     let forward = view.direction == "forward";
-    // The swap, read as of `block`, is ready there.
     let ready_at = |block: u64| view.ready_block.is_some_and(|ready| ready <= block);
     let reveal = vector.reveal.as_str();
     if matches!(reveal, "maker_ready" | "maker_cancel" | "maker_refund") {
         return None;
     }
-    // No swap on the chain: nothing to reveal.
     let Some(stage) = stage(&view.stage) else {
         return Some(false);
     };
@@ -164,7 +152,6 @@ fn every_claim_refund_and_ready_is_judged_as_the_port_spec_decides() {
     let mut wrong = Vec::new();
     let mut replayed = 0;
     for (index, vector) in vectors.iter().enumerate() {
-        // The depths the spec decides on are the ones the services wait for.
         assert_eq!(vector.margins.ready_depth, judge::READY_DEPTH);
         assert_eq!(
             vector.margins.reverse_ready_depth,

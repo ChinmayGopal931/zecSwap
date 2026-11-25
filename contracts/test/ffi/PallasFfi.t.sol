@@ -6,7 +6,6 @@ import {Test} from "forge-std/Test.sol";
 import {Pallas} from "../../src/Pallas.sol";
 import {PallasHarness} from "../utils/PallasHarness.sol";
 
-/// Differential fuzzing against zecswap-core; see the `ffi` profile in foundry.toml.
 contract PallasFfiTest is Test {
     PallasHarness internal pallas = new PallasHarness();
 

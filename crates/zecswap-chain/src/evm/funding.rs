@@ -1,6 +1,3 @@
-//! Narrow sponsorship of V2 Relay Adapt reverse escrow funding. The ABI and adapt-params
-//! encoding match @railgun-community/engine 9.8.0 (abi/V2/RelayAdapt.json and RelayAdaptHelper).
-
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{Bytes, keccak256};
 use alloy::providers::Provider;
@@ -16,7 +13,6 @@ use super::{
 };
 use crate::Error;
 
-/// `openReverse`, the longest call a funding makes, is 548 bytes.
 const MAX_CALL_BYTES: usize = 1024;
 const CALL: Shape = Shape::Tuple(&[
     Shape::Words(1),
@@ -25,7 +21,6 @@ const CALL: Shape = Shape::Tuple(&[
 ]);
 const RELAY: &[Shape] = &[
     Shape::Array(&TRANSACTION, MAX_TRANSACTIONS),
-    // ActionData: random, requireSuccess, minGasLimit, calls
     Shape::Tuple(&[
         Shape::Words(1),
         Shape::Bool,
@@ -33,10 +28,8 @@ const RELAY: &[Shape] = &[
         Shape::Array(&CALL, 4),
     ]),
 ];
-/// `approve` and `transfer`: an address and an amount.
 const TOKEN_CALL: &[Shape] = &[Shape::Words(2)];
 const OPEN_REVERSE: &[Shape] = &[Shape::Words(12), Shape::Bytes(65)];
-/// One `ShieldRequest`, nine words.
 const SHIELD: &[Shape] = &[Shape::Array(&Shape::Words(9), 1)];
 
 #[derive(Clone, PartialEq, Eq)]
@@ -46,7 +39,6 @@ pub struct FundingPolicy {
     pub maker: Address,
     pub max_gas_limit: u64,
     pub max_gas_price_wei: u128,
-    /// Escrow-token base units the funding must transfer to `fee_recipient` for the gas.
     pub fee: u128,
     pub fee_recipient: Address,
 }
@@ -61,7 +53,6 @@ pub enum FundingError {
 
 type Result<T> = std::result::Result<T, FundingError>;
 
-/// Only validation can construct one. Submission uses the original, proof-bound bytes.
 pub struct ValidatedFunding {
     id: B256,
     chain_id: u64,
@@ -92,8 +83,6 @@ impl FundingPolicy {
         )
     }
 
-    /// Checks the complete call tree, its proof binding, and the user's escrow signature.
-    /// Cryptographic Railgun proof verification is performed by simulation and on-chain.
     pub fn validate(
         &self,
         domain: Domain,
@@ -127,7 +116,6 @@ impl FundingPolicy {
             action.minGasLimit <= U256::from(self.max_gas_limit),
             "Relay Adapt minimum gas exceeds sponsorship limit",
         )?;
-        // Shield remaining token dust even when no remainder is expected.
         require(
             action.calls.len() == 4,
             "expected approve, openReverse, fee, and shield calls",
@@ -289,11 +277,6 @@ impl Settlement {
         )
     }
 
-    /// Returns a submitted hash immediately; wallets must independently confirm the escrow.
-    /// A matching escrow already on-chain is an idempotent success with no new transaction.
-    /// There are no automatic send retries: after transport failure reuse the same proof and
-    /// reconcile on-chain. Nullifiers and openReverse prevent a second transfer even if the
-    /// original submission's outcome is unknown.
     pub async fn sponsor_reverse_funding(
         &self,
         policy: &FundingPolicy,
@@ -344,8 +327,6 @@ impl Settlement {
             .with_gas_limit(policy.max_gas_limit)
             .with_max_fee_per_gas(fees.max_fee_per_gas)
             .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
-        // Pending-state simulation runs real proof, nullifier, signature and token checks.
-        // Never surface raw RPC errors: they can contain the complete private payload.
         let estimate = self.provider.estimate_gas(tx.clone()).await.map_err(|_| {
             FundingError::Rejected(
                 "funding simulation failed; reconcile escrow before retrying the same proof",
@@ -369,7 +350,6 @@ impl Settlement {
     }
 }
 
-/// One of a funding's calls, decoded.
 fn inner<C: SolCall>(call: &IRelayAdapt::Call, args: &[Shape], invalid: &'static str) -> Result<C> {
     canonical::decode(&call.data, args).map_err(|malformed| {
         FundingError::Rejected(match malformed {
@@ -379,9 +359,6 @@ fn inner<C: SolCall>(call: &IRelayAdapt::Call, args: &[Shape], invalid: &'static
     })
 }
 
-/// The fees every send pays, tip floor included, with the tip raised to a proof's minimum gas
-/// price: Railgun checks it against what the transaction pays, the base fee and the tip. Sent at
-/// the node's gas price alone, the first mainnet funding was never mined.
 fn funding_fees(fees: Eip1559Estimation, min_gas_price: u128) -> Eip1559Estimation {
     let tip = fees.max_priority_fee_per_gas.max(min_gas_price);
     Eip1559Estimation {

@@ -8,9 +8,6 @@ import {IRailgun} from "../../src/ShieldVault.sol";
 import {MockRailgun} from "../utils/MockRailgun.sol";
 import {TestToken} from "../utils/TestToken.sol";
 
-/// zecswap-core's deposit nonce, EIP-3009 digest and rescue digest against the contracts, on
-/// random deposits: each must land signed over Rust's digests. See the `ffi` profile in
-/// foundry.toml; wallets and relayers sign and check deposits with the Rust ones.
 contract DepositsFfiTest is Test {
     uint256 internal constant SECP256K1_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141;
 

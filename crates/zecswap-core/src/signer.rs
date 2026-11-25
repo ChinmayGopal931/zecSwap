@@ -1,9 +1,3 @@
-//! Signs joint-account spends in a PCZT.
-//!
-//! `orchard` cannot build a `SpendAuthorizingKey` from a raw scalar, so signatures are
-//! made here and applied through the Signer role's external-signature path, which
-//! checks each one against the spend's `rk`.
-
 use core::fmt::Debug;
 
 use orchard::ValuePool;
@@ -28,10 +22,6 @@ pub fn sign_pczt_bytes(
         .map_err(pczt_error)
 }
 
-/// Signs every Orchard and Ironwood spend in `pczt` with the matching key in `keys`.
-///
-/// Requires the authorized receiver, minimum receipt and maximum fee, no change to
-/// other receivers, and no foreign pools or preauthorized real inputs.
 pub fn sign_pczt(pczt: Pczt, keys: &[SpendKey], intent: &SweepIntent) -> Result<Pczt, Error> {
     let pczt = intent.verify(pczt)?;
     let keys: Vec<_> = keys.iter().map(SpendKey::signing_key).collect();

@@ -13,14 +13,9 @@ pub enum ErrorCode {
     Internal,
     NotFound,
     MethodNotAllowed,
-    /// Spend a token from the issuer the `WWW-Authenticate` challenge names (RFC 9577).
     TokenRequired,
-    /// The quote's `openFee` is not in a mined transaction as the maker sees the chain: pay it,
-    /// or wait for it and accept again.
     FeeRequired,
-    /// A note the transaction spends is spent, or a transaction already sent spends it.
     AlreadySpent,
-    /// A deposit's authorization is used, or another of its address's is on its way.
     Conflict,
 }
 
@@ -38,9 +33,6 @@ pub struct MakerInfo {
     pub maker: Address,
     pub chain_id: u64,
     pub contract: Address,
-    /// The contract's kind, `windows` (`WINDOWS_CONTRACT`), and its minimum and late windows in
-    /// seconds, as the contract reports them. Absent from a maker on the lock contract. A wallet
-    /// refuses a maker that names another kind, and reads the contract itself too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,13 +42,10 @@ pub struct MakerInfo {
     pub token: Address,
     pub zcash_network: crate::Network,
     pub reverse_enabled: bool,
-    /// Where accepts take tokens, the key the maker hands them back under (base64url SPKI):
-    /// one for everyone, which wallets pin.
     pub token_return_key: Option<String>,
 }
 
 impl MakerInfo {
-    /// Whether this info fits a windows contract with these windows (`fits_windows`).
     pub fn fits_windows(&self, windows: (u64, u64)) -> bool {
         crate::fits_windows(
             self.contract_kind.as_deref(),

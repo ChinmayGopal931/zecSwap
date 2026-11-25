@@ -12,15 +12,12 @@ import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPrivateCrtKey
 import java.util.Base64
 
-/** Each token binding through the JNI layer, against an issuer key made here; RFC 9578's math is tested in Rust. */
 class PrivacyPassTest {
     @Test
     fun aTokenRoundTripsThroughTheBindings() {
         val keys = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
         val issuer = keys.private as RSAPrivateCrtKey
-        // RFC 9578's RSASSA-PSS SubjectPublicKeyInfo around the modulus, as its test vectors encode a 2048-bit key.
         val spki = SPKI_HEAD.bytes() + issuer.modulus.fixed() + "0203010001".bytes()
-        // The redemption context is 32 bytes ending in the UTC day, here day 20 000.
         val challenge = "0002000b6973737565722e74657374" + "20" + "00".repeat(24) + "0000000000004e20" + "00056d616b6572"
         val header = "PrivateToken challenge=\"${challenge.bytes().base64Url()}\", token-key=\"${spki.base64Url()}\""
 

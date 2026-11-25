@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Deploys ZecSwap on Ethereum mainnet paying into Railgun's proxy there, reads its settings back,
-# writes deployments/<name>.json and, given ETHERSCAN_API_KEY, verifies its source on Etherscan.
-# The contract has no owner: the deploying account keeps no power over it, so any funded account
-# will do.
-#   ETH_RPC_URL=… [ETHERSCAN_API_KEY=…] scripts/deploy-contract.sh <name> <min window> <late window> <wallet>
-# The windows are in seconds: the least an open leaves before t0 and from t0 to t1, and how long
-# from t1 only the maker may refund a forward swap. <wallet> is how forge signs: --interactive
-# (paste a key), --ledger, or --account <keystore>.
-#   scripts/deploy-contract.sh mainnet-windows 3600 86400 --interactive
 set -euo pipefail
 
 usage="usage: $0 <name> <min window seconds> <late window seconds> <wallet flags>"
@@ -26,7 +17,6 @@ usdc=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
 cd "$(dirname "$0")/.."
 manifest=deployments/$name.json
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
-# anvil and forge quote RPC URLs, keys included, in their errors.
 hide_urls() { sed -E 's#https?://[^ "]+#<rpc>#g'; }
 
 if [ -e "$manifest" ]; then
@@ -72,7 +62,6 @@ if [ -z "${transaction:-}" ]; then
 fi
 echo "Deployed at $contract in $transaction."
 
-# cast annotates large numbers, as in "7200 [7.2e3]".
 read_back() { cast call --rpc-url "$ETH_RPC_URL" "$contract" "$1" 2>&1 | hide_urls | awk '{ print $1 }'; }
 [ "$(read_back 'MIN_WINDOW()(uint256)')" = "$min" ] || { echo "MIN_WINDOW reads back wrong" >&2; exit 1; }
 [ "$(read_back 'LATE_WINDOW()(uint256)')" = "$late" ] || { echo "LATE_WINDOW reads back wrong" >&2; exit 1; }

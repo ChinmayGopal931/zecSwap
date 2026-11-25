@@ -1,0 +1,30 @@
+0 catches a ready signed short of the whole deposit, and a refund judged open on a ready escrow before t1
+1 catches a reverse escrow's reveals judged by the forward windows
+2 catches a refund judged open on a ready escrow before t1
+3 catches funding a quote whose deadlines leave too little time
+5 catches a refund asked of a ready escrow before t1
+8 catches a maker's claim on a ready a reorg can still drop, and a refund asked of a ready escrow before t1
+11 catches funding a quote for another deployment
+12 catches a maker's claim on a ready a reorg can still drop
+16 catches funding a quote whose maker proof is bad
+21 catches a maker's claim sent with no margin before t1, and one judged open after t1
+26 catches a ready signed to last until t0 or later
+27 catches a ready signed after a refund was asked, one refused by a panic, and a refund saved only after it was sent
+30 catches funding a quote for another deployment
+35 catches a ready signed after a refund was asked, and a refund saved only after it was sent
+38 catches funding a quote with no amount, deposit or maker
+41 catches funding a quote whose maker proof is bad
+42 catches funding a quote for another user or refund note
+43 catches a refund asked while a signed ready may land, and a ready's deadline saved only after it was sent
+52 catches funding a quote whose deadlines leave too little time
+57 catches a reverse escrow's reveals judged by the forward windows
+64 catches a refund asked while a signed ready may land, and a ready's deadline saved only after it was sent
+65 catches a maker's claim sent with no margin before t1, and one judged open after t1
+75 catches funding a quote with no amount, deposit or maker
+76 catches a ready signed to last until t0 or later
+86 catches funding a quote for another user or refund note
+114 catches funding an escrow that locks the USDC over a day
+155 catches funding an escrow that locks the USDC over a day
+182 catches a stuck private sender never alerted, one alerted with no send dropped, and one alerted only at the next send
+222 catches funding an escrow that locks the USDC over a day
+3723 catches a stuck private sender never alerted, and holds one stuck for over an hour

@@ -1,0 +1,36 @@
+0 catches a deposit posted unsaved, one signed again when stale and posted unsaved, a deposit believed to another note, a rescue of nothing, and showing an address deposited from
+1 catches a deposit signed for a relayer naming another deployment
+2 catches a deposit posted unsaved, one signed again on a refusal and posted unsaved, a rescue of nothing, showing an address deposited from, and an emptied address counted unused
+3 catches a deposit posted unsaved, one signed again on a refusal and posted unsaved, a rescue of nothing, showing an address deposited from, and an emptied address counted unused
+4 catches a deposit signed for a relayer on another chain, and that refusal turned into a panic
+8 catches a deposit signed again when stale and posted unsaved, and a deposit believed to another note
+10 catches a deposit signed again when stale and posted unsaved, a stale deposit posted again, and a deposit believed of another address
+12 catches a deposit signed under the minimum, a rescue posted unsaved, and an emptied address counted unused
+13 catches a rescue posted unsaved, a swap's rescue signed otherwise than the contract reads it, and an emptied address counted unused
+19 catches a stale deposit posted again, and a deposit believed of another address
+21 catches a stale deposit posted again, and a deposit believed of another address
+23 catches a scan that stops at its first window
+25 catches a deposit signed for a relayer naming another deployment
+27 catches a rescue posted unsaved, and a swap's rescue signed otherwise than the contract reads it
+30 catches a queued sender never alerted, and one alerted at once
+36 catches a deposit's fee signed over the cap, and a rescue's
+42 catches a scan that stops at its first window
+43 catches a deposit signed under the minimum, and a swap's rescue signed otherwise than the contract reads it
+44 catches a fee signed that leaves nothing to deposit
+48 catches a deposit's fee signed over the cap, and a rescue's
+55 catches a fee signed that leaves nothing to deposit
+59 catches a queued sender never alerted, and one alerted at once
+71 catches a deposit never posted again though its transaction was lost
+75 catches a queued sender never alerted, and one alerted at once
+76 catches a deposit never posted again though its transaction was lost
+79 catches a deposit's fee signed over the cap, and one signed for longer than the relayer takes
+80 catches a queued sender never alerted, one alerted at once, and a panicking alert sink let through
+88 catches a deposit signed for a relayer on another chain
+95 catches a fee signed that leaves nothing to deposit, and a deposit signed again on a refusal and posted unsaved
+112 catches a deposit signed for a relayer on another chain
+127 catches a deposit signed under the minimum, and one signed for longer than the relayer takes
+239 catches a queued sender never alerted, one alerted at once, and a panicking alert sink let through
+574 catches a queue alerted while it drains
+725 catches a queue alerted while it drains
+750 catches a queue alerted while it drains
+898 catches a queue alerted while it drains

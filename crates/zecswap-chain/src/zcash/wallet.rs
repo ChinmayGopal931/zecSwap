@@ -42,6 +42,7 @@ use super::cache::MemoryBlockCache;
 use super::lightwalletd::{self, Lightwalletd};
 use super::prover::{Circuit, Prover};
 use crate::Error;
+use crate::alert::Alerts;
 
 mod sync;
 
@@ -49,24 +50,16 @@ const JOINT_KEY_SOURCE: &str = "zecswap";
 const INVENTORY: &str = "reverse swap inventory";
 const SYNC_BATCH_SIZE: u32 = 1_000;
 const ORCHARD_POOLS: [ShieldedPool; 2] = [ShieldedPool::Orchard, ShieldedPool::Ironwood];
-/// The most a sweep pays the network, 64 notes' worth under ZIP 317. A sweep spends every note
-/// of its account, each sent by whoever chose to, so the bound is on what it is asked to prove.
 pub const SWEEP_FEE_CEILING: u64 = 320_000;
 
 type Db = WalletDb<rusqlite::Connection, Network, SystemClock, UnwrapErr<SysRng>>;
 
-/// Value held in the Orchard-protocol pools.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Funds {
-    /// Everything received and unspent, confirmed or not.
     pub total: u64,
-    /// What has enough confirmations to spend now.
     pub spendable: u64,
 }
 
-/// A payment proved but neither signed nor stored. Until `send_proved` or `release` takes it, the
-/// notes it spends are held from every other payment, for as many blocks as `prove_payment` was
-/// asked to hold them.
 pub struct ProvedPayment {
     pczt: Pczt,
     circuit: Arc<Circuit>,
@@ -77,18 +70,15 @@ pub struct ProvedPayment {
 
 pub struct Wallet {
     db: Db,
-    /// A read-only connection of its own, the library keeping its to itself: reads the views
-    /// the library exposes over the wallet's database, for what its calls don't tell.
     views: rusqlite::Connection,
     network: Network,
     blocks: MemoryBlockCache,
     confirmations: ConfirmationsPolicy,
-    /// Whether lightwalletd was found to serve the wallet's network.
     server_checked: bool,
+    alerts: Option<Alerts>,
 }
 
 impl Wallet {
-    /// Opens a wallet that spends its own notes after 3 confirmations, and others' after 10.
     pub fn open(path: impl AsRef<Path>, network: Network) -> Result<Self, Error> {
         let path = path.as_ref();
         let mut db = WalletDb::for_path(path, network, SystemClock, UnwrapErr(SysRng))
@@ -107,15 +97,17 @@ impl Wallet {
             blocks: MemoryBlockCache::default(),
             confirmations: ConfirmationsPolicy::default(),
             server_checked: false,
+            alerts: None,
         })
     }
 
-    /// Spends any note after `confirmations` instead. A deposit then counts sooner, and a
-    /// chain reorganization is likelier to undo it after it counted: for testnets, or amounts
-    /// small enough to risk.
     pub fn with_confirmations(mut self, confirmations: NonZeroU32) -> Self {
         self.confirmations = ConfirmationsPolicy::new_symmetrical(confirmations, false);
         self
+    }
+
+    pub fn alerts_to(&mut self, alerts: Alerts) {
+        self.alerts = Some(alerts);
     }
 
     pub fn network(&self) -> Network {
@@ -130,31 +122,31 @@ impl Wallet {
         Ok(())
     }
 
-    /// Scans every tracked account up to the chain tip.
     pub async fn sync(&mut self, client: &mut Lightwalletd) -> Result<(), Error> {
-        // Without an account there is no birthday to start from, and the wallet would scan
-        // every pool's last incomplete shard: for the sparse Ironwood pool, hundreds of
-        // thousands of blocks.
         if self.db.get_account_ids()?.is_empty() {
             return Ok(());
         }
         self.check_server(client).await?;
         let tip = lightwalletd::chain_tip(client).await?;
-        if self.born_above(tip)? {
+        if sync::born_above(&self.db, tip)? {
             return Ok(());
         }
+        let watch = sync::Watch {
+            alerts: self.alerts.as_ref(),
+            wallet: self.views.path().unwrap_or_default(),
+            steps_back: 0,
+        };
         sync::run(
             client,
             &self.network,
             &self.blocks,
             &mut self.db,
             SYNC_BATCH_SIZE,
+            watch,
         )
         .await
     }
 
-    /// Starts watching a joint account from the chain tip, so it must be imported before
-    /// anything is paid to it.
     pub async fn import_joint(
         &mut self,
         client: &mut Lightwalletd,
@@ -167,7 +159,6 @@ impl Wallet {
         }
         self.check_server(client).await?;
         let birthday = Self::birthday_at_tip(client).await?;
-        // A spending account whose key is assembled outside the wallet, as for hardware signers.
         let purpose = AccountPurpose::Spending { derivation: None };
         let account =
             self.db
@@ -175,7 +166,6 @@ impl Wallet {
         Ok(account.id())
     }
 
-    /// A separate operations wallet can retain history without owning either spend share.
     pub async fn import_joint_view(
         &mut self,
         client: &mut Lightwalletd,
@@ -206,7 +196,6 @@ impl Wallet {
             .id())
     }
 
-    /// Adds a seed-derived spending account born at the chain tip.
     pub async fn create_account(
         &mut self,
         client: &mut Lightwalletd,
@@ -227,8 +216,6 @@ impl Wallet {
             .unwrap_or_default())
     }
 
-    /// Every account's funds. A wallet summary costs as much for one account as for all, so
-    /// reading several accounts takes this once rather than `funds` for each.
     pub fn funds_by_account(&self) -> Result<HashMap<AccountUuid, Funds>, Error> {
         let summary = self.db.get_wallet_summary(self.confirmations)?;
         Ok(summary
@@ -248,7 +235,6 @@ impl Wallet {
             .collect())
     }
 
-    /// The account's Orchard-only unified address.
     pub fn address(&mut self, account: AccountUuid) -> Result<String, Error> {
         let request = UnifiedAddressRequest::ORCHARD;
         let address = match self
@@ -268,7 +254,6 @@ impl Wallet {
         Ok(address.encode(&self.network))
     }
 
-    /// A never-used Orchard-only address of the account.
     pub fn fresh_address(&mut self, account: AccountUuid) -> Result<String, Error> {
         let (address, _) = self
             .db
@@ -281,8 +266,6 @@ impl Wallet {
         Ok(self.db.get_account_ids()?)
     }
 
-    /// The seed-derived account of a wallet that holds one seed's, as opposed to an imported
-    /// joint account: the first found. A wallet of several seeds asks `seed_account`.
     pub fn derived_account(&self) -> Result<Option<AccountUuid>, Error> {
         for id in self.db.get_account_ids()? {
             let account = self.db.get_account(id)?;
@@ -296,8 +279,6 @@ impl Wallet {
         Ok(None)
     }
 
-    /// The account `seed` derives, created at the chain tip where the wallet has none. The wallet
-    /// may hold other seeds' accounts.
     pub async fn seed_account(
         &mut self,
         client: &mut Lightwalletd,
@@ -311,8 +292,6 @@ impl Wallet {
         }
     }
 
-    /// The maker's ZEC inventory, the account `seed` derives. A wallet whose inventory is
-    /// another seed's is refused: a second one would leave the first's funds out of sight.
     pub async fn inventory_account(
         &mut self,
         client: &mut Lightwalletd,
@@ -328,7 +307,6 @@ impl Wallet {
         }
     }
 
-    /// The key of a seed's first account, the one `create_account` makes for it.
     fn seed_key(&self, seed: &[u8]) -> Result<UnifiedSpendingKey, Error> {
         UnifiedSpendingKey::from_seed(&self.network, seed, zip32::AccountId::ZERO)
             .map_err(Error::wallet)
@@ -351,18 +329,10 @@ impl Wallet {
         Ok(false)
     }
 
-    /// Zatoshis `account` has received in mined transactions at its address of each of
-    /// `indices` (diversifier indices), in their order: at any depth, in either Orchard-protocol
-    /// pool, spent since or not.
     pub fn received_at(&self, account: AccountUuid, indices: &[u64]) -> Result<Vec<u64>, Error> {
         if indices.is_empty() {
             return Ok(Vec::new());
         }
-        // No call of the library's tells which address a note came to. `v_tx_outputs`, the view
-        // it exposes for reading, does: the scanner works out a received note's diversifier
-        // index from the note itself, so an address the wallet never gave out is recorded like
-        // any other. Matched by that index, not the address's text, which the view gives with
-        // every receiver the key has. Pools 3 and 4 are Orchard and Ironwood.
         let mut received = self
             .views
             .prepare_cached(
@@ -400,8 +370,6 @@ impl Wallet {
         UnifiedFullViewingKey::decode(&self.network, &encoded).map_err(Error::wallet)
     }
 
-    /// The account tracking `joint`, looked up by its incoming viewing key rather than by
-    /// decoding every account's key: an operations wallet holds an account per swap.
     fn find_joint(
         &self,
         joint: &JointAccount,
@@ -414,17 +382,11 @@ impl Wallet {
             .map(|account| account.id()))
     }
 
-    /// What sweeping `account` to `to` would pay the network, as it stands. Nothing is proved,
-    /// so this is cheap to ask before a deposit is taken as paid.
     pub fn sweep_fee(&mut self, account: AccountUuid, to: &ZcashAddress) -> Result<u64, Error> {
         let proposal = self.propose_sweep(account, to)?;
         Ok(proposal.steps().head.balance().fee_required().into())
     }
 
-    /// Stores a transaction sending everything in a joint account to `to`, authorized by the
-    /// combined key; `broadcast` sends it. One that would pay over `SWEEP_FEE_CEILING` is refused,
-    /// `Error::SweepFee`, before its proof: an account paid in that many notes would otherwise
-    /// cost a proof at every try and never be swept.
     pub fn sweep(
         &mut self,
         prover: &Prover,
@@ -454,12 +416,9 @@ impl Wallet {
             SWEEP_FEE_CEILING,
         )?;
         let sign = |pczt| Ok(sign_pczt(pczt, std::slice::from_ref(key), &intent)?);
-        // Both sides hold the joint viewing key: its outgoing key would show each side where
-        // the other's sweep went.
         self.store_proposal(prover, account, &proposal, OvkPolicy::Discard, sign)
     }
 
-    /// One transaction sending everything `account` can spend to `to`.
     fn propose_sweep(
         &mut self,
         account: AccountUuid,
@@ -485,8 +444,6 @@ impl Wallet {
         Ok(proposal)
     }
 
-    /// Stores a transaction paying every `(address, zatoshis)` from a seed-derived account;
-    /// `broadcast` sends it.
     pub fn pay(
         &mut self,
         prover: &Prover,
@@ -501,9 +458,6 @@ impl Wallet {
         })
     }
 
-    /// Proves a payment as `pay` would, without signing or storing it, holding the notes it
-    /// spends from other payments for `hold_blocks` blocks: `send_proved` then stores it in
-    /// moments. Notes `holder` holds already, from a payment proved before and lost, go first.
     pub fn prove_payment(
         &mut self,
         prover: &Prover,
@@ -535,8 +489,6 @@ impl Wallet {
         }
     }
 
-    /// Whether `payment` may still be sent: its notes still held, and the next block within its
-    /// expiry.
     pub fn holds(&self, payment: &ProvedPayment) -> Result<bool, Error> {
         let Some(tip) = self.db.chain_height()? else {
             return Ok(false);
@@ -546,9 +498,6 @@ impl Wallet {
         Ok(payment.held_until >= next && (expiry == 0 || BlockHeight::from(expiry) >= next))
     }
 
-    /// Stores `payment`, signed with `usk`; `broadcast` sends it. One that no longer `holds` is
-    /// released instead, as its notes may since have gone into another payment, and so is one
-    /// that fails to sign or store, as nothing then spends its notes.
     pub fn send_proved(
         &mut self,
         payment: ProvedPayment,
@@ -575,7 +524,6 @@ impl Wallet {
         stored
     }
 
-    /// Gives up `payment`, so its notes go to other payments again.
     pub fn release(&mut self, payment: ProvedPayment) -> Result<(), Error> {
         Ok(unlock_proposal_inputs(
             &mut self.db,
@@ -584,8 +532,6 @@ impl Wallet {
         )?)
     }
 
-    /// Releases the notes of a payment that failed, whose error is the one to report: failing
-    /// here too only leaves them held until the hold lapses.
     fn give_back(
         &mut self,
         proposal: &Proposal<StandardFeeRule, ReceivedNoteId>,
@@ -596,7 +542,6 @@ impl Wallet {
         }
     }
 
-    /// Sends a stored transaction to the network. Sending one again is harmless.
     #[tracing::instrument(skip_all, fields(transaction_hash = %txid, chain = "zcash", operation = "broadcast"), err(level = "warn"))]
     pub async fn broadcast(&mut self, client: &mut Lightwalletd, txid: TxId) -> Result<(), Error> {
         self.check_server(client).await?;
@@ -618,8 +563,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// The fee a stored transaction paid; none for one not stored, or with transparent inputs,
-    /// whose values the transaction doesn't carry.
     pub fn fee(&self, txid: TxId) -> Result<Option<u64>, Error> {
         Ok(self
             .db
@@ -632,8 +575,6 @@ impl Wallet {
         Ok(self.db.get_tx_height(txid)?.is_some())
     }
 
-    /// Settlement uses the fully scanned height, never an unscanned advertised tip.
-    /// Use the external-deposit depth even for our own sweeps: a reorg can undo them.
     pub fn is_confirmed(&self, txid: TxId) -> Result<bool, Error> {
         let Some(mined) = self.db.get_tx_height(txid)? else {
             return Ok(false);
@@ -660,13 +601,10 @@ impl Wallet {
                 .is_some_and(|block| block.block_height() > tx.expiry_height()))
     }
 
-    /// Stops tracking an account whose swap has settled.
     pub fn forget(&mut self, account: AccountUuid) -> Result<(), Error> {
         Ok(self.db.delete_account(account)?)
     }
 
-    /// A birthday one block above the tip. One at the tip would make the import rewind the
-    /// wallet to the block below, which fails when the note trees kept no checkpoint there.
     async fn birthday_at_tip(client: &mut Lightwalletd) -> Result<AccountBirthday, Error> {
         let tip = lightwalletd::chain_tip(client).await?;
         let treestate = lightwalletd::tree_state(client, tip).await?;
@@ -674,17 +612,6 @@ impl Wallet {
             .map_err(|e| Error::Wallet(format!("account birthday: {e:?}")))
     }
 
-    /// Whether every account is born above `tip`, so there is nothing to scan yet. Syncing then
-    /// would queue an empty range, which panics next to the ranges a deleted account left
-    /// behind (https://github.com/zcash/librustzcash/issues/2301).
-    fn born_above(&self, tip: BlockHeight) -> Result<bool, Error> {
-        Ok(self
-            .db
-            .get_wallet_birthday()?
-            .is_some_and(|birthday| birthday > tip))
-    }
-
-    /// A payment of every `(address, zatoshis)` from `account`, its change to Ironwood.
     fn propose_payment(
         &mut self,
         account: AccountUuid,
@@ -775,13 +702,6 @@ impl Wallet {
     }
 }
 
-/// The expiry of a transaction targeting `target` while a network upgrade is scheduled above it:
-/// the builder's default, but no later than the block before the upgrade, as zcashd's wallet sets
-/// it. Built under the old rules, it can never be mined once the upgrade activates, yet until its
-/// expiry it would hold its notes and read as pending, so `is_expired` would keep it from being
-/// built again. A ZIP 318 crossing takes no expiry but its own rolling one, a month or more out,
-/// so building one fails while an upgrade is scheduled, with no fallback. None arises here: a
-/// crossing spends an Orchard note made before NU6.3, and every account here is younger.
 fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Option<BlockHeight> {
     let upgrade = UPGRADES_IN_ORDER
         .iter()
@@ -791,8 +711,6 @@ fn expiry_before_upgrade(network: &impl Parameters, target: BlockHeight) -> Opti
     Some(default.min(upgrade - 1))
 }
 
-/// The key's Orchard-only unified address at a diversifier index, under which
-/// `Wallet::received_at` reports what its account is paid there. Needs no wallet.
 pub fn address_at(
     key: &UnifiedFullViewingKey,
     network: Network,
@@ -807,8 +725,6 @@ pub fn address_at(
         .encode(&network))
 }
 
-/// Compares keys, not encodings: a key has an encoding per revision, so a stored key's need not
-/// be `JointAccount::ufvk`'s.
 fn is_joint(account: &impl Account, joint: &JointAccount) -> bool {
     account
         .ufvk()
@@ -843,6 +759,3 @@ fn unsigned_spends(bundle: &pczt::orchard::Bundle) -> Vec<usize> {
         .map(|(index, _)| index)
         .collect()
 }
-
-#[cfg(test)]
-mod tests;

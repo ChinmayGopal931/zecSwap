@@ -5,10 +5,6 @@ import {ZecSwap} from "../../src/ZecSwap.sol";
 import {IRailgun} from "../../src/ShieldVault.sol";
 import {WindowsBase} from "../utils/WindowsBase.sol";
 
-/// Audit 3 (area 8): zecswap-core's `Domain` digests against the windows contract's
-/// `_checkSignature`, on random inputs. The lock digests are gone; these five remain and must
-/// agree to the byte, or an honest reveal's authorization fails on chain. Two are also exercised
-/// live: a `readyWithSig` and an `openReverse` signed over Rust's digest land.
 contract DigestsFfiTest is WindowsBase {
     ZecSwap internal swaps;
 
@@ -93,7 +89,6 @@ contract DigestsFfiTest is WindowsBase {
         uint64 deadlineAfter,
         uint96 amount
     ) public {
-        // distinct points: the vectors repeat by index, and equal x coordinates are refused
         (, uint256[2] memory M) = pair(ki);
         (, uint256[2] memory U) = pair(kj);
         vm.assume(M[0] != U[0]);
@@ -140,7 +135,6 @@ contract DigestsFfiTest is WindowsBase {
             )
         );
         assertEq(digest, digestOf(structHash));
-        // and a signature over Rust's digest opens the escrow
         (uint8 v, bytes32 rr, bytes32 ss) = vm.sign(c.authKey, digest);
         bytes memory sig = abi.encodePacked(rr, ss, v);
         usdc.mint(adapt, r.amount);
@@ -149,7 +143,6 @@ contract DigestsFfiTest is WindowsBase {
         vm.prank(adapt);
         bytes32 id = swaps.openReverse(r, sig);
         assertEq(uint8(swaps.getSwap(id).stage), OPEN);
-        // and a ready signed over Rust's digest readies it
         uint64 deadline = uint64(block.timestamp + 120);
         string[] memory b = new string[](3);
         (b[0], b[1], b[2]) = ("ready", vm.toString(id), vm.toString(deadline));

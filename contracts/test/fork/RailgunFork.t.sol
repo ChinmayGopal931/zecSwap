@@ -9,9 +9,6 @@ import {ZecSwap} from "../../src/ZecSwap.sol";
 import {SpendAuthVectors} from "../utils/SpendAuthVectors.sol";
 import {IRailgunTree, RailgunFixture} from "./RailgunFixture.sol";
 
-/// Railgun payouts against the real Railgun and USDC on an Ethereum mainnet fork, paying the note
-/// zecswap-railgun built in `vectors/railgun_note.json`. Skipped unless ETH_RPC_URL is set:
-///   ETH_RPC_URL=… forge test --match-path test/fork/RailgunFork.t.sol -vv
 contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
     bytes32 internal constant PAYOUT_TYPEHASH = keccak256("Payout(bytes32 id,address relayer,uint128 fee)");
     bytes32 internal constant RESCUE_TYPEHASH =
@@ -120,7 +117,6 @@ contract RailgunForkTest is SpendAuthVectors, RailgunFixture {
         assertEq(leafCount(), leaves + 1);
     }
 
-    /// A swap paying the note in `vectors/railgun_note.json`, between shares 0 and 1.
     function terms() internal view returns (ZecSwap.Terms memory) {
         Vector memory e = randomVector(0);
         Vector memory z = randomVector(1);

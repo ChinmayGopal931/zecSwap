@@ -3,7 +3,6 @@ pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 
-/// @dev `[k]·SpendAuthG` computed by zecswap-core (`cargo run --example evm_vectors`).
 abstract contract SpendAuthVectors is Test {
     struct Vector {
         uint256 k;
@@ -11,7 +10,6 @@ abstract contract SpendAuthVectors is Test {
         uint256 y;
     }
 
-    /// Index of the first seeded-random vector, after q-1, q-2 and the 255 powers of two.
     uint256 internal constant FIRST_RANDOM = 257;
     uint256 internal constant RANDOM_COUNT = 256;
 

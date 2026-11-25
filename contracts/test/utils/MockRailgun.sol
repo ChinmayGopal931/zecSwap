@@ -4,8 +4,6 @@ pragma solidity 0.8.28;
 import {IRailgun} from "../../src/ShieldVault.sol";
 import {IERC20} from "../../src/Token.sol";
 
-/// Railgun's `shield` as far as a payout sees it: the fee comes out of the value, both parts are
-/// pulled from the caller, and each note is recorded and emitted as Railgun emits it.
 contract MockRailgun is IRailgun {
     event Shield(
         uint256 treeNumber,
@@ -43,7 +41,6 @@ contract MockRailgun is IRailgun {
         for (uint256 i; i < requests.length; ++i) {
             CommitmentPreimage calldata preimage = requests[i].preimage;
             require(preimage.value > 0, "Invalid Note Value");
-            // Wider than the note, as Railgun computes it: a note near uint120's limit must not overflow.
             uint120 fee = uint120(uint256(preimage.value) * FEE_BPS / 10_000);
             uint120 base = preimage.value - fee;
             IERC20 token = IERC20(preimage.token.tokenAddress);

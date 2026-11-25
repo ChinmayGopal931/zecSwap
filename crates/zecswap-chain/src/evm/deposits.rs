@@ -1,8 +1,3 @@
-//! The Deposits contract, as a relayer sends what wallets sign for it: a deposit address's
-//! EIP-3009 authorization to shield its tokens into its owner's Railgun balance, and a rescue of
-//! what Railgun sent back to the address's vault. Wallets read it too: a vault's code says its
-//! address has deposited, and its rescue nonce is what a rescue signs.
-
 use alloy::eips::BlockId;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::Bytes;
@@ -20,18 +15,14 @@ use super::{
 };
 use crate::Error;
 
-/// A Deposits deployment, as it and its token say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Deployment {
     pub token: Address,
     pub railgun: Address,
-    /// The oracle depositors are screened against; none where nobody is, on testnets.
     pub sanctions: Option<Address>,
-    /// The token's EIP-712 domain, from its own `name()` and `version()`.
     pub token_domain: TokenDomain,
 }
 
-/// What a relayer sends deposits within.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepositPolicy {
     pub contract: Address,
@@ -39,7 +30,6 @@ pub struct DepositPolicy {
     pub max_gas_price_wei: u128,
 }
 
-/// A deposit address's signed shield, as `shield` takes it.
 pub struct Shield<'a> {
     pub from: Address,
     pub value: u128,
@@ -50,7 +40,6 @@ pub struct Shield<'a> {
     pub signature: &'a [u8; 65],
 }
 
-/// A deposit address's signed rescue, as `rescue` takes it.
 pub struct Rescue<'a> {
     pub from: Address,
     pub note: &'a ShieldNote,
@@ -59,7 +48,6 @@ pub struct Rescue<'a> {
     pub signature: &'a [u8; 65],
 }
 
-/// A deposit address as a wallet scans it: what it holds, and whether it has deposited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Used {
     pub balance: u128,
@@ -67,13 +55,11 @@ pub struct Used {
 }
 
 impl Used {
-    /// Whether the address has been given out: it holds tokens or has deposited.
     pub fn used(&self) -> bool {
         self.balance > 0 || self.deposited
     }
 }
 
-/// A call to the Deposits contract, as its calldata tells it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Call {
     Shield {
@@ -89,11 +75,9 @@ pub enum Call {
     },
 }
 
-/// A deposit or rescue the Deposits contract recorded: whose, and the note it shielded to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Landed {
     pub from: Address,
-    /// `noteCommitment(npk, ciphertext)`, as `ShieldNote::commitment` computes it.
     pub note: B256,
     pub fee: u128,
     pub relayer: Address,
@@ -136,7 +120,6 @@ impl Rescue<'_> {
 }
 
 impl Call {
-    /// What `data` asks of the Deposits contract; none for anything else.
     pub fn decode(data: &[u8]) -> Option<Self> {
         if let Ok(call) = IDeposits::shieldCall::abi_decode(data) {
             return Some(Call::Shield {
@@ -154,8 +137,6 @@ impl Call {
         })
     }
 
-    /// The first time, in Unix seconds, from which it can no longer land: its authorization's
-    /// `validBefore`, or past its rescue's deadline.
     pub fn expires_at(&self) -> u64 {
         match *self {
             Call::Shield { valid_before, .. } => valid_before,
@@ -165,8 +146,6 @@ impl Call {
 }
 
 impl Settlement {
-    /// The Deposits deployment at `contract`: its token, Railgun and sanctions oracle, and the
-    /// token's EIP-712 domain, which must be the one its `DOMAIN_SEPARATOR()` is.
     pub async fn deposits(&self, contract: Address) -> Result<Deployment, Error> {
         let deposits = IDeposits::new(contract, &self.provider);
         let token = deposits.TOKEN().call().await.map_err(Error::contract)?;
@@ -198,8 +177,6 @@ impl Settlement {
         })
     }
 
-    /// What each of `owners` holds of `token` and whether it has deposited through `contract`,
-    /// in one call for every fifty where Multicall3 is deployed.
     pub async fn deposit_addresses(
         &self,
         contract: Address,
@@ -249,7 +226,6 @@ impl Settlement {
             .collect()
     }
 
-    /// The deposits and rescues `contract` recorded in `tx`; none while it is unmined.
     pub async fn deposits_landed(&self, contract: Address, tx: B256) -> Result<Vec<Landed>, Error> {
         let Some(receipt) = self
             .provider
@@ -293,7 +269,6 @@ impl Settlement {
         Ok(!code.is_empty())
     }
 
-    /// Whether `authorizer` has used `nonce` on `token`, landing or cancelling an authorization.
     pub async fn authorization_used(
         &self,
         token: Address,
@@ -315,7 +290,6 @@ impl Settlement {
             .map_err(Error::contract)
     }
 
-    /// Where `from`'s deposits shield from, and Railgun sends them back to.
     pub async fn deposit_vault(&self, contract: Address, from: Address) -> Result<Address, Error> {
         IDeposits::new(contract, &self.provider)
             .vaultOf(from)
@@ -324,7 +298,6 @@ impl Settlement {
             .map_err(Error::contract)
     }
 
-    /// The nonce `from`'s next rescue signs.
     pub async fn deposit_rescue_nonce(
         &self,
         contract: Address,
@@ -337,12 +310,6 @@ impl Settlement {
             .map_err(Error::contract)
     }
 
-    /// Sends `data` to the Deposits contract within `policy`. It is simulated on the pending state
-    /// from this account, at the fees every send pays, and sent only if its fee `covers` the gas
-    /// it is estimated to burn at the network's gas price; then signed, at a nonce of at least
-    /// `least_nonce`, handed to `record`, and broadcast once, through the private RPC if there is
-    /// one. No retries: a failed broadcast's outcome is unknown, and what `record` kept says what
-    /// to look for.
     pub async fn send_deposit(
         &self,
         policy: &DepositPolicy,
@@ -378,7 +345,6 @@ impl Settlement {
             .with_gas_limit(policy.max_gas_limit)
             .with_max_fee_per_gas(fees.max_fee_per_gas)
             .with_max_priority_fee_per_gas(fees.max_priority_fee_per_gas);
-        // Never surface the node's errors: they can carry the signature.
         let estimate = match self
             .provider
             .estimate_gas(tx.clone())
@@ -417,7 +383,6 @@ impl Settlement {
                 tracing::info!(transaction_hash = %signed.hash, "sent a deposit");
                 Ok(signed.hash)
             }
-            // A private RPC that answers with an error never passes the transaction on.
             Err(RpcError::ErrorResp(_)) if self.private.is_some() => {
                 Err(SendError::Refused(signed.hash))
             }
@@ -425,7 +390,6 @@ impl Settlement {
         }
     }
 
-    /// Sends `amount` of `token` from this account to `to`.
     pub async fn transfer_token(
         &self,
         token: Address,

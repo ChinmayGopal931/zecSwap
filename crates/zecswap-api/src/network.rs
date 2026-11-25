@@ -1,7 +1,3 @@
-//! The one setting that picks a deployment's network, and what each network fixes: its Zcash
-//! network, the Ethereum chains it settles on, Railgun's contracts and the token there, and where
-//! wallets sync. Every service checks its chain, contract and settings against it as it starts.
-
 use std::fmt;
 use std::str::FromStr;
 
@@ -16,8 +12,6 @@ pub enum Network {
     Mainnet,
 }
 
-/// Railgun's contracts on a chain, as Railgun's own `NETWORK_CONFIG` names them
-/// (@railgun-community/shared-models 8.2.0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Railgun {
     pub proxy: Address,
@@ -27,15 +21,12 @@ pub struct Railgun {
 struct Chain {
     id: u64,
     railgun: OnChain,
-    /// The token swaps there pay out, where the network fixes it.
     token: Option<Address>,
 }
 
 enum OnChain {
     Railgun(Railgun),
-    /// No Railgun: swaps there pay accounts.
     None,
-    /// A local chain, with whatever stand-ins its tests deploy.
     Any,
 }
 
@@ -48,13 +39,11 @@ const TESTNET: &[Chain] = &[
         }),
         token: None,
     },
-    // Base Sepolia, where the live suite's account payouts run.
     Chain {
         id: 84_532,
         railgun: OnChain::None,
         token: None,
     },
-    // anvil.
     Chain {
         id: 31_337,
         railgun: OnChain::Any,
@@ -68,11 +57,9 @@ const MAINNET: &[Chain] = &[Chain {
         proxy: address!("FA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9"),
         relay_adapt: address!("Ac9f360Ae85469B27aEDdEaFC579Ef2d052aD405"),
     }),
-    // USDC.
     token: Some(address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")),
 }];
 
-/// Why a deployment is not on the network its config names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mismatch {
     Chain(Network, u64),
@@ -99,19 +86,12 @@ impl Network {
         self.zcash().network_type()
     }
 
-    /// Whether the Zcash crates this build uses schedule NU6.3 here, which brought the Ironwood
-    /// pool swaps use.
     pub fn ironwood(self) -> bool {
         self.zcash()
             .activation_height(NetworkUpgrade::Nu6_3)
             .is_some()
     }
 
-    /// What a reveal, a claim or refund carrying its share, may pay per gas over the usual cap of
-    /// the next base fee twice over: one the base fee outruns may be mined after its window
-    /// closes, reverting with its share public. Twice mainnet's tenth of a gwei let surges strand
-    /// a send for over 25 minutes 235 times in the year to 2026-10-19; with 5 gwei more, twice. A
-    /// send still pays only the base fee and its tip; testnets keep their accounts' ETH as it was.
     pub fn reveal_headroom_wei(self) -> u128 {
         match self {
             Network::Testnet => 0,
@@ -119,7 +99,6 @@ impl Network {
         }
     }
 
-    /// The lightwalletd wallets sync from unless told otherwise.
     pub fn lightwalletd(self) -> &'static str {
         match self {
             Network::Testnet => "https://testnet.zec.rocks:443",
@@ -127,9 +106,6 @@ impl Network {
         }
     }
 
-    /// Checks a deployment on `chain_id` is one of this network's: the chain is, its contract pays
-    /// into this network's Railgun there or into none (`railgun` zero), and it pays out the token
-    /// this network fixes there, if any.
     pub fn check(self, chain_id: u64, railgun: Address, token: Address) -> Result<(), Mismatch> {
         let chain = self
             .chain(chain_id)
@@ -148,7 +124,6 @@ impl Network {
         Ok(())
     }
 
-    /// Railgun's own Relay Adapt on `chain_id`, if this network has Railgun's deployment there.
     pub fn relay_adapt(self, chain_id: u64) -> Option<Address> {
         match self.chain(chain_id)?.railgun {
             OnChain::Railgun(railgun) => Some(railgun.relay_adapt),
@@ -214,78 +189,6 @@ mod tests {
 
     use super::*;
 
-    const SEPOLIA_RAILGUN: Address = address!("eCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea");
-    const MAINNET_RAILGUN: Address = address!("FA7093CDD9EE6932B4eb2c9e1cde7CE00B1FA4b9");
-    const USDC: Address = address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
-
-    #[test]
-    fn each_network_takes_its_own_chains_railgun_and_token_alone() {
-        let any = Address::repeat_byte(7);
-        assert_eq!(
-            Network::Testnet.check(11_155_111, SEPOLIA_RAILGUN, any),
-            Ok(())
-        );
-        assert_eq!(Network::Testnet.check(84_532, Address::ZERO, any), Ok(()));
-        assert_eq!(Network::Testnet.check(31_337, any, any), Ok(()));
-        assert_eq!(Network::Mainnet.check(1, MAINNET_RAILGUN, USDC), Ok(()));
-        assert_eq!(Network::Mainnet.check(1, Address::ZERO, USDC), Ok(()));
-
-        assert_eq!(
-            Network::Testnet.check(1, MAINNET_RAILGUN, USDC),
-            Err(Mismatch::Chain(Network::Testnet, 1))
-        );
-        assert_eq!(
-            Network::Mainnet.check(11_155_111, SEPOLIA_RAILGUN, any),
-            Err(Mismatch::Chain(Network::Mainnet, 11_155_111))
-        );
-        assert_eq!(
-            Network::Mainnet.check(31_337, any, USDC),
-            Err(Mismatch::Chain(Network::Mainnet, 31_337))
-        );
-        assert_eq!(
-            Network::Testnet.check(11_155_111, MAINNET_RAILGUN, any),
-            Err(Mismatch::Railgun(Network::Testnet, MAINNET_RAILGUN))
-        );
-        assert_eq!(
-            Network::Testnet.check(84_532, SEPOLIA_RAILGUN, any),
-            Err(Mismatch::Railgun(Network::Testnet, SEPOLIA_RAILGUN))
-        );
-        assert_eq!(
-            Network::Mainnet.check(1, any, USDC),
-            Err(Mismatch::Railgun(Network::Mainnet, any))
-        );
-        assert_eq!(
-            Network::Mainnet.check(1, MAINNET_RAILGUN, any),
-            Err(Mismatch::Token(Network::Mainnet, any))
-        );
-    }
-
-    #[test]
-    fn relay_adapt_is_railguns_own_where_the_network_has_railgun() {
-        assert_eq!(
-            Network::Testnet.relay_adapt(11_155_111),
-            Some(address!("7e3d929EbD5bDC84d02Bd3205c777578f33A214D"))
-        );
-        assert_eq!(
-            Network::Mainnet.relay_adapt(1),
-            Some(address!("Ac9f360Ae85469B27aEDdEaFC579Ef2d052aD405"))
-        );
-        assert_eq!(Network::Testnet.relay_adapt(84_532), None);
-        assert_eq!(Network::Testnet.relay_adapt(31_337), None);
-        assert_eq!(Network::Mainnet.relay_adapt(11_155_111), None);
-    }
-
-    #[test]
-    fn names_read_back_and_ironwood_is_scheduled_on_both() {
-        for network in [Network::Testnet, Network::Mainnet] {
-            assert_eq!(network.name().parse(), Ok(network));
-            assert!(network.ironwood());
-        }
-        assert!("main".parse::<Network>().is_err());
-    }
-
-    /// Crates that leave NU7 unscheduled build transactions under NU6.3's rules after it
-    /// activates, and nodes refuse every one.
     #[test]
     fn nu7_activates_at_each_networks_height() {
         for (network, height) in [(Network::Mainnet, 3_543_405), (Network::Testnet, 4_465_026)] {

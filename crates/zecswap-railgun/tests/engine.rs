@@ -1,6 +1,3 @@
-//! Known answers from Railgun's engine (`engine/vectors.cjs`): the same seed gives the same
-//! address, and notes and transaction outputs the engine builds open here.
-
 use serde::Deserialize;
 use zecswap_railgun::{Keys, OutputCiphertext, Received, ShieldCiphertext, ShieldNote};
 
@@ -90,9 +87,6 @@ fn opens_notes_the_engine_built_for_it_only() {
     }
 }
 
-/// Outputs the engine encrypted, a hidden sender's fee and a visible sender's transfer with a
-/// memo: only the receiver reads them, only as the note committed to, and a changed memo or
-/// note word fails the GCM tag.
 #[test]
 fn receives_outputs_the_engine_encrypted_for_it_only() {
     let vectors = vectors();
@@ -149,7 +143,6 @@ fn notes_built_here_open_for_their_receiver_only() {
 fn tampered_notes_do_not_open() {
     let keys = keys(&vectors().wallets[0]);
     let note = keys.note(&[3; 32]).unwrap();
-    // The GCM IV and tag, then the encrypted random; the rest of the bundle is for the shielder.
     for (word, byte) in [(0, 0), (0, 15), (0, 16), (0, 31), (1, 0), (1, 15)] {
         let mut tampered = note;
         tampered.ciphertext.encrypted_bundle[word][byte] ^= 1;

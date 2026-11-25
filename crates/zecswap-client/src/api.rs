@@ -16,23 +16,13 @@ use zecswap_chain::evm::wall_now;
 
 use crate::tokens::Tokens;
 
-/// Accepting waits for the maker's `open` to land, and a relayed claim for two transactions.
 const TIMEOUT: Duration = Duration::from_secs(180);
-/// The most a request waits in all on `503`s asking it to come back: the gateway's, past an
-/// allowance, before the request reaches the service.
 const BUSY_PATIENCE: Duration = Duration::from_secs(90);
-/// The longest `Retry-After` waited for: one asking longer is an outage, not a queue.
 const BUSY_WAIT: Duration = Duration::from_secs(30);
-/// How long an accept waits before asking again whether the maker has seen its quote's open fee,
-/// where the maker names no wait, and the least it waits where it does.
 const FEE_WAIT: Duration = Duration::from_secs(5);
 const FEE_WAIT_MIN: Duration = Duration::from_secs(1);
-/// The least an accept waits from its second wait on. A gateway may let each caller only a few
-/// accepts a minute through and hold one past them back a while, which a quote near its end may
-/// not have.
 const FEE_PACE: Duration = Duration::from_secs(12);
 
-/// A service's answer other than success.
 #[derive(Debug)]
 pub struct ServiceError {
     pub service: &'static str,
@@ -41,13 +31,10 @@ pub struct ServiceError {
 }
 
 impl ServiceError {
-    /// Whether the service turned the request down, sending nothing: a `5xx`, or no answer at
-    /// all, may follow a send.
     pub fn refused(&self) -> bool {
         self.status.is_client_error()
     }
 
-    /// The code the service gave its answer, if it is one of the services' own.
     pub fn code(&self) -> Option<ErrorCode> {
         serde_json::from_str::<ErrorResponse>(&self.body)
             .ok()
@@ -67,8 +54,6 @@ impl std::fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
-/// A quote expired with the maker never having seen its open fee. Whatever was paid for it is
-/// the maker's, and only a new quote opens a swap.
 #[derive(Debug)]
 pub struct FeeNotHonoured;
 
@@ -82,14 +67,21 @@ impl std::fmt::Display for FeeNotHonoured {
 
 impl std::error::Error for FeeNotHonoured {}
 
-/// Whether `error` is a service's refusal, after which nothing it was asked for was sent.
 pub(crate) fn refused(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ServiceError>()
         .is_some_and(ServiceError::refused)
 }
 
-/// A maker's quote API. Nothing it says is trusted until the contract agrees.
+#[cfg(feature = "sim")]
+pub type Exchange =
+    std::pin::Pin<Box<dyn Future<Output = reqwest::Result<reqwest::Response>> + Send>>;
+
+#[cfg(feature = "sim")]
+pub trait Wire: Send + Sync {
+    fn exchange(&self, request: reqwest::Request) -> Exchange;
+}
+
 #[derive(Clone)]
 pub struct MakerApi(Endpoint);
 
@@ -98,7 +90,11 @@ impl MakerApi {
         Endpoint::new("maker", url).map(Self)
     }
 
-    /// Pays for each accept with a token from `tokens` when the maker asks for one.
+    #[cfg(feature = "sim")]
+    pub fn over(url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        Self(Endpoint::over("maker", url, wire))
+    }
+
     pub fn with_tokens(mut self, tokens: Arc<Tokens>) -> Self {
         self.0.tokens = Some(tokens);
         self
@@ -115,7 +111,6 @@ impl MakerApi {
         self.0.post("/v1/reverse/quote", request).await
     }
 
-    /// Accepts the reverse quote that opens `swap_id`.
     pub async fn accept_reverse(
         &self,
         quote_id: B256,
@@ -131,7 +126,6 @@ impl MakerApi {
         self.0.get(&format!("/v1/reverse/swaps/{swap_id}")).await
     }
 
-    /// Holds the token a forward swap hands back once paid into: whether it now holds it.
     pub async fn collect_token(&self, swap_id: B256) -> Result<bool> {
         let status: Status = self.0.get(&format!("/v1/swaps/{swap_id}")).await?;
         self.0
@@ -139,7 +133,6 @@ impl MakerApi {
             .collect(swap_id, status.token_return.as_deref())
     }
 
-    /// As `collect_token`, for a reverse swap.
     pub async fn collect_reverse_token(&self, swap_id: B256) -> Result<bool> {
         let status = self.reverse_status(swap_id).await?;
         self.0
@@ -161,10 +154,6 @@ impl MakerApi {
         self.0.post("/v1/quote", &request).await
     }
 
-    /// Accepts the quote that opens `swap_id`. While the maker answers that the quote's open fee
-    /// has not reached it, the accept is posted again as the maker asks, until the quote expires
-    /// at `expires_at`: `FeeNotHonoured` then. With the fee `paid`, a busy answer is waited out
-    /// the same way, where giving the accept up would give the fee up with it.
     pub(crate) async fn accept(
         &self,
         quote_id: B256,
@@ -201,40 +190,22 @@ impl MakerApi {
     }
 }
 
-/// A relayer's API. It can delay a swap but not redirect it: all it sends is signed by the
-/// swap's own key or checked by the contract. Each request for a swap carries the ticket its
-/// accept answered with, where the wallet has one: the gateway gives the swap an allowance of
-/// its own.
 #[derive(Clone)]
 pub struct RelayerApi(Endpoint);
 
-/// What a relayer made of a Railgun transaction posted to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Broadcast {
-    /// Submitted, in these transactions; the same bytes posted again name the same ones.
     Sent(Vec<B256>),
-    /// Refused: nothing from this proof was sent or will be. Drop it and free its notes.
     Refused(String),
-    /// A note it spends is spent, or a transaction already sent spends it: settle from the chain.
-    /// Names the relayer's own transactions that spend them, when it knows them.
     Spent(Vec<B256>),
-    /// Not known yet, or never answered: post the same bytes again later.
     Retry(String),
 }
 
-/// What a relayer made of a deposit posted to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Deposited {
-    /// Submitted, in these transactions; the same request posted again names the same ones.
     Sent(Vec<B256>),
-    /// Refused: nothing was sent, and nothing will be. A fee or validity gone stale is signed
-    /// again from the terms.
     Refused(String),
-    /// The authorization is used, or another of the same address is on its way: follow the
-    /// relayer's transactions named, or with none, the chain.
     Conflict(Vec<B256>),
-    /// Not now, or not known yet: post the same request again later, no sooner than `after`
-    /// where the relayer said.
     Retry {
         reason: String,
         after: Option<Duration>,
@@ -246,19 +217,19 @@ impl RelayerApi {
         Endpoint::new("relayer", url).map(Self)
     }
 
-    /// Posts a deposit address's signed shield. Persist `request` before posting it, and post the
-    /// same bytes again while the answer is `Retry`.
+    #[cfg(feature = "sim")]
+    pub fn over(url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        Self(Endpoint::over("relayer", url, wire))
+    }
+
     pub async fn shield_deposit(&self, request: &ShieldDeposit) -> Deposited {
         self.deposit("/v1/deposits/shield", request).await
     }
 
-    /// Posts a deposit address's signed rescue, as `shield_deposit`.
     pub async fn rescue_deposit(&self, request: &RescueDeposit) -> Deposited {
         self.deposit("/v1/deposits/rescue", request).await
     }
 
-    /// A `503` asking a short wait is waited out and posted again as the gateway's are, for up to
-    /// `BUSY_PATIENCE` in all; one asking longer comes back as `Retry`.
     async fn deposit(&self, path: &str, request: &impl Serialize) -> Deposited {
         let url = format!("{}{path}", self.0.url);
         let response = match self.0.send(|| self.0.http.post(&url).json(request)).await {
@@ -296,7 +267,6 @@ impl RelayerApi {
         }
     }
 
-    /// Gives each request `timeout` to answer, rather than three minutes.
     pub fn with_timeout(self, timeout: Duration) -> Result<Self> {
         Ok(Self(Endpoint {
             http: reqwest::Client::builder().timeout(timeout).build()?,
@@ -304,8 +274,6 @@ impl RelayerApi {
         }))
     }
 
-    /// Submit a persisted, locally proved funding transaction. Returned hashes are pending;
-    /// reconcile the escrow independently, including after any transport failure.
     pub async fn fund_reverse(
         &self,
         request: &zecswap_api::reverse::Funding,
@@ -350,12 +318,9 @@ impl RelayerApi {
         self.0.get("/v1/terms").await
     }
 
-    /// Posts a wallet's own proved Railgun transaction for the relayer to send as its
-    /// broadcaster. Persist `request` before posting it, and post the same bytes again until the
-    /// answer is not `Retry`.
     pub async fn railgun_transact(&self, request: &RailgunTransact) -> Broadcast {
         let url = format!("{}/v1/railgun/transact", self.0.url);
-        let response = match self.0.http.post(url).json(request).send().await {
+        let response = match self.0.exchange(self.0.http.post(url).json(request)).await {
             Ok(response) => response,
             Err(e) => return Broadcast::Retry(e.to_string()),
         };
@@ -401,6 +366,8 @@ struct Endpoint {
     http: reqwest::Client,
     url: String,
     tokens: Option<Arc<Tokens>>,
+    #[cfg(feature = "sim")]
+    wire: Option<Arc<dyn Wire>>,
 }
 
 impl Endpoint {
@@ -410,10 +377,34 @@ impl Endpoint {
             http: reqwest::Client::builder().timeout(TIMEOUT).build()?,
             url: url.into(),
             tokens: None,
+            #[cfg(feature = "sim")]
+            wire: None,
         })
     }
 
-    /// Posts an accept: asked for a token, it pays with one and asks for it back.
+    #[cfg(feature = "sim")]
+    fn over(name: &'static str, url: impl Into<String>, wire: Arc<dyn Wire>) -> Self {
+        static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        Self {
+            name,
+            http: HTTP.get_or_init(reqwest::Client::new).clone(),
+            url: url.into(),
+            tokens: None,
+            wire: Some(wire),
+        }
+    }
+
+    async fn exchange(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::Result<reqwest::Response> {
+        #[cfg(feature = "sim")]
+        if let Some(wire) = &self.wire {
+            return wire.exchange(request.build()?).await;
+        }
+        request.send().await
+    }
+
     async fn accept(
         &self,
         path: &str,
@@ -423,8 +414,6 @@ impl Endpoint {
         let url = format!("{}{path}", self.url);
         let mut response = self.send(|| self.http.post(&url).json(acceptance)).await?;
         if let Some(tokens) = &self.tokens {
-            // A token the maker refuses, spent after all or no longer good, gives way to the
-            // next.
             for _ in 0..3 {
                 if response.status() != StatusCode::UNAUTHORIZED {
                     break;
@@ -469,7 +458,6 @@ impl Endpoint {
         self.post_for_swap(path, body, None).await
     }
 
-    /// As `post`, with the ticket of the swap the request is for.
     async fn post_for_swap<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -487,16 +475,13 @@ impl Endpoint {
         self.read(self.send(request).await?).await
     }
 
-    /// Sends what `request` builds, and again while the answer is a `503` asking to come back
-    /// shortly: the gateway's, given before the request reaches the service, or the relayer's,
-    /// whose requests send nothing twice.
     async fn send(
         &self,
         request: impl Fn() -> reqwest::RequestBuilder,
     ) -> reqwest::Result<reqwest::Response> {
         let mut waited = Duration::ZERO;
         loop {
-            let response = request().send().await?;
+            let response = self.exchange(request()).await?;
             let wait = (response.status() == StatusCode::SERVICE_UNAVAILABLE)
                 .then(|| retry_after(&response))
                 .flatten()
@@ -516,7 +501,6 @@ impl Endpoint {
         Err(self.failure(response).await?.into())
     }
 
-    /// An answer other than success, as the error it is.
     async fn failure(&self, response: reqwest::Response) -> Result<ServiceError> {
         Ok(ServiceError {
             service: self.name,
@@ -526,114 +510,7 @@ impl Endpoint {
     }
 }
 
-/// The wait a `Retry-After` of delay-seconds asks for; an HTTP date asks none this client keeps.
 fn retry_after(response: &reqwest::Response) -> Option<Duration> {
     let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     seconds.trim().parse().ok().map(Duration::from_secs)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
-    use axum::Router;
-    use axum::http::HeaderMap;
-    use axum::response::IntoResponse;
-    use axum::routing::{get, post};
-    use zecswap_api::service::MakerInfo;
-
-    use super::*;
-    use crate::tokens::tests::serve;
-
-    /// A maker behind a gateway that answers `busy` first, each a `503` with its `Retry-After`
-    /// if any: the requests it saw, and how one for its info ended.
-    async fn info_through(busy: &[Option<&'static str>]) -> (usize, Result<MakerInfo>) {
-        let busy = Arc::new(Mutex::new(busy.iter().copied().collect::<VecDeque<_>>()));
-        let seen = Arc::new(Mutex::new(0));
-        let answer = {
-            let seen = seen.clone();
-            move || async move {
-                *seen.lock().unwrap() += 1;
-                let Some(retry_after) = busy.lock().unwrap().pop_front() else {
-                    return axum::Json(MakerInfo {
-                        api_version: 1,
-                        maker: Address::repeat_byte(1),
-                        chain_id: 11_155_111,
-                        contract: Address::repeat_byte(2),
-                        contract_kind: None,
-                        min_window: None,
-                        late_window: None,
-                        token: Address::repeat_byte(3),
-                        zcash_network: zecswap_api::Network::Testnet,
-                        reverse_enabled: false,
-                        token_return_key: None,
-                    })
-                    .into_response();
-                };
-                let mut headers = HeaderMap::new();
-                if let Some(seconds) = retry_after {
-                    headers.insert(RETRY_AFTER, seconds.parse().unwrap());
-                }
-                (StatusCode::SERVICE_UNAVAILABLE, headers, "busy").into_response()
-            }
-        };
-        let maker =
-            MakerApi::new(serve(Router::new().route("/v1/info", get(answer))).await).unwrap();
-        let info = maker.info().await;
-        let seen = *seen.lock().unwrap();
-        (seen, info)
-    }
-
-    #[tokio::test]
-    async fn a_busy_gateway_is_waited_out_as_it_asks() {
-        let started = std::time::Instant::now();
-        let (seen, info) = info_through(&[Some("1"), Some("1")]).await;
-        assert_eq!(info.unwrap().chain_id, 11_155_111);
-        assert_eq!(seen, 3);
-        assert!(started.elapsed() >= Duration::from_secs(2));
-
-        // A 503 asking no wait, or one too long, is the service's answer.
-        for busy in [None, Some("3600"), Some("Wed, 21 Oct 2026 07:28:00 GMT")] {
-            let started = std::time::Instant::now();
-            let (seen, info) = info_through(&[busy]).await;
-            let error = info.unwrap_err();
-            let answer = error.downcast_ref::<ServiceError>().unwrap();
-            assert_eq!(answer.status, StatusCode::SERVICE_UNAVAILABLE);
-            assert!(!answer.refused(), "a 503 may follow a send");
-            assert_eq!(seen, 1, "{busy:?}");
-            assert!(started.elapsed() < Duration::from_secs(1));
-        }
-    }
-
-    #[tokio::test]
-    async fn a_request_for_a_swap_carries_its_ticket() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let record = {
-            let seen = seen.clone();
-            move |headers: HeaderMap| async move {
-                let ticket = headers
-                    .get(TICKET_HEADER)
-                    .map(|value| value.to_str().unwrap());
-                seen.lock().unwrap().push(ticket.map(str::to_owned));
-                axum::Json(Sent {
-                    transactions: vec![],
-                })
-            }
-        };
-        let relayer =
-            RelayerApi::new(serve(Router::new().route("/v1/reverse/fund", post(record))).await)
-                .unwrap();
-        let funding = zecswap_api::reverse::Funding {
-            swap_id: B256::repeat_byte(1),
-            chain_id: 1,
-            to: Address::ZERO,
-            data: Default::default(),
-            value: 0,
-        };
-        let ticket = format!("{}.{}", B256::repeat_byte(1), "ab".repeat(32));
-        relayer.fund_reverse(&funding, Some(&ticket)).await.unwrap();
-        relayer.fund_reverse(&funding, None).await.unwrap();
-        assert_eq!(*seen.lock().unwrap(), [Some(ticket), None]);
-    }
 }

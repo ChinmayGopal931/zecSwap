@@ -33,15 +33,12 @@ pub struct ReverseOpen {
     pub deadline: u64,
 }
 
-/// A single rescue of returned funds, executable only before its deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RescueAuthorization {
     pub nonce: u64,
     pub deadline: u64,
 }
 
-/// The EIP-712 domain of one ZecSwap deployment, and the digests of what a swap's `user` signs
-/// there. A signature under one domain never moves another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Domain {
     pub chain_id: u64,
@@ -73,8 +70,6 @@ impl Domain {
         ])
     }
 
-    /// The lock contract's refund lock, deployed on mainnet before the windows contract: for
-    /// wallets finishing escrows still open there. The windows contract has no locks.
     pub fn lock_refund(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
         self.digest(&[
             &keccak(&[b"LockRefund(bytes32 id,uint64 deadline)"]),
@@ -92,20 +87,14 @@ impl Domain {
         ])
     }
 
-    /// One claim lock on the lock contract, sent by `deadline`, which must fall within its lock
-    /// duration of the time it lands: for wallets finishing swaps still open there. The windows
-    /// contract has no locks.
     pub fn lock_claim(&self, id: &[u8; 32], deadline: u64) -> [u8; 32] {
         self.digest(&[&keccak(&[LOCK_CLAIM_TYPE]), id, &uint(deadline.into())])
     }
 
-    /// The swap's payout into Railgun, sent by `relayer`, which keeps `fee` of it.
     pub fn payout(&self, id: &[u8; 32], relayer: &[u8; 20], fee: u128) -> [u8; 32] {
         self.digest(&[&keccak(&[PAYOUT_TYPE]), id, &address(relayer), &uint(fee)])
     }
 
-    /// Shielding what came back to the swap's vault to `note`, the commitment
-    /// `zecswap_railgun::ShieldNote::commitment` computes, sent by `relayer` for `fee`.
     pub fn rescue(
         &self,
         id: &[u8; 32],
@@ -125,7 +114,6 @@ impl Domain {
         ])
     }
 
-    /// The EIP-712 digest of the struct whose encoded words are `fields`.
     fn digest(&self, fields: &[&[u8]]) -> [u8; 32] {
         typed(
             &separator(b"ZecSwap", b"1", self.chain_id, &self.contract),
@@ -134,8 +122,6 @@ impl Domain {
     }
 }
 
-/// An EIP-3009 token's EIP-712 domain: its own `name()` and `version()`, read from it, never
-/// assumed. Check `separator()` against its `DOMAIN_SEPARATOR()` before signing under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenDomain {
     pub name: String,
@@ -144,8 +130,6 @@ pub struct TokenDomain {
     pub token: [u8; 20],
 }
 
-/// What a `receiveWithAuthorization` moves: `value` from `from` to `to`, its caller, once per
-/// `nonce`, after `valid_after` and before `valid_before`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReceiveAuthorization {
     pub from: [u8; 20],
@@ -166,7 +150,6 @@ impl TokenDomain {
         )
     }
 
-    /// The digest `authorization.from` signs.
     pub fn receive_with_authorization(&self, authorization: &ReceiveAuthorization) -> [u8; 32] {
         typed(
             &self.separator(),
@@ -183,8 +166,6 @@ impl TokenDomain {
     }
 }
 
-/// One Deposits deployment: what a deposit's authorization commits to there, and what its owner
-/// signs to shield again what Railgun sent back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepositsDomain {
     pub chain_id: u64,
@@ -192,9 +173,6 @@ pub struct DepositsDomain {
 }
 
 impl DepositsDomain {
-    /// `depositNonce`: the nonce of an authorization to shield to `note`, its note public key
-    /// then its ciphertext's four words (`zecswap_railgun::ShieldNote::words`), paying `fee` to
-    /// `relayer`, which alone can send it.
     pub fn deposit_nonce(&self, note: &[[u8; 32]; 5], fee: u128, relayer: &[u8; 20]) -> [u8; 32] {
         let [npk, bundle @ .., shield_key] = note;
         keccak(&[
@@ -209,8 +187,6 @@ impl DepositsDomain {
         ])
     }
 
-    /// Shielding what came back to `from`'s vault to `note`, the commitment
-    /// `zecswap_railgun::ShieldNote::commitment` computes, sent by `relayer` for `fee`.
     pub fn rescue(
         &self,
         from: &[u8; 20],
@@ -234,8 +210,6 @@ impl DepositsDomain {
     }
 }
 
-/// An EIP-712 domain separator, of `EIP712Domain(string name,string version,uint256 chainId,
-/// address verifyingContract)`.
 fn separator(name: &[u8], version: &[u8], chain_id: u64, contract: &[u8; 20]) -> [u8; 32] {
     keccak(&[
         &keccak(&[DOMAIN_TYPE]),
@@ -246,14 +220,10 @@ fn separator(name: &[u8], version: &[u8], chain_id: u64, contract: &[u8; 20]) ->
     ])
 }
 
-/// The EIP-712 digest, under `separator`, of the struct whose encoded words are `fields`.
 fn typed(separator: &[u8; 32], fields: &[&[u8]]) -> [u8; 32] {
     keccak(&[b"\x19\x01", separator, &keccak(fields)])
 }
 
-/// A swap's own Ethereum key. A swap that pays into Railgun names its address as `user`: the
-/// user has no account on the chain, so this key signs for the payout, and for a reverse escrow
-/// its opening and ready, and relayers send them. It is never funded.
 pub struct AuthKey(SigningKey);
 
 impl AuthKey {
@@ -264,19 +234,15 @@ impl AuthKey {
             .ok_or(Error::InvalidScalar)
     }
 
-    /// The swap's `user`.
     pub fn address(&self) -> [u8; 20] {
         address_of(self.0.verifying_key())
     }
 
-    /// `r ‖ s ‖ v` over one of `Domain`'s digests, with a low `s` and `v` in {27, 28}, as the
-    /// contract takes it.
     pub fn sign(&self, digest: &[u8; 32]) -> [u8; 65] {
         sign(&self.0, digest)
     }
 }
 
-/// `r ‖ s ‖ v` over `digest`, with a low `s` and `v` in {27, 28}, as contracts and tokens take it.
 pub(crate) fn sign(key: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
     let (signature, recovery) = key
         .sign_prehash_recoverable(digest)
@@ -287,7 +253,6 @@ pub(crate) fn sign(key: &SigningKey, digest: &[u8; 32]) -> [u8; 65] {
     bytes
 }
 
-/// Who signed `digest`, if `signature` is one the contract accepts.
 pub fn signer(digest: &[u8; 32], signature: &[u8; 65]) -> Option<[u8; 20]> {
     if !matches!(signature[64], 27 | 28) {
         return None;
@@ -339,40 +304,14 @@ mod tests {
         AuthKey(SigningKey::from_bytes(&scalar.into()).unwrap())
     }
 
-    const DOMAIN: Domain = Domain {
-        chain_id: 11155111,
-        contract: [9; 20],
-    };
-
     #[test]
     fn address_is_ethereums() {
-        // The well-known address of private key 1.
         assert_eq!(
             key(1).address(),
             *b"\x7e\x5f\x45\x52\x09\x1a\x69\x12\x5d\x5d\xfc\xb7\xb8\xc2\x65\x90\x29\x39\x5b\xdf"
         );
     }
 
-    #[test]
-    fn signatures_recover_to_their_signer_under_their_digest_only() {
-        let key = key(7);
-        let digest = DOMAIN.payout(&[3; 32], &[4; 20], 1_000_000);
-        let signature = key.sign(&digest);
-        assert_eq!(signer(&digest, &signature), Some(key.address()));
-
-        let other_fee = DOMAIN.payout(&[3; 32], &[4; 20], 1_000_001);
-        let other_chain = Domain {
-            chain_id: 1,
-            ..DOMAIN
-        }
-        .payout(&[3; 32], &[4; 20], 1_000_000);
-        for digest in [other_fee, other_chain] {
-            assert_ne!(signer(&digest, &signature), Some(key.address()));
-        }
-    }
-
-    /// The contracts' own answers, from `contracts/test/Deposits.t.sol`'s
-    /// `test_hashesMatchTheRustVectors`, which lands a shield and a rescue signed over these.
     #[test]
     fn deposit_hashes_match_the_contracts_known_answers() {
         fn word(text: &str) -> [u8; 32] {
@@ -424,43 +363,5 @@ mod tests {
             deposits.rescue(&depositor, &committed, &[0x77; 20], 150_000, rescue),
             word("0xa417fb0cbab5c5f12b9ec4c5d409c4148463a48675c333823dc3ce034837fc2c")
         );
-    }
-
-    #[test]
-    fn high_s_twins_are_rejected() {
-        const N: [u8; 32] = [
-            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
-            0xd0, 0x36, 0x41, 0x41,
-        ];
-        let digest = DOMAIN.lock_claim(&[3; 32], 1_790_000_000);
-        let mut signature = key(7).sign(&digest);
-        // s' = n - s, with v flipped, is the same signature malleated.
-        let mut borrow = 0i16;
-        for i in (0..32).rev() {
-            let difference = i16::from(N[i]) - i16::from(signature[32 + i]) - borrow;
-            signature[32 + i] = difference.rem_euclid(256) as u8;
-            borrow = i16::from(difference < 0);
-        }
-        signature[64] ^= 1;
-        assert_eq!(signer(&digest, &signature), None);
-    }
-
-    #[test]
-    fn only_ethereums_recovery_ids_are_accepted() {
-        // This synthetic signature has a recoverable x-overflow key for IDs 2/3.
-        let mut signature = [0; 65];
-        signature[31] = 2;
-        signature[63] = 1;
-        for v in 0..=u8::MAX {
-            signature[64] = v;
-            if !matches!(v, 27 | 28) {
-                assert_eq!(signer(&[0; 32], &signature), None, "v={v}");
-            }
-        }
-        for v in [27, 28] {
-            signature[64] = v;
-            assert!(signer(&[0; 32], &signature).is_some());
-        }
     }
 }

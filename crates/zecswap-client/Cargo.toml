@@ -23,10 +23,8 @@ zecswap-railgun = { path = "../zecswap-railgun" }
 zecswap-tokens = { path = "../zecswap-tokens" }
 zeroize.workspace = true
 
+[features]
+sim = ["zecswap-chain/sim"]
+
 [dev-dependencies]
-axum = "0.8"
 hex = "0.4"
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
-zcash_address.workspace = true
-zecswap-tokens = { path = "../zecswap-tokens", features = ["server"] }

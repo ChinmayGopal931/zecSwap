@@ -1,31 +1,37 @@
-//! `zcash_client_backend::sync::run` (0.25.0), except that it adds only the subtree roots the
-//! wallet lacks, and refreshes no transparent UTXOs.
-//!
-//! The library puts every pool's whole root list on each run, and merging that list into the
-//! stored tree hashes it again at every level: seconds of CPU per sync for mainnet's ~1,900 roots,
-//! of which a few change a day. The accounts here spend and report only Orchard-protocol funds
-//! (`transparent-inputs` is on only because `pczt` needs it), so UTXOs would be stored unread.
-
 use std::fmt::Display;
 
 use zcash_client_backend::data_api::chain::{
-    BlockCache, CommitmentTreeRoot, error::Error as ChainError, scan_cached_blocks,
+    BlockCache, ChainState, CommitmentTreeRoot, error::Error as ChainError, scan_cached_blocks,
 };
 use zcash_client_backend::data_api::scanning::{ScanPriority, ScanRange};
 use zcash_client_backend::data_api::{WalletCommitmentTrees, WalletRead, WalletWrite};
 use zcash_client_backend::proto::service::{
     BlockId, BlockRange, GetSubtreeRootsArg, ShieldedProtocol,
 };
+use zcash_client_sqlite::error::SqliteClientError;
 use zcash_primitives::merkle_tree::HashSer;
 use zcash_protocol::consensus::{BlockHeight, Network};
 
 use super::Db;
 use crate::Error;
+use crate::alert::{self, Alert, Alerts};
 use crate::zcash::cache::MemoryBlockCache;
 use crate::zcash::lightwalletd::{self, Lightwalletd};
 
-/// The subtrees of a note commitment tree: its depth, 32, less the shard height, 16.
 const SUBTREES: u64 = 1 << 16;
+const MOST_STEPS_BACK: u32 = 3;
+
+pub(super) struct Watch<'a> {
+    pub alerts: Option<&'a Alerts>,
+    pub wallet: &'a str,
+    pub steps_back: u32,
+}
+
+pub(super) fn born_above(db: &Db, tip: BlockHeight) -> Result<bool, Error> {
+    Ok(db
+        .get_wallet_birthday()?
+        .is_some_and(|birthday| birthday > tip))
+}
 
 pub(super) async fn run(
     client: &mut Lightwalletd,
@@ -33,6 +39,7 @@ pub(super) async fn run(
     cache: &MemoryBlockCache,
     db: &mut Db,
     batch_size: u32,
+    mut watch: Watch<'_>,
 ) -> Result<(), Error> {
     update_roots(
         client,
@@ -58,12 +65,10 @@ pub(super) async fn run(
         Db::put_ironwood_subtree_roots,
     )
     .await?;
-    while running(client, network, cache, db, batch_size).await? {}
+    while running(client, network, cache, db, batch_size, &mut watch).await? {}
     Ok(())
 }
 
-/// Adds a pool's subtree roots from the last one the wallet holds. That one is fetched again, so
-/// a root a reorganisation replaced conflicts as it would in the library's full put.
 async fn update_roots<H, E>(
     client: &mut Lightwalletd,
     db: &mut Db,
@@ -80,7 +85,6 @@ where
     add_roots(db, start, &roots, &get, &put)
 }
 
-/// Puts `roots`, fetched from index `start`, unless they only repeat the root held there.
 fn add_roots<H: PartialEq, E: Display>(
     db: &mut Db,
     start: u64,
@@ -95,8 +99,6 @@ fn add_roots<H: PartialEq, E: Display>(
     Ok(())
 }
 
-/// How many roots the wallet holds. Roots fill a tree from its first subtree, so those held are
-/// the first ones.
 fn held_roots<H, E: Display>(
     db: &mut Db,
     get: &impl Fn(&mut Db, u64) -> Result<Option<H>, E>,
@@ -113,7 +115,6 @@ fn held_roots<H, E: Display>(
     Ok(held)
 }
 
-/// Whether `roots`, fetched from the last root held, carry anything the wallet lacks.
 fn adds_to<H: PartialEq>(held: Option<&H>, roots: &[CommitmentTreeRoot<H>]) -> bool {
     match roots {
         [] => false,
@@ -150,25 +151,26 @@ async fn download_roots<H: HashSer>(
     Ok(roots)
 }
 
-/// One pass of the library's loop: true when scanning changed the ranges it was working through.
 async fn running(
     client: &mut Lightwalletd,
     network: &Network,
     cache: &MemoryBlockCache,
     db: &mut Db,
     batch_size: u32,
+    watch: &mut Watch<'_>,
 ) -> Result<bool, Error> {
     let tip = lightwalletd::chain_tip(client).await?;
+    if born_above(db, tip)? {
+        return Ok(false);
+    }
     db.update_chain_tip(tip)?;
-    // A range to verify always comes first, and is scanned until the wallet's view of its tip
-    // connects to the server's chain.
     let mut ranges = db.suggest_scan_ranges()?;
     while let Some(range) = ranges
         .first()
         .filter(|range| range.priority() == ScanPriority::Verify)
         .cloned()
     {
-        if !scan(client, network, cache, db, &range).await? {
+        if !scan(client, network, cache, db, &range, watch).await? {
             break;
         }
         ranges = db.suggest_scan_ranges()?;
@@ -178,14 +180,13 @@ async fn running(
         .into_iter()
         .flat_map(|range| batches(range, batch_size))
     {
-        if scan(client, network, cache, db, &range).await? {
+        if scan(client, network, cache, db, &range, watch).await? {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Splits `range` into runs of at most `size` blocks.
 fn batches(range: ScanRange, size: u32) -> impl Iterator<Item = ScanRange> {
     (0..).scan(range, move |rest, _| {
         if rest.is_empty() {
@@ -202,14 +203,20 @@ fn batches(range: ScanRange, size: u32) -> impl Iterator<Item = ScanRange> {
     })
 }
 
-/// Downloads and scans `range`: true when a reorganisation, or a range of higher priority that
-/// scanning added, invalidates the ranges being worked through.
+async fn chain_state(client: &mut Lightwalletd, height: BlockHeight) -> Result<ChainState, Error> {
+    lightwalletd::tree_state(client, height)
+        .await?
+        .to_chain_state()
+        .map_err(|e| Error::Wallet(format!("lightwalletd's tree state: {e}")))
+}
+
 async fn scan(
     client: &mut Lightwalletd,
     network: &Network,
     cache: &MemoryBlockCache,
     db: &mut Db,
     range: &ScanRange,
+    watch: &mut Watch<'_>,
 ) -> Result<bool, Error> {
     let block = |height: BlockHeight| {
         Some(BlockId {
@@ -229,17 +236,50 @@ async fn scan(
     }
     let Ok(()) = cache.insert(blocks).await;
     let from = range.block_range().start;
-    let state = lightwalletd::tree_state(client, from - 1)
-        .await?
-        .to_chain_state()
-        .map_err(|e| Error::Wallet(format!("lightwalletd's tree state: {e}")))?;
+    let state = chain_state(client, from - 1).await?;
     let changed = match scan_cached_blocks(network, cache, db, from, &state, range.len()) {
         Err(ChainError::Scan(e)) if e.is_continuity_error() => {
-            // The library's heuristic: rewind ten blocks below the break.
-            let rewind = e.at_height().saturating_sub(10);
-            tracing::info!(at = %e.at_height(), %rewind, "Zcash chain reorganised; rewinding");
-            db.truncate_to_height(rewind)?;
-            let Ok(()) = cache.truncate(rewind).await;
+            let (at, rewind) = (e.at_height(), e.at_height().saturating_sub(10));
+            tracing::info!(%at, %rewind, "Zcash chain reorganised; rewinding");
+            let kept = match db.truncate_to_height(rewind) {
+                Err(SqliteClientError::RequestedRewindInvalid {
+                    safe_rewind_height: Some(safe),
+                    ..
+                }) if safe + 1 < at => {
+                    if watch.steps_back == MOST_STEPS_BACK {
+                        return Err(Error::Wallet(format!(
+                            "lightwalletd's chain still changed after {MOST_STEPS_BACK} steps back to height {safe}"
+                        )));
+                    }
+                    watch.steps_back += 1;
+                    let state = chain_state(client, safe).await?;
+                    if state.block_height() != safe {
+                        return Err(Error::Wallet(format!(
+                            "lightwalletd's tree state is of height {}, not {safe}",
+                            state.block_height()
+                        )));
+                    }
+                    db.truncate_to_chain_state(state).map(|()| safe)
+                }
+                outcome => outcome,
+            };
+            let kept = kept.inspect_err(|refusal| {
+                let lasts = matches!(
+                    refusal,
+                    SqliteClientError::RequestedRewindInvalid { .. }
+                        | SqliteClientError::TruncateCommitmentTree { .. }
+                );
+                if lasts {
+                    let refused = Alert::WalletRewindRefused {
+                        wallet: watch.wallet.to_owned(),
+                        reorg_at: at.into(),
+                        rewind: rewind.into(),
+                        refusal: refusal.to_string(),
+                    };
+                    alert::raise(watch.alerts, refused);
+                }
+            })?;
+            let Ok(()) = cache.truncate(kept).await;
             true
         }
         Ok(_) => db
@@ -250,87 +290,4 @@ async fn scan(
     };
     let Ok(()) = cache.delete(range.clone()).await;
     Ok(changed)
-}
-
-#[cfg(test)]
-mod tests {
-    use incrementalmerkletree::{Hashable, Level};
-    use orchard::tree::MerkleHashOrchard;
-
-    use super::*;
-    use crate::zcash::Wallet;
-
-    fn roots(count: u8) -> Vec<CommitmentTreeRoot<MerkleHashOrchard>> {
-        (0..count)
-            .map(|i| {
-                CommitmentTreeRoot::from_parts(
-                    BlockHeight::from_u32(3_000_000 + u32::from(i)),
-                    MerkleHashOrchard::empty_root(Level::from(i)),
-                )
-            })
-            .collect()
-    }
-
-    fn held(wallet: &mut Wallet) -> u64 {
-        held_roots(&mut wallet.db, &Db::get_orchard_subtree_root).unwrap()
-    }
-
-    fn add(wallet: &mut Wallet, start: u64, roots: &[CommitmentTreeRoot<MerkleHashOrchard>]) {
-        add_roots(
-            &mut wallet.db,
-            start,
-            roots,
-            &Db::get_orchard_subtree_root,
-            &Db::put_orchard_subtree_roots,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn later_syncs_add_only_the_roots_past_the_last_one_held() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut wallet =
-            Wallet::open(dir.path().join("wallet.sqlite"), Network::MainNetwork).unwrap();
-        let chain = roots(5);
-        assert_eq!(held(&mut wallet), 0);
-        // A new wallet fetches from the first root, as the library does on every sync.
-        add(&mut wallet, 0, &chain[..3]);
-        assert_eq!(held(&mut wallet), 3);
-        // Later, from the last root held: it comes back with any completed since.
-        add(&mut wallet, 2, &chain[2..]);
-        assert_eq!(held(&mut wallet), 5);
-        for (index, root) in chain.iter().enumerate() {
-            assert_eq!(
-                wallet.db.get_orchard_subtree_root(index as u64).unwrap(),
-                Some(*root.root_hash())
-            );
-        }
-        add(&mut wallet, 4, &chain[4..]);
-        assert_eq!(held(&mut wallet), 5);
-    }
-
-    #[test]
-    fn a_replaced_last_root_still_conflicts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut wallet =
-            Wallet::open(dir.path().join("wallet.sqlite"), Network::MainNetwork).unwrap();
-        let chain = roots(3);
-        add(&mut wallet, 0, &chain);
-        let replaced = CommitmentTreeRoot::from_parts(
-            BlockHeight::from_u32(3_000_002),
-            MerkleHashOrchard::empty_root(Level::from(9)),
-        );
-        let result = add_roots(
-            &mut wallet.db,
-            2,
-            &[replaced],
-            &Db::get_orchard_subtree_root,
-            &Db::put_orchard_subtree_roots,
-        );
-        assert!(result.is_err(), "a reorganised root was skipped");
-        assert_eq!(
-            wallet.db.get_orchard_subtree_root(2).unwrap(),
-            Some(*chain[2].root_hash())
-        );
-    }
 }

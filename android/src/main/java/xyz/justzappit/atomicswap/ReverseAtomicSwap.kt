@@ -2,9 +2,7 @@ package xyz.justzappit.atomicswap
 
 import java.math.BigInteger
 
-/** Reverse swaps reuse AtomicSwap's acceptance, joint account, and Railgun note derivation. */
 object ReverseAtomicSwap {
-    /** Commits the refund to its note in [railgun]'s wallet. */
     fun signOpen(
         key: SwapKey,
         railgun: RailgunSeed,
@@ -27,7 +25,6 @@ object ReverseAtomicSwap {
             terms.fundingDeadline,
         )
 
-    /** Authorize only after independently scanning the joint account and confirming the full ZEC deposit. */
     fun signReady(
         key: SwapKey,
         deployment: Deployment,
@@ -84,7 +81,6 @@ object ReverseAtomicSwap {
             deadline,
         )
 
-    /** Use the maker's share from a verified Claimed escrow to sweep the received ZEC home. */
     fun signReceive(
         key: SwapKey,
         makerShare: ByteArray,

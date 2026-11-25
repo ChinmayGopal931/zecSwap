@@ -1,9 +1,3 @@
-// Syncs the Railgun wallet a seed opens on Ethereum Sepolia, or on Ethereum with
-// RAILGUN_NETWORK=mainnet, with Railgun's own wallet SDK, and prints its balances by screening
-// status: payouts land where Railgun's wallets find them, and clear screening. The seed is read
-// from a file and never printed.
-//   ETH_SEPOLIA_RPC_URL=… node balance.cjs <seed-file> [scan-from-block]
-//   RAILGUN_NETWORK=mainnet ETH_RPC_URL=… node balance.cjs <seed-file> [scan-from-block]
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -18,7 +12,6 @@ const NETWORK = MAINNET ? NetworkName.Ethereum : NetworkName.EthereumSepolia;
 const RPC = MAINNET ? 'ETH_RPC_URL' : 'ETH_SEPOLIA_RPC_URL';
 const POI_NODE = 'https://ppoi.fdi.network/';
 
-/** Runs `refresh` and returns the balances by bucket it reports, all in one pass. */
 function balancesAfter(refresh) {
   return new Promise((resolve, reject) => {
     const balances = new Map();
@@ -30,7 +23,6 @@ function balancesAfter(refresh) {
   });
 }
 
-/** Artifacts are for proving, which a balance never needs; they go to a scratch directory. */
 function scratchArtifacts() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'railgun-artifacts-'));
   const at = (file) => path.join(root, file);
@@ -76,7 +68,6 @@ async function main() {
   if (scan !== 'Complete') {
     throw new Error(`the note tree scan ended ${scan}: try an RPC that serves wider log ranges`);
   }
-  // A new wallet finds its notes before it asks the screening node what became of them.
   await W.refreshReceivePOIsForWallet(TXIDVersion.V2_PoseidonMerkle, NETWORK, info.id);
   const balances = await balancesAfter(() => W.refreshBalances(chain, [info.id]));
 
