@@ -7549,7 +7549,15 @@ dependencies = [
  "zecswap-client",
  "zecswap-core",
  "zecswap-railgun",
+ "zecswap-sim-evm",
  "zip32",
+]
+
+[[package]]
+name = "zecswap-sim-evm"
+version = "0.1.0"
+dependencies = [
+ "revm",
 ]
 
 [[package]]

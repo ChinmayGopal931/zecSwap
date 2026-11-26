@@ -9,10 +9,10 @@ use alloy::rpc::types::{Filter, Transaction as RpcTransaction, TransactionReques
 use revm::context::result::{ExecutionResult, Output};
 use revm::context::{BlockEnv, TxEnv};
 use revm::database::{CacheDB, EmptyDB};
-use revm::primitives::hardfork::SpecId;
-use revm::state::{AccountInfo, EvmState};
-use revm::{Context, DatabaseCommit, DatabaseRef, ExecuteEvm, MainBuilder, MainContext};
+use revm::state::AccountInfo;
+use revm::{DatabaseCommit, DatabaseRef};
 use serde_json::{Value, json};
+use zecswap_sim_evm::{State, run};
 
 use crate::seed::Seed;
 
@@ -21,8 +21,6 @@ const GAS_LIMIT: u64 = 60_000_000;
 const GWEI: u64 = 1_000_000_000;
 const TIP: u64 = GWEI / 10;
 pub(crate) const PROTECT: u64 = 25;
-
-type State = CacheDB<EmptyDB>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Weather {
@@ -188,39 +186,6 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Node(Arc<Mutex<Inner>>);
-
-struct Ran {
-    result: ExecutionResult,
-    state: EvmState,
-}
-
-fn run(
-    state: &State,
-    chain_id: u64,
-    block: &BlockEnv,
-    tx: TxEnv,
-    relaxed: bool,
-) -> Result<Ran, String> {
-    let mut evm = Context::mainnet()
-        .with_ref_db(state)
-        .with_block(block.clone())
-        .modify_cfg_chained(|cfg| {
-            cfg.chain_id = chain_id;
-            cfg.spec = SpecId::OSAKA;
-            cfg.tx_gas_limit_cap = Some(u64::MAX);
-            if relaxed {
-                cfg.disable_base_fee = true;
-                cfg.disable_balance_check = true;
-                cfg.disable_nonce_check = true;
-            }
-        })
-        .build_mainnet();
-    let ran = evm.transact(tx).map_err(|e| e.to_string())?;
-    Ok(Ran {
-        result: ran.result,
-        state: ran.state,
-    })
-}
 
 fn env(number: u64, timestamp: u64, base_fee: u64) -> BlockEnv {
     BlockEnv {

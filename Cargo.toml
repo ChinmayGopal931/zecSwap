@@ -43,6 +43,9 @@ opt-level = 3
 [profile.test.package.zecswap-sim]
 opt-level = 1
 
+[profile.test.package.zecswap-sim-evm]
+opt-level = 3
+
 [profile.test.package.zecswap-railgun]
 opt-level = 3
 

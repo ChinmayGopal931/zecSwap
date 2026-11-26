@@ -28,6 +28,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
 | `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
+| `crates/zecswap-sim-evm` | The simulated node's EVM: one call or transaction run by revm on a block's state, in a crate of its own so that it builds optimised (Testing, Its seams) |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
 | `scripts/` | `build-android.sh` (the Android libraries), `deploy-contract.sh` (a mainnet contract) |
@@ -264,11 +265,14 @@ No hand-written example tests (Conventions). These stand in for them:
   `DeadlineChannel`, which any `Channel` becomes, so one over an in-memory duplex stands in for a
   URL (the endpoint's own settings, `zcash::connect`'s, are not run). `zecswap-chain` builds at
   `opt-level = 3` under test: its proving code, generic over the randomness the wallet gives it, is
-  compiled in that crate and runs seven times slower unoptimised. Waits measure with tokio's clock,
-  so a paused runtime moves them. Not seeded: the OS randomness in the client's proofs, which no
-  decision depends on. A whole-workspace build turns the feature on for every crate, inert until one
-  of these is called; a `-p` build, as the scripts and `cargo run -p zecswap-cli` make, or one that
-  names no crate (`default-members`) leaves it out.
+  compiled in that crate and runs seven times slower unoptimised. `zecswap-sim-evm` does for the
+  same reason: revm's interpreter is generic over the state it runs on, so it is compiled where it
+  is called, and `zecswap-sim` itself builds at `opt-level = 1` (at 3 it compiles for over ten
+  minutes, which every mutant would pay). Waits measure with tokio's clock, so a paused runtime
+  moves them. Not seeded: the OS randomness in the client's proofs, which no decision depends on. A
+  whole-workspace build turns the feature on for every crate, inert until one of these is called; a
+  `-p` build, as the scripts and `cargo run -p zecswap-cli` make, or one that names no crate
+  (`default-members`) leaves it out.
 - **Not simulated yet**, and so without tests beyond the known answers: tokens,
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable
