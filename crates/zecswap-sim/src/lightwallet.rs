@@ -713,10 +713,12 @@ impl World {
             let mut due = Vec::new();
             {
                 let saved = self.actor.saved.borrow();
+                let paid = self.paid.borrow();
+                let owed = |key: (usize, usize)| !paid.contains_key(&key);
                 let own = saved.own.as_ref();
                 for (n, (delay, value)) in self.plan.funds.iter().enumerate() {
                     let ripe = own.filter(|(_, since)| since.elapsed().as_secs() >= *delay);
-                    if let Some((address, _)) = ripe {
+                    if let Some((address, _)) = ripe.filter(|_| owed((FUNDS, n))) {
                         due.push(((FUNDS, n), receiver(address, kind), *value));
                     }
                 }
@@ -726,11 +728,14 @@ impl World {
                             let Some(since) = saved.imported[index] else {
                                 continue;
                             };
-                            let to = self.keys.joints[index].account.deposit_address();
-                            let ripe = notes.iter().enumerate();
-                            let ripe =
-                                ripe.filter(|(_, (delay, _))| since.elapsed().as_secs() >= *delay);
-                            due.extend(ripe.map(|(n, (_, value))| ((index, n), to, *value)));
+                            let ripe = notes.iter().enumerate().filter(|(n, (delay, _))| {
+                                since.elapsed().as_secs() >= *delay && owed((index, *n))
+                            });
+                            let mut ripe = ripe.peekable();
+                            if ripe.peek().is_some() {
+                                let to = self.keys.joints[index].account.deposit_address();
+                                due.extend(ripe.map(|(n, (_, value))| ((index, n), to, *value)));
+                            }
                         }
                         Errand::Fee {
                             at,
@@ -738,7 +743,7 @@ impl World {
                             value,
                         } => {
                             let ripe = own.is_some() && self.actor.start.elapsed().as_secs() >= *at;
-                            if ripe {
+                            if ripe && owed((index, 0)) {
                                 let to = self.keys.fee_address(*slot);
                                 due.push(((index, 0), to, *value));
                             }
