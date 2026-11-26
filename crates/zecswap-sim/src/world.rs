@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 use std::task::{Context, Poll};
 
 use alloy::primitives::{Address, B256, Bytes, U256, address};
@@ -9,7 +11,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use zecswap_chain::evm::{simulate_wall, wall_now};
-use zecswap_core::{PublicShare, SecretShare, SwapContext, Terms};
+use zecswap_core::{NetworkType, PublicShare, SecretShare, SwapContext, Terms, derive_user_keys};
 
 use crate::node::Node;
 use crate::seed::Seed;
@@ -288,6 +290,23 @@ impl Chain {
                 (note.from, note.npk, note.value.to())
             })
             .collect()
+    }
+}
+
+#[derive(Default)]
+pub struct Shares(Mutex<BTreeMap<u32, [u8; 32]>>);
+
+impl Shares {
+    pub fn of(&self, user_seed: &[u8; 64], index: u32) -> Option<SecretShare> {
+        let mut known = self.0.lock().unwrap();
+        let word = match known.get(&index) {
+            Some(word) => *word,
+            None => {
+                let keys = derive_user_keys(user_seed, NetworkType::Test, 0, index).ok()?;
+                *known.entry(index).or_insert(keys.share.to_be_bytes())
+            }
+        };
+        SecretShare::from_be_bytes(&word).ok()
     }
 }
 

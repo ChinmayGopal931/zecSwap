@@ -18,7 +18,7 @@ use crate::panics::{self, Named};
 use crate::relayer::{FEE, Relayer, RelayerDoor, Service};
 use crate::seed::Seed;
 use crate::wallet::{End, Saved, Wallet, Way};
-use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Skewed, UNIT, key};
+use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Shares, Skewed, UNIT, key};
 use crate::zcash::Zcash;
 
 const ZCASH_BLOCK: Duration = Duration::from_secs(25);
@@ -346,6 +346,7 @@ struct World {
     maker: Arc<Maker>,
     wallet: Arc<Wallet>,
     user_seed: [u8; 64],
+    shares: Shares,
     disagreements: Arc<Mutex<Vec<String>>>,
     alarms: Arc<Alarms>,
 }
@@ -432,6 +433,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         maker: maker.clone(),
         wallet: wallet.clone(),
         user_seed,
+        shares: Shares::default(),
         disagreements: Arc::default(),
         alarms,
     });
@@ -464,8 +466,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
 impl World {
     fn z(&self, saved: &Saved) -> Option<SecretShare> {
         let index = saved.quoted.as_ref()?.index;
-        let keys = derive_user_keys(&self.user_seed, NetworkType::Test, 0, index).ok()?;
-        Some(keys.share)
+        self.shares.of(&self.user_seed, index)
     }
 
     async fn observe(&self) {
