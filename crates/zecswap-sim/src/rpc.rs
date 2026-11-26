@@ -10,10 +10,10 @@ use alloy::rpc::json_rpc::{
 use alloy::transports::{
     BoxTransport, IntoBoxTransport, TransportError, TransportErrorKind, TransportFut,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use tower_service::Service;
 
-use crate::node::{Node, Refusal};
+use crate::node::{Node, Refusal, raw};
 
 const NODE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,10 +48,6 @@ impl Node {
 }
 
 impl Rpc {
-    fn raw(value: &impl serde::Serialize) -> Box<serde_json::value::RawValue> {
-        serde_json::value::to_raw_value(value).expect("a JSON value")
-    }
-
     async fn serve(&self, request: SerializedRequest) -> Result<Response, TransportError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let (seed, weather) = self.node.weather();
@@ -84,10 +80,10 @@ impl Rpc {
         let answer = match (self.private, request.method()) {
             (Some(blocks), "eth_sendRawTransaction") => {
                 match serde_json::from_value::<Bytes>(params[0].clone()) {
-                    Ok(raw) => self
+                    Ok(sent) => self
                         .node
-                        .take_privately(&raw, blocks)
-                        .map(|hash| json!(hash)),
+                        .take_privately(&sent, blocks)
+                        .map(|hash| raw(&hash)),
                     Err(e) => Err(Refusal {
                         code: -32602,
                         message: e.to_string(),
@@ -111,11 +107,11 @@ impl Rpc {
             return Err(TransportErrorKind::custom_str("the connection was reset"));
         }
         let payload = match answer {
-            Ok(value) => ResponsePayload::Success(Self::raw(&value)),
+            Ok(answer) => ResponsePayload::Success(answer),
             Err(refusal) => ResponsePayload::Failure(ErrorPayload {
                 code: refusal.code,
                 message: refusal.message.into(),
-                data: refusal.data.map(|data| Self::raw(&data)),
+                data: refusal.data.map(|data| raw(&data)),
             }),
         };
         Ok(Response {

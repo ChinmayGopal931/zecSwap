@@ -11,6 +11,7 @@ use revm::context::{BlockEnv, TxEnv};
 use revm::database::{CacheDB, EmptyDB};
 use revm::state::AccountInfo;
 use revm::{DatabaseCommit, DatabaseRef};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use zecswap_sim_evm::{State, run};
 
@@ -200,6 +201,10 @@ fn env(number: u64, timestamp: u64, base_fee: u64) -> BlockEnv {
 
 fn quantity(value: impl std::fmt::LowerHex) -> Value {
     Value::String(format!("{value:#x}"))
+}
+
+pub(crate) fn raw(value: &impl serde::Serialize) -> Box<RawValue> {
+    serde_json::value::to_raw_value(value).expect("a JSON value")
 }
 
 impl Inner {
@@ -689,7 +694,12 @@ impl Inner {
         })
     }
 
-    fn answer(&mut self, method: &str, params: Value, stale: bool) -> Result<Value, Refusal> {
+    fn answer(
+        &mut self,
+        method: &str,
+        params: Value,
+        stale: bool,
+    ) -> Result<Box<RawValue>, Refusal> {
         let arg = |index: usize| params.get(index).cloned().unwrap_or(Value::Null);
         fn read<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Refusal> {
             serde_json::from_value(value).map_err(Refusal::params)
@@ -701,7 +711,7 @@ impl Inner {
             }
         };
         let pending = |index: usize| arg(index) == json!("pending");
-        Ok(match method {
+        Ok(raw(&match method {
             "eth_chainId" => quantity(self.chain_id),
             "eth_blockNumber" => quantity(self.resolve(None, stale)?.number),
             "eth_gasPrice" => quantity(self.head().base_fee + TIP),
@@ -772,7 +782,8 @@ impl Inner {
                     false => self.resolve(at(1)?, stale)?,
                 };
                 let result = Self::reverted(self.simulate(&request, block, None)?)?;
-                json!(result.into_output().unwrap_or_default())
+                let returned = format!("\"{}\"", result.into_output().unwrap_or_default());
+                return Ok(RawValue::from_string(returned).expect("a JSON string"));
             }
             "eth_estimateGas" => {
                 let request: TransactionRequest = read(arg(0))?;
@@ -790,13 +801,13 @@ impl Inner {
             "eth_getTransactionByHash" => {
                 let hash: B256 = read(arg(0))?;
                 let Some(tx) = self.seen.get(&hash) else {
-                    return Ok(Value::Null);
+                    return Ok(raw(&Value::Null));
                 };
                 let located = self.located(hash);
                 if located.is_none()
                     && (tx.private || !self.pool.iter().any(|pooled| pooled.tx.hash == hash))
                 {
-                    return Ok(Value::Null);
+                    return Ok(raw(&Value::Null));
                 }
                 let shown = RpcTransaction {
                     inner: Recovered::new_unchecked(tx.envelope.clone(), tx.from),
@@ -845,7 +856,7 @@ impl Inner {
                     data: None,
                 });
             }
-        })
+        }))
     }
 }
 
@@ -1146,7 +1157,7 @@ impl Node {
         method: &str,
         params: Value,
         stale: bool,
-    ) -> Result<Value, Refusal> {
+    ) -> Result<Box<RawValue>, Refusal> {
         self.0.lock().unwrap().answer(method, params, stale)
     }
 
