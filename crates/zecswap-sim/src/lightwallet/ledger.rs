@@ -595,7 +595,13 @@ impl Inner {
                 self.shards[slot(leaf.pool)].push((full, height));
             }
         }
-        let roots = [root(&trees.orchard), root(&trees.ironwood)];
+        let mut roots = self.tip().roots;
+        for pool in [ValuePool::Orchard, ValuePool::Ironwood] {
+            let mut leaves = entries.iter().flat_map(|entry| &entry.leaves);
+            if leaves.any(|leaf| leaf.pool == pool) {
+                roots[slot(pool)] = root(trees.of(pool));
+            }
+        }
         let hash = self.hash(height);
         self.blocks.push(Block {
             height,
