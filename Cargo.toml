@@ -33,6 +33,10 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 lto = true
 codegen-units = 1
 
+[profile.test]
+debug = false
+incremental = false
+
 [profile.test.package."*"]
 opt-level = 3
 
