@@ -1,7 +1,8 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Write};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use alloy::primitives::keccak256;
 use zecswap_sim::{End, Plan, Report, deposits, lightwallet, reverse, run, run_with};
 
 fn seeds(var: &str, default: std::ops::Range<u64>) -> Vec<u64> {
@@ -78,6 +79,32 @@ fn tally(trace: &[String]) -> String {
     )
 }
 
+fn digest<P: Debug, E: Debug>(report: &Report<P, E>) -> String {
+    let mut text = format!(
+        "plan {:?}\nended {:?} stage {:?}\n",
+        report.plan, report.ended, report.stage
+    );
+    for (what, lines) in [("trace", &report.trace), ("failures", &report.failures)] {
+        let _ = writeln!(text, "{what} {}", lines.len());
+        for line in lines {
+            let _ = writeln!(text, "{line}");
+        }
+    }
+    let hash = keccak256(text.as_bytes());
+    format!(
+        "{} trace {} failures {}",
+        &hash.to_string()[2..34],
+        report.trace.len(),
+        report.failures.len()
+    )
+}
+
+fn mark<P: Debug, E: Debug>(kind: &str, report: &Report<P, E>) {
+    if std::env::var("ZECSWAP_SIM_DIGEST").is_ok() {
+        println!("digest of {kind} {}: {}", report.seed, digest(report));
+    }
+}
+
 fn replays<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>, some: std::ops::Range<u64>) {
     for seed in seeds("ZECSWAP_SIM_REPLAY", some) {
         let (first, second) = (run(seed), run(seed));
@@ -144,6 +171,7 @@ fn survey() {
             tally(&report.trace),
             report.failures.join("; "),
         );
+        mark("seed", &report);
     }
 }
 
@@ -213,6 +241,7 @@ fn reverse_survey() {
             tally(&report.trace),
             report.failures.join("; "),
         );
+        mark("reverse seed", &report);
     }
 }
 
@@ -283,6 +312,7 @@ fn deposit_survey() {
             tally(&report.trace),
             report.failures.join("; "),
         );
+        mark("deposit seed", &report);
     }
 }
 
@@ -341,6 +371,7 @@ fn zcash_survey() {
             tally(&report.trace),
             report.failures.join("; "),
         );
+        mark("zcash seed", &report);
     }
 }
 
