@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use orchard::ValuePool;
@@ -21,7 +21,7 @@ use zcash_address::unified::{self, Encoding, Receiver};
 use zcash_protocol::consensus::{
     BlockHeight, BranchId, Network, NetworkType, NetworkUpgrade, Parameters,
 };
-use zecswap_chain::zcash::{Prover, SWEEP_FEE_CEILING};
+use zecswap_chain::zcash::{Prover, SWEEP_FEE_CEILING, Wallet};
 use zecswap_core::{SweepIntent, sign_pczt_bytes};
 
 use crate::panics;
@@ -582,6 +582,24 @@ impl Scratch {
         std::fs::create_dir_all(&path).expect("a scratch directory");
         Self(path)
     }
+
+    fn wallet(&self, network: Network) -> PathBuf {
+        static MIGRATED: [OnceLock<Option<Vec<u8>>>; 2] = [OnceLock::new(), OnceLock::new()];
+        let path = self.0.join("wallet.sqlite");
+        let migrated = &MIGRATED[usize::from(matches!(network, Network::MainNetwork))];
+        let migrated = migrated.get_or_init(|| {
+            let opened = Wallet::open(&path, network).is_ok();
+            let file = opened.then(|| std::fs::read(&path).ok()).flatten();
+            let _ = std::fs::remove_file(&path);
+            file
+        });
+        if let Some(file) = migrated
+            && std::fs::write(&path, file).is_err()
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        path
+    }
 }
 
 impl Drop for Scratch {
@@ -648,7 +666,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         ledger: ledger.clone(),
         server: server.clone(),
         keys: keys.clone(),
-        path: scratch.0.join("wallet.sqlite"),
+        path: scratch.wallet(network),
         start,
         saved: Rc::new(RefCell::new(saved)),
         failures: Rc::default(),
