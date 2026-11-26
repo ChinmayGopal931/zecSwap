@@ -254,27 +254,31 @@ No hand-written example tests (Conventions). These stand in for them:
   seed does: run the script again and replace those seeds. For a run with open findings the script
   first counts the seeds that fail unchanged and leaves them out. The script touches every file it
   restores, so cargo rebuilds it: a mutant never stays compiled in after it is undone.
-- **Its seams**, compiled only with the `sim` feature of chain and client: `evm::simulate_wall` (the
-  wall clock, per task with `world::Skewed`), `Settlement::over` and `broadcast_privately_over` (an
-  alloy transport in place of a URL), `MakerApi::over` and `RelayerApi::over` (a `Wire` in place of
-  the network), `ReverseUser::ready_with_spendable` (`ready` from its deposit check on, on a
-  spendable balance the caller gives in place of the Zcash wallet's; `ready` runs the same code
-  after its wallet sync), and `Settlement::forget_sends` (what a restart forgets: the lowest private
-  nonce and what the alerts watch). Deposits need none to run, as `Depositor` takes a `Settlement`
-  and a `RelayerApi`; with the feature a `Depositor` keeps each address it has derived, since every
-  scan derives twenty from the seed again, which was three quarters of a deposit seed's time. Nor
-  does the Zcash wallet need one: `Lightwalletd` is a tonic client over a
-  `DeadlineChannel`, which any `Channel` becomes, so one over an in-memory duplex stands in for a
-  URL (the endpoint's own settings, `zcash::connect`'s, are not run). `zecswap-chain` builds at
+- **Its seams**, compiled only with the `sim` feature of chain, client and railgun:
+  `evm::simulate_wall` (the wall clock, per task with `world::Skewed`), `Settlement::over` and
+  `broadcast_privately_over` (an alloy transport in place of a URL), `MakerApi::over` and
+  `RelayerApi::over` (a `Wire` in place of the network), `ReverseUser::ready_with_spendable`
+  (`ready` from its deposit check on, on a spendable balance the caller gives in place of the Zcash
+  wallet's; `ready` runs the same code after its wallet sync), and `Settlement::forget_sends` (what
+  a restart forgets: the lowest private nonce and what the alerts watch). Deposits need none to
+  run, as `Depositor` takes a `Settlement` and a `RelayerApi`; with the feature a `Depositor` keeps
+  each address it has derived, since every scan derives twenty from the seed again, which was three
+  quarters of a deposit seed's time. Likewise `zecswap_railgun::Keys::from_seed` gives a thread the
+  keys it derived last, when asked for the same seed and index again: each `User` a wallet builds
+  derives them, a third of a forward seed's time. Nor does the Zcash wallet need a seam:
+  `Lightwalletd` is a tonic client over a `DeadlineChannel`, which any `Channel` becomes, so one
+  over an in-memory duplex stands in for a URL (the endpoint's own settings, `zcash::connect`'s,
+  are not run). `zecswap-chain` builds at
   `opt-level = 3` under test: its proving code, generic over the randomness the wallet gives it, is
   compiled in that crate and runs seven times slower unoptimised. `zecswap-sim-evm` does for the
   same reason: revm's interpreter is generic over the state it runs on, so it is compiled where it
   is called, and `zecswap-sim` itself builds at `opt-level = 1` (at 3 it compiles for over ten
   minutes, which every mutant would pay). Waits measure with tokio's clock, so a paused runtime
   moves them. Not seeded: the OS randomness in the client's proofs, which no decision depends on. A
-  whole-workspace build turns the feature on for every crate, inert until one of these is called; a
-  `-p` build, as the scripts and `cargo run -p zecswap-cli` make, or one that names no crate
-  (`default-members`) leaves it out.
+  whole-workspace build turns the feature on for every crate: the two that remember answer every
+  caller with what the derivation gives, and the rest are inert until called; a `-p` build, as the
+  scripts and `cargo run -p zecswap-cli` make, or one that names no crate (`default-members`)
+  leaves it out.
 - **Not simulated yet**, and so without tests beyond the known answers: tokens,
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable

@@ -22,6 +22,9 @@ sha2 = "0.10"
 sha3 = "0.10"
 zeroize.workspace = true
 
+[features]
+sim = []
+
 [dev-dependencies]
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
