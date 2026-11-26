@@ -260,8 +260,10 @@ No hand-written example tests (Conventions). These stand in for them:
   the network), `ReverseUser::ready_with_spendable` (`ready` from its deposit check on, on a
   spendable balance the caller gives in place of the Zcash wallet's; `ready` runs the same code
   after its wallet sync), and `Settlement::forget_sends` (what a restart forgets: the lowest private
-  nonce and what the alerts watch). Deposits need none: `Depositor` takes a `Settlement` and a
-  `RelayerApi`. Nor does the Zcash wallet: `Lightwalletd` is a tonic client over a
+  nonce and what the alerts watch). Deposits need none to run, as `Depositor` takes a `Settlement`
+  and a `RelayerApi`; with the feature a `Depositor` keeps each address it has derived, since every
+  scan derives twenty from the seed again, which was three quarters of a deposit seed's time. Nor
+  does the Zcash wallet need one: `Lightwalletd` is a tonic client over a
   `DeadlineChannel`, which any `Channel` becomes, so one over an in-memory duplex stands in for a
   URL (the endpoint's own settings, `zcash::connect`'s, are not run). `zecswap-chain` builds at
   `opt-level = 3` under test: its proving code, generic over the randomness the wallet gives it, is
