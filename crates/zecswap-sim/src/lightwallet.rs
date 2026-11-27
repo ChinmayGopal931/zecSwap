@@ -1,5 +1,5 @@
-mod ledger;
-mod server;
+pub(crate) mod ledger;
+pub(crate) mod server;
 mod signer;
 mod wallet;
 
@@ -42,16 +42,16 @@ const SEASON: u32 = 13;
 const STALE: Duration = Duration::from_secs(24 * 60 * 60);
 const FUNDS: usize = usize::MAX;
 
-static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
+pub(crate) static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
 
-fn unified(address: orchard::Address, network: NetworkType) -> String {
+pub(crate) fn unified(address: orchard::Address, network: NetworkType) -> String {
     let receiver = Receiver::Orchard(address.to_raw_address_bytes());
     unified::Address::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(receiver)])
         .expect("a lone Orchard receiver is a unified address")
         .encode(&network)
 }
 
-fn receiver(address: &str, network: NetworkType) -> orchard::Address {
+pub(crate) fn receiver(address: &str, network: NetworkType) -> orchard::Address {
     zecswap_core::SweepIntent::recipient(address, network).expect("an Orchard receiver")
 }
 
@@ -548,7 +548,7 @@ pub struct Ended {
     pub audited: bool,
 }
 
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
     fn shaped(name: &str) -> bool {
@@ -557,7 +557,7 @@ impl Scratch {
         numbers.split('-').count() == 3 && numbers.split('-').all(digits)
     }
 
-    fn new(seed: Seed) -> Self {
+    pub(crate) fn new(seed: Seed) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let ours = format!("zecswap-sim-{}-", std::process::id());
         let stale = |entry: &std::fs::DirEntry| {
@@ -583,7 +583,7 @@ impl Scratch {
         Self(path)
     }
 
-    fn wallet(&self, network: Network) -> PathBuf {
+    pub(crate) fn wallet(&self, network: Network) -> PathBuf {
         static MIGRATED: [OnceLock<Option<Vec<u8>>>; 2] = [OnceLock::new(), OnceLock::new()];
         let path = self.0.join("wallet.sqlite");
         let migrated = &MIGRATED[usize::from(matches!(network, Network::MainNetwork))];

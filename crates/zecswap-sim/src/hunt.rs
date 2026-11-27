@@ -12,7 +12,7 @@ use alloy::primitives::keccak256;
 use serde::{Deserialize, Serialize};
 
 use crate::run::Report;
-use crate::{End, Plan, deposits, guards, lightwallet, reach, reverse};
+use crate::{End, Plan, cli, deposits, guards, lightwallet, reach, reverse};
 
 const TOLD_EVERY: Duration = Duration::from_secs(5);
 const SHOWN: usize = 12;
@@ -28,15 +28,17 @@ pub enum Kind {
     Deposits,
     Zcash,
     Guards,
+    Cli,
 }
 
 impl Kind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Forward,
         Self::Reverse,
         Self::Deposits,
         Self::Zcash,
         Self::Guards,
+        Self::Cli,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +48,7 @@ impl Kind {
             Self::Deposits => "deposits",
             Self::Zcash => "zcash",
             Self::Guards => "guards",
+            Self::Cli => "cli",
         }
     }
 
@@ -60,6 +63,7 @@ impl Kind {
             Self::Deposits => "deposit seed",
             Self::Zcash => "zcash seed",
             Self::Guards => "guard seed",
+            Self::Cli => "cli seed",
         }
     }
 
@@ -70,6 +74,7 @@ impl Kind {
             Self::Deposits => "deposit_story",
             Self::Zcash => "zcash_story",
             Self::Guards => "guard_story",
+            Self::Cli => "cli_story",
         };
         let steps = match steps.is_empty() {
             true => String::new(),
@@ -87,6 +92,7 @@ impl Kind {
             Self::Deposits => Outcome::of(&deposits::run(seed)),
             Self::Zcash => Outcome::of(&lightwallet::run(seed)),
             Self::Guards => Outcome::of(&guards::run(seed)),
+            Self::Cli => Outcome::of(&cli::run(seed)),
         }
     }
 
@@ -97,6 +103,7 @@ impl Kind {
             Self::Deposits => reach::deposits_all(),
             Self::Zcash => reach::zcash_all(),
             Self::Guards => reach::guards_all(),
+            Self::Cli => reach::cli_all(),
         }
     }
 }
@@ -259,6 +266,26 @@ impl Told for Report<guards::Plan, guards::Ended> {
 
     fn reached(&self) -> (Vec<u16>, Vec<String>) {
         reach::guards(self)
+    }
+}
+
+impl Told for Report<cli::Plan, cli::Ended> {
+    const KIND: Kind = Kind::Cli;
+
+    fn line(&self) -> String {
+        format!(
+            "cli seed {}: {} -> {:?} stage {:?} | {} | {}",
+            self.seed,
+            self.plan.brief(),
+            self.ended,
+            self.stage,
+            tally(&self.trace),
+            self.failures.join("; "),
+        )
+    }
+
+    fn reached(&self) -> (Vec<u16>, Vec<String>) {
+        reach::cli(self)
     }
 }
 

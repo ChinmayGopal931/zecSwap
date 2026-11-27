@@ -10,13 +10,13 @@ use crate::store::Store;
 
 const PENDING: &str = "deposit.json";
 
-pub(crate) struct DepositArgs {
-    pub(crate) relayer: String,
-    pub(crate) rpc: String,
-    pub(crate) contract: Address,
-    pub(crate) token: Address,
-    pub(crate) max_fee: u128,
-    pub(crate) max_fee_bps: u32,
+pub struct DepositArgs {
+    pub relayer: String,
+    pub rpc: String,
+    pub contract: Address,
+    pub token: Address,
+    pub max_fee: u128,
+    pub max_fee_bps: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -25,7 +25,7 @@ struct Pending {
     request: ShieldDeposit,
 }
 
-pub(crate) async fn run(store: &Store, network: Network, args: DepositArgs) -> Result<()> {
+pub async fn run(store: &Store, network: Network, args: DepositArgs) -> Result<()> {
     let seed = store.seed()?;
     let chain = Settlement::read_only(&args.rpc, args.contract)?;
     let deployment = DepositDeployment {
@@ -39,6 +39,10 @@ pub(crate) async fn run(store: &Store, network: Network, args: DepositArgs) -> R
     };
     let relayer = RelayerApi::new(args.relayer)?;
     let wallet = Depositor::new(&seed, &seed, network, chain, relayer, deployment, cap);
+    drive(store, &wallet).await
+}
+
+pub async fn drive(store: &Store, wallet: &Depositor) -> Result<()> {
     let keep = |index| {
         move |request: &ShieldDeposit| {
             let pending = Pending {

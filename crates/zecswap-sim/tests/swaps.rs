@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use zecswap_sim::hunt::{Hunt, Kind, Told, folder, seated, spread};
 use zecswap_sim::shrink::{self, Shrinks};
-use zecswap_sim::{End, Plan, Report, deposits, guards, lightwallet, reverse, run, run_with};
+use zecswap_sim::{End, Plan, Report, cli, deposits, guards, lightwallet, reverse, run, run_with};
 
 fn listed(spec: &str) -> Vec<u64> {
     match spec.split_once("..") {
@@ -100,7 +100,7 @@ fn asked(all: &[u64]) -> Vec<(Kind, Vec<u64>)> {
     let run = |asked: &str| {
         let (name, own) = asked.split_once('=').unzip();
         let kind = Kind::named(name.unwrap_or(asked));
-        let kind = kind.expect("a run: forward, reverse, deposits, zcash or guards");
+        let kind = kind.expect("a run: forward, reverse, deposits, zcash, guards or cli");
         (kind, own.map_or_else(|| all.to_vec(), listed))
     };
     match std::env::var("ZECSWAP_SIM_RUNS") {
@@ -127,7 +127,7 @@ fn shrunk(kind: Kind, seed: u64, way: Option<&str>) {
 }
 
 #[test]
-#[ignore = "hunts seeds over the five runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
+#[ignore = "hunts seeds over the six runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
 fn hunt() {
     let asked = Hunt {
         runs: asked(&seeds("ZECSWAP_SIM_SEEDS", 0..200)),
@@ -390,4 +390,51 @@ fn plain_guard_story() {
 #[test]
 fn a_guard_seed_replays_to_the_same_trace() {
     replays(guards::run, 3..6);
+}
+
+#[test]
+fn a_command_line_swap_with_nothing_wrong_pays_the_users_note() {
+    let report = seated(|| cli::run_with(1, cli::Plan::plain()));
+    assert!(report.failures.is_empty(), "{}", report.story());
+    let ended = report.ended.as_ref().expect("a tally");
+    assert!(
+        matches!(ended.swaps.as_slice(), [cli::Finish::Paid(_)]),
+        "{}",
+        report.story()
+    );
+}
+
+#[test]
+fn every_cli_seed_keeps_the_invariants() {
+    hold(&seeds("ZECSWAP_SIM_SEEDS", 0..4), cli::run);
+}
+
+#[test]
+fn cli_seeds_that_once_failed_still_hold() {
+    let seeds = regressions(include_str!("../cli-regressions.txt"));
+    hold(&seeds, cli::run);
+}
+
+#[test]
+#[ignore = "tells a command-line seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim cli_story -- --ignored --nocapture"]
+fn cli_story() {
+    tell::<cli::Plan>();
+}
+
+#[test]
+#[ignore = "one line a command-line seed: ZECSWAP_SIM_SEEDS=0..200 cargo test -p zecswap-sim cli_survey -- --ignored --nocapture"]
+fn cli_survey() {
+    surveyed(cli::run);
+}
+
+#[test]
+#[ignore = "tells the story of a command-line swap with nothing wrong"]
+fn plain_cli_story() {
+    let report = cli::run_with(1, cli::Plan::plain());
+    println!("{}\n{}", report.story(), report.trace.join("\n"));
+}
+
+#[test]
+fn a_cli_seed_replays_to_the_same_trace() {
+    replays(cli::run, 3..4);
 }

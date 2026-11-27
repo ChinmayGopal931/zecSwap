@@ -22,18 +22,18 @@ const FEE_POLL: Duration = Duration::from_secs(5);
 const FEE_RESEND: u32 = 6;
 const PAYMENT_FEE: u64 = 10_000;
 
-pub(crate) struct SwapArgs {
-    pub(crate) maker: String,
-    pub(crate) rpc: String,
-    pub(crate) contract: Address,
-    pub(crate) token: Address,
-    pub(crate) units: u32,
-    pub(crate) payee: Payee,
-    pub(crate) tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
-    pub(crate) max_open_fee: u64,
+pub struct SwapArgs {
+    pub maker: String,
+    pub rpc: String,
+    pub contract: Address,
+    pub token: Address,
+    pub units: u32,
+    pub payee: Payee,
+    pub tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
+    pub max_open_fee: u64,
 }
 
-pub(crate) enum Payee {
+pub enum Payee {
     Account(PrivateKeySigner),
     Railgun { relayer: String, max_fee: u128 },
 }
@@ -112,7 +112,7 @@ impl FeeWallet for Session {
     }
 }
 
-pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
+pub async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
     let spending = |api: MakerApi| match &args.tokens {
         Some(tokens) => api.with_tokens(tokens.clone()),
         None => api,
@@ -142,10 +142,13 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         route,
     )
     .with_max_open_fee(args.max_open_fee);
+    drive(ctx, &user, args.units).await
+}
 
-    let mut run = start(&ctx.store, &user, args.units).await?;
+pub async fn drive(ctx: &mut Session, user: &User, units: u32) -> Result<()> {
+    let mut run = start(&ctx.store, user, units).await?;
     let resumed = matches!(run.progress, Progress::Accepted(_));
-    let swap = open(ctx, &user, &mut run).await?;
+    let swap = open(ctx, user, &mut run).await?;
     if resumed && run.deposit.is_none() && user.state(&swap).await?.stage == Stage::Refunded {
         println!("the maker cancelled before anything was deposited");
         return finish(ctx, &mut run);
@@ -168,9 +171,9 @@ pub(crate) async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
         let chain = user.state(&swap).await?;
         let now = user.settlement().now().await?;
         match chain.stage {
-            Stage::Ready | Stage::Claimed => return claim(ctx, &user, &mut run, &swap).await,
-            Stage::Open if now >= chain.t0 => return claim(ctx, &user, &mut run, &swap).await,
-            Stage::Refunded => return sweep_back(ctx, &user, &mut run, &swap).await,
+            Stage::Ready | Stage::Claimed => return claim(ctx, user, &mut run, &swap).await,
+            Stage::Open if now >= chain.t0 => return claim(ctx, user, &mut run, &swap).await,
+            Stage::Refunded => return sweep_back(ctx, user, &mut run, &swap).await,
             Stage::Open => println!("  waiting for the maker to confirm the deposit"),
         }
         tokio::time::sleep(CHAIN_POLL).await;

@@ -1,4 +1,5 @@
 mod alerts;
+pub mod cli;
 pub mod deposits;
 pub mod guards;
 pub mod hunt;

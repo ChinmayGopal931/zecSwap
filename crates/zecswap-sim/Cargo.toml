@@ -63,6 +63,7 @@ zcash_primitives = "0.31.0"
 zcash_protocol.workspace = true
 zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain", features = ["sim"] }
+zecswap-cli = { path = "../zecswap-cli", features = ["sim"] }
 zecswap-client = { path = "../zecswap-client", features = ["sim"] }
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }

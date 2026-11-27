@@ -844,6 +844,65 @@ impl Ledger {
         id
     }
 
+    pub fn watch(&self, key: FullViewingKey) -> usize {
+        let mut inner = self.inner();
+        inner.keys.push(key);
+        inner.keys.len() - 1
+    }
+
+    pub fn take(&self, key: usize) -> u64 {
+        let mut inner = self.inner();
+        let tip = inner.tip().height;
+        let queued: BTreeSet<[u8; 32]> = inner
+            .rivals
+            .iter()
+            .flat_map(|entry| &entry.leaves)
+            .map(|leaf| leaf.action.nullifier().to_bytes())
+            .collect();
+        let mut taken = 0;
+        let mut leaves = Vec::new();
+        for block in &inner.blocks {
+            for leaf in block.entries.iter().flat_map(|entry| &entry.leaves) {
+                let Some(owned) = leaf.owned.as_ref().filter(|owned| owned.key == key) else {
+                    continue;
+                };
+                if inner.spent(&owned.nullifier).is_some() || queued.contains(&owned.nullifier) {
+                    continue;
+                }
+                let n = leaves.len();
+                let name = |what: &str| format!("zcash-taken-{what}-{key}-{tip}-{n}");
+                let spent = Nullifier::from_bytes(&owned.nullifier).into_option();
+                let made = node(inner.seed, &name("note")).to_bytes();
+                let made = ExtractedNoteCommitment::from_bytes(&made).into_option();
+                let ephemeral = inner.seed.bytes(&name("key"));
+                let ciphertext = inner.seed.bytes(&name("sealed"));
+                taken += owned.note.value().inner();
+                leaves.push(Leaf {
+                    pool: leaf.pool,
+                    action: CompactAction::from_parts(
+                        spent.expect("a nullifier"),
+                        made.expect("a commitment"),
+                        EphemeralKeyBytes(ephemeral),
+                        ciphertext,
+                    ),
+                    ephemeral,
+                    ciphertext,
+                    owned: None,
+                });
+            }
+        }
+        if !leaves.is_empty() {
+            let txid = inner.seed.bytes(&format!("zcash-taken-txid-{key}-{tip}"));
+            inner.rivals.push(Entry {
+                what: What::Rival,
+                txid,
+                leaves,
+            });
+            inner.note(format!("the other holder of key {key} spends its {taken}"));
+        }
+        taken
+    }
+
     pub fn payment(&self, id: usize) -> ([u8; 32], Option<u32>, bool) {
         let inner = self.inner();
         let payment = &inner.payments[id];

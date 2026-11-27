@@ -328,9 +328,15 @@ impl<T> Future for Skewed<T> {
     type Output = T;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        let before = simulate_wall(Some(EPOCH as i64 + self.skew));
-        let out = self.inner.as_mut().poll(cx);
-        simulate_wall(before);
-        out
+        let _restored = Restored(simulate_wall(Some(EPOCH as i64 + self.skew)));
+        self.inner.as_mut().poll(cx)
+    }
+}
+
+struct Restored(Option<i64>);
+
+impl Drop for Restored {
+    fn drop(&mut self) {
+        simulate_wall(self.0);
     }
 }

@@ -6,7 +6,7 @@ use crate::relayer::{ReverseService, Service};
 use crate::run::Report;
 use crate::seed::Seed;
 use crate::wallet::End;
-use crate::{Plan, deposits, guards, lightwallet, reverse};
+use crate::{Plan, cli, deposits, guards, lightwallet, reverse};
 
 const CRASH_REST: u64 = 300;
 const NEAR: u64 = 3 * 60;
@@ -17,6 +17,7 @@ type Reverse = Report<reverse::Plan, reverse::Ended>;
 type Deposits = Report<deposits::Plan, deposits::Ended>;
 type Zcash = Report<lightwallet::Plan, lightwallet::Ended>;
 type Guards = Report<guards::Plan, guards::Ended>;
+type Cli = Report<cli::Plan, cli::Ended>;
 type Situation<R> = (&'static str, fn(&R) -> bool);
 
 fn has<P, E>(report: &Report<P, E>, what: &str) -> bool {
@@ -1165,4 +1166,245 @@ pub(crate) fn guards(report: &Guards) -> (Vec<u16>, Vec<String>) {
 
 pub(crate) fn guards_all() -> Vec<String> {
     all(GUARDS)
+}
+
+fn ends<P, E>(report: &Report<P, E>, what: &str) -> bool {
+    report.trace.iter().any(|line| told(line) == what)
+}
+
+fn after_torn_sweep(report: &Cli) -> Option<&str> {
+    let lines = report.trace.iter().map(|line| told(line));
+    let torn = [
+        "the cli was killed before SweepOut",
+        "lightwalletd refused the broadcast of SweepOut",
+    ];
+    let mut lines = lines.skip_while(|line| !torn.contains(line));
+    lines.next()?;
+    let next = ["cli before Finish", "cli before SweepOut"];
+    lines.find(|line| next.contains(line))
+}
+
+fn cli_kind(report: &Cli) -> u64 {
+    Seed(report.seed).below("cli-kind", 0, 100)
+}
+
+fn finishes(report: &Cli, how: fn(&cli::Finish) -> bool) -> bool {
+    let swaps = report.ended.as_ref().map(|ended| ended.swaps.iter());
+    swaps.is_some_and(|mut swaps| swaps.any(how))
+}
+
+fn aimed(report: &Cli, how: fn(&cli::Aim) -> bool) -> bool {
+    report.plan.kills.iter().any(|kill| how(&kill.aim))
+}
+
+macro_rules! passed {
+    ($step:ident) => {
+        (concat!("passed ", stringify!($step)), |r: &Cli| {
+            ends(r, concat!("cli after ", stringify!($step)))
+        })
+    };
+}
+
+macro_rules! torn {
+    ($side:ident, $step:ident) => {
+        (
+            concat!("killed ", stringify!($side), " ", stringify!($step)),
+            |r: &Cli| {
+                ends(
+                    r,
+                    concat!(
+                        "the cli was killed ",
+                        stringify!($side),
+                        " ",
+                        stringify!($step)
+                    ),
+                )
+            },
+        )
+    };
+}
+
+const CLI: &[Situation<Cli>] = &[
+    ("maker Honest", |r| r.plan.mood == Mood::Honest),
+    ("maker NeverReadies", |r| r.plan.mood == Mood::NeverReadies),
+    ("maker Vanishes", |r| r.plan.mood == Mood::Vanishes),
+    ("maker CancelsEarly", |r| r.plan.mood == Mood::CancelsEarly),
+    ("maker KeepsFee", |r| r.plan.mood == Mood::KeepsFee),
+    ("maker OpensLess", |r| r.plan.mood == Mood::OpensLess),
+    ("maker OpensAnotherNote", |r| {
+        r.plan.mood == Mood::OpensAnotherNote
+    }),
+    ("maker OpensFar", |r| r.plan.mood == Mood::OpensFar),
+    ("maker LiesAboutDeadlines", |r| {
+        r.plan.mood == Mood::LiesAboutDeadlines
+    }),
+    ("open fee: none", |r| r.plan.fee == Fee::None),
+    (
+        "open fee: asked, within the cap",
+        |r| matches!(r.plan.fee, Fee::Asked(fee) if fee <= r.plan.max_open_fee),
+    ),
+    (
+        "open fee: asked, over the cap",
+        |r| matches!(r.plan.fee, Fee::Asked(fee) if fee > r.plan.max_open_fee),
+    ),
+    ("open fee: payable outside Orchard", |r| {
+        matches!(r.plan.fee, Fee::Transparent(_))
+    }),
+    ("route: Railgun", |r| r.plan.railgun),
+    ("route: an account", |r| !r.plan.railgun),
+    ("funds: one note", |r| r.plan.funds == cli::Funds::One),
+    ("funds: several notes", |r| {
+        r.plan.funds == cli::Funds::Several
+    }),
+    ("funds: short", |r| r.plan.funds == cli::Funds::Short),
+    ("funds: unconfirmed when typed", |r| {
+        r.plan.funds == cli::Funds::Unconfirmed
+    }),
+    ("two swaps in one directory", |r| r.plan.swaps > 1),
+    ("a swap.json of another version", |r| r.plan.stale),
+    ("deposit commands too", |r| r.plan.deposits.is_some()),
+    ("calm, no kills", |r| cli_kind(r) < 20),
+    ("calm, kills alone", |r| (20..40).contains(&cli_kind(r))),
+    ("checked against the same seed unkilled", |r| {
+        r.plan.twinned()
+    }),
+    ("a kill aimed by the clock", |r| {
+        aimed(r, |aim| matches!(aim, cli::Aim::At(_)))
+    }),
+    ("a kill aimed during the claim", |r| {
+        aimed(r, |aim| matches!(aim, cli::Aim::Ready(_)))
+    }),
+    ("a kill aimed during the sweep back", |r| {
+        aimed(r, |aim| matches!(aim, cli::Aim::Refunded(_)))
+    }),
+    ("a broadcast refused: the fee", |r| {
+        ends(r, "lightwalletd refused the broadcast of FeeOut")
+    }),
+    ("a broadcast refused: the deposit", |r| {
+        ends(r, "lightwalletd refused the broadcast of DepositOut")
+    }),
+    ("a broadcast refused: the sweep back", |r| {
+        ends(r, "lightwalletd refused the broadcast of SweepOut")
+    }),
+    ("the sweep's broadcast torn, then finished unswept", |r| {
+        after_torn_sweep(r) == Some("cli before Finish")
+    }),
+    ("the sweep's broadcast torn, then swept afresh", |r| {
+        after_torn_sweep(r) == Some("cli before SweepOut")
+    }),
+    ("typed again an hour later", |r| {
+        r.plan.kills.iter().any(|kill| kill.rest > 30 * 60)
+    }),
+    ("killed by the clock", |r| {
+        has(r, "the cli was killed by the clock")
+    }),
+    ("killed during the claim", |r| {
+        has(r, "the cli was killed during the claim")
+    }),
+    ("killed during the sweep back", |r| {
+        has(r, "the cli was killed during the sweep back")
+    }),
+    passed!(Index),
+    passed!(Quote),
+    passed!(Fee),
+    passed!(FeeOut),
+    passed!(Accept),
+    passed!(Joint),
+    passed!(Deposit),
+    passed!(DepositOut),
+    passed!(Finish),
+    passed!(SweepOut),
+    passed!(Pending),
+    passed!(Unpending),
+    torn!(before, Index),
+    torn!(after, Index),
+    torn!(before, Quote),
+    torn!(after, Quote),
+    torn!(before, Fee),
+    torn!(after, Fee),
+    torn!(before, FeeOut),
+    torn!(after, FeeOut),
+    torn!(before, Accept),
+    torn!(after, Accept),
+    torn!(before, Joint),
+    torn!(after, Joint),
+    torn!(before, Deposit),
+    torn!(after, Deposit),
+    torn!(before, DepositOut),
+    torn!(after, DepositOut),
+    torn!(before, Finish),
+    torn!(after, Finish),
+    torn!(before, SweepOut),
+    torn!(after, SweepOut),
+    torn!(before, Pending),
+    torn!(after, Pending),
+    torn!(before, Unpending),
+    torn!(after, Unpending),
+    ("a typing failed", |r| has(r, "` failed: ")),
+    ("the other version's file renamed", |r| {
+        has(r, "renames the other version's swap.json")
+    }),
+    ("the person gave up on a swap", |r| {
+        has(r, "the person gives up on this swap")
+    }),
+    ("an index skipped", |r| {
+        r.ended.as_ref().is_some_and(|ended| ended.skipped > 0)
+    }),
+    ("ends paid", |r| {
+        finishes(r, |end| matches!(end, cli::Finish::Paid(_)))
+    }),
+    ("ends swept back", |r| {
+        finishes(r, |end| matches!(end, cli::Finish::SweptBack(_)))
+    }),
+    ("ends cancelled", |r| {
+        finishes(r, |end| *end == cli::Finish::Cancelled)
+    }),
+    ("ends abandoned", |r| {
+        finishes(r, |end| *end == cli::Finish::Abandoned)
+    }),
+    ("ends unfinished", |r| {
+        finishes(r, |end| *end == cli::Finish::Unfinished)
+    }),
+    ("no swap saved", |r| {
+        r.ended.as_ref().is_some_and(|ended| ended.swaps.is_empty())
+    }),
+    ("a Zcash reorg", |r| has(r, "reorg of ")),
+    ("a Zcash transaction lost", |r| {
+        has(r, "was lost from the pool")
+    }),
+    ("a Zcash transaction broadcast again", |r| {
+        has(r, "was refused: InThePool")
+    }),
+    ("a Zcash transaction expired", |r| {
+        has(r, "left the pool: Expired")
+    }),
+    ("lightwalletd failed a call", |r| {
+        has(r, "lightwalletd failed ")
+    }),
+    ("lightwalletd hung up", |r| {
+        has(r, "lightwalletd hung up on ")
+    }),
+    ("the maker took the joint account's ZEC", |r| {
+        has(r, "the other holder of key ")
+    }),
+    ("an EVM reorg", |r| {
+        has(r, "reorg of 2 from") || has(r, "reorg of 1 from")
+    }),
+    ("maker busy", |r| has(r, "maker was busy for ")),
+    ("relayer busy", |r| has(r, "relayer was busy for ")),
+    ("a deposit request saved", |r| ends(r, "cli after Pending")),
+    ("a deposit request removed", |r| {
+        ends(r, "cli after Unpending")
+    }),
+    ("a deposit arrived", |r| has(r, " arrive for address #")),
+];
+
+const CLI_SAID: &[&str] = &["` failed: "];
+
+pub(crate) fn cli(report: &Cli) -> (Vec<u16>, Vec<String>) {
+    reached(report, CLI, CLI_SAID)
+}
+
+pub(crate) fn cli_all() -> Vec<String> {
+    all(CLI)
 }

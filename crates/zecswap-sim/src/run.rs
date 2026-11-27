@@ -371,7 +371,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         plan.mood,
         plan.fee,
         chain.clone(),
-        zcash.clone(),
+        Arc::new(zcash.clone()),
         connect(&node, &chain, "maker", maker_key, plan.private, &alarms),
     );
     let relayer = Relayer::new(
@@ -714,7 +714,7 @@ impl World {
 
 pub(crate) fn shielded_to(
     chain: &Chain,
-    user_seed: &[u8; 64],
+    user_seed: &[u8],
     index: u32,
     amount: u128,
 ) -> (u128, bool) {

@@ -15,7 +15,7 @@ use crate::net::Line;
 use crate::node::Weather;
 use crate::run::Report;
 use crate::seed::Seed;
-use crate::{Plan, reverse};
+use crate::{Plan, cli, reverse};
 
 const LONG: usize = 4;
 const SPARE: u64 = 50_000;
@@ -588,6 +588,91 @@ impl Shrinks for guards::Plan {
     }
 }
 
+fn calmer(kill: &cli::Kill) -> Vec<(String, cli::Kill)> {
+    let short = 30;
+    match kill.rest > short {
+        true => vec![(
+            format!("rest={short}"),
+            cli::Kill {
+                rest: short,
+                ..*kill
+            },
+        )],
+        false => Vec::new(),
+    }
+}
+
+impl Shrinks for cli::Plan {
+    type Ended = cli::Ended;
+
+    fn plain() -> Self {
+        Self::plain()
+    }
+
+    fn of(seed: u64) -> Self {
+        Self::from_seed(Seed(seed))
+    }
+
+    fn run(seed: u64, plan: Self) -> Report<Self, Self::Ended> {
+        cli::run_with(seed, plan)
+    }
+
+    fn calm(&self) -> bool {
+        self.calm()
+    }
+
+    fn breaks(&self) -> Vec<&'static str> {
+        let asked = match self.fee {
+            Fee::Asked(fee) => fee <= self.max_open_fee,
+            Fee::None | Fee::Transparent(_) => false,
+        };
+        let kept = self.mood != Mood::KeepsFee || asked;
+        broken(&[(kept, "a maker that keeps the fee asks one under the cap")])
+    }
+
+    fn simpler(&self) -> Vec<Step<Self>> {
+        let mut steps = Steps::of(self);
+        each!(steps, plan => plan, cli::Plan {
+            calms: [skew],
+            also: [
+                mood, service, fee, max_open_fee, railgun, multicall, units, funds, swaps, stale,
+                clears, deposits,
+            ],
+            apart: [weather, maker_line, relayer_line, sky, lightwalletd, kills],
+        });
+        steps.fewer("kills", 0, true, |plan| &mut plan.kills, calmer);
+        each!(steps, plan => plan.weather, Weather {
+            calms: [
+                reorg, reorg_after_tx, ambush, fork_delay, missed_slot, delayed, lost,
+                private_lost, fee_swing, rpc_error, rpc_stall, stale_read,
+            ],
+            also: [reorg_depth, delay_blocks],
+            apart: [],
+        });
+        each!(steps, plan => plan.maker_line, Line {
+            calms: [busy, hang, unheard, unanswered],
+            also: [],
+            apart: [],
+        });
+        each!(steps, plan => plan.relayer_line, Line {
+            calms: [busy, hang, unheard, unanswered],
+            also: [],
+            apart: [],
+        });
+        each!(steps, plan => plan.sky, Sky {
+            calms: [reorg, reorg_after_tx, dropped, delayed, lost, quick, rival],
+            also: [steady, reorg_depth, traffic],
+            apart: [],
+        });
+        each!(steps, plan => plan.lightwalletd, lightwallet::Service {
+            calms: [errors, cuts, deaf, hangups, misplaces],
+            also: [slow, stalls, lags, backwards, another, quiet],
+            apart: [],
+        });
+        steps.out
+    }
+}
+
 struct Withheld {
     calming: Vec<String>,
     outside: Vec<String>,
@@ -917,5 +1002,6 @@ pub fn shrink(
         Kind::Deposits => shrunk::<deposits::Plan>(seed, way, folder),
         Kind::Zcash => shrunk::<lightwallet::Plan>(seed, way, folder),
         Kind::Guards => shrunk::<guards::Plan>(seed, way, folder),
+        Kind::Cli => shrunk::<cli::Plan>(seed, way, folder),
     }
 }

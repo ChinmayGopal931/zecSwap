@@ -7554,6 +7554,7 @@ dependencies = [
  "zcash_protocol",
  "zecswap-api",
  "zecswap-chain",
+ "zecswap-cli",
  "zecswap-client",
  "zecswap-core",
  "zecswap-railgun",
