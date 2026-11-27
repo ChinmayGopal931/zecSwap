@@ -42,7 +42,7 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey and guard_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 154 client and relayer rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
+scripts/sim-mutants.py 0..150                           # breaks 153 client and relayer rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then)
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -169,14 +169,15 @@ No hand-written example tests (Conventions). These stand in for them:
   `guards/relayer.rs`). The same seed run by `guards::run` is an hour and a half of one relayer
   serving four to nine requests from wallets, honest and hostile, on the forward faults: relayed
   Railgun sends to the proxy and sponsored reverse fundings through Relay Adapt. Railgun's contracts
-  are stand-ins in `contracts/test/sim` (`SimRailgun`, `SimRelayAdapt`), written from Railgun's
-  source: nullifiers spent once, a known merkle root, the gas price, adapt contract, chain and
-  ciphertext count each proof binds, the withdraw note against the last commitment (redirects
-  included), the unshield and its 25 bp fee, the `Nullified`, `Transact` and `Shield` events, Relay
-  Adapt's adapt parameters, multicall with or without required success and its shield of the whole
-  remaining balance; a proof is a stand-in circuit's signature over the root, nullifiers,
-  commitments and bound parameters, given only to drafts that spend known notes and conserve each
-  token. Notes are real: Poseidon commitments and ciphertexts sealed to the receiver's viewing key,
+  are stand-ins in `contracts/test/sim` (`SimRailgun`, `SimRelayAdapt`), written to Railgun's ABI
+  and to what its contracts check of a transaction: nullifiers spent once, a known merkle root, the
+  gas price, adapt contract, chain and ciphertext count each proof binds, the withdraw note against
+  the last commitment (redirects included), the unshield and its 25 bp fee, the `Nullified`,
+  `Transact` and `Shield` events, Relay Adapt's adapt parameters, multicall with or without required
+  success and its shield of the whole remaining balance; a proof is a stand-in circuit's signature
+  over the root, nullifiers, commitments and bound parameters, given only to drafts that spend known
+  notes and conserve each token. Notes are real: Poseidon commitments and ciphertexts sealed to the
+  receiver's viewing key,
   as `zecswap-railgun` reads them. The relayer is a model written from `docs/railgun-sends.md` and
   `docs/reverse-flow.md`, round the public calls: a send is decoded and checked (`SendPolicy`),
   held while another of its notes has no outcome, matched against its journal of sends it signed
@@ -400,11 +401,12 @@ No hand-written example tests (Conventions). These stand in for them:
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable
   balance), of the relayer-side request checks, `evm/deposits.rs`'s gas-price cap, ETH check and
-  `covers`, which the deposit relayer never trips; the reverse run's funding of an escrow (its
-  relayer funds
-  from tokens of its own, the relayer run's through stand-ins of Railgun and Relay Adapt whose proofs
-  are a stand-in circuit's signatures, which check no merkle path and no note's ownership beyond
-  what the stand-in circuit holds); reverse status and token returns, swap relayers that serve
+  `covers`, which the deposit relayer never trips; the Railgun cross-contract funding of an escrow
+  and its proof (the reverse run's relayer funds from tokens of its own, the relayer run's through
+  stand-ins of Railgun and Relay Adapt, which are not Railgun's deployed contracts and are checked
+  against none of them here, and whose proofs are a stand-in circuit's signatures, which check no
+  merkle path and no note's ownership beyond what the stand-in circuit holds); reverse status and
+  token returns, swap relayers that serve
   another deployment, ask over the fee cap or are the maker, the CLI's own resume logic (the
   simulation's wallets mirror it) and the JNI bindings. Of deposits: the sanctions oracle, a deposit
   address with code, fees priced by gas (`feeExpiresAt`), deposits sent privately, a relayer's
