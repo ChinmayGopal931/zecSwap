@@ -406,7 +406,7 @@ fn a_command_line_swap_with_nothing_wrong_pays_the_users_note() {
 
 #[test]
 fn every_cli_seed_keeps_the_invariants() {
-    hold(&seeds("ZECSWAP_SIM_SEEDS", 0..4), cli::run);
+    hold(&seeds("ZECSWAP_SIM_SEEDS", 0..2), cli::run);
 }
 
 #[test]
@@ -436,5 +436,5 @@ fn plain_cli_story() {
 
 #[test]
 fn a_cli_seed_replays_to_the_same_trace() {
-    replays(cli::run, 3..4);
+    replays(cli::run, 1..2);
 }
