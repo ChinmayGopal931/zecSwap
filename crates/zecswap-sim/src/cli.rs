@@ -217,7 +217,7 @@ impl Plan {
             .map(|n| killing(seed, n, &steps, calm, refunds))
             .collect();
         let deposits = (roll("deposits", 4) == 0).then(|| Self::deposits(seed, calm));
-        Self {
+        let mut plan = Self {
             weather: Weather {
                 reorg: up_to("reorg", 20),
                 reorg_after_tx: up_to("reorg-after-tx", 350),
@@ -289,7 +289,48 @@ impl Plan {
                 false => seed.between("cli-clears", 0, 10 * 60, 60 * 60),
             },
             deposits,
+        };
+        let focus = match kind {
+            40.. => roll("focus", 20),
+            _ => u64::MAX,
+        };
+        match focus {
+            0 | 1 => {
+                plan.mood = Mood::CancelsEarly;
+                plan.sky.delayed = 600;
+                plan.sky.lost = 250;
+                plan.clears = plan.clears.max(80 * 60);
+                let tear = Tear {
+                    step: Step::Finish,
+                    after: false,
+                };
+                plan.kills = match focus {
+                    0 => vec![Kill {
+                        aim: Aim::Tear(tear),
+                        rest: seed.between("cli-focus-rest", 0, 2, SHORT_REST),
+                    }],
+                    _ => Vec::new(),
+                };
+            }
+            2 => {
+                (plan.fee, plan.max_open_fee) = (Fee::Asked(OPEN_FEE), 500_000);
+                plan.funds = Funds::Short;
+                plan.mood = Mood::Honest;
+            }
+            3 => {
+                (plan.fee, plan.max_open_fee) = (Fee::Asked(OPEN_FEE), 500_000);
+                plan.mood = Mood::Honest;
+                plan.funds = Funds::One;
+                plan.kills.clear();
+                plan.sky.lost = 1000;
+                plan.sky.reorg = 0;
+                plan.sky.reorg_after_tx = 0;
+                plan.lightwalletd = lightwallet::Service::HONEST;
+                plan.clears = plan.typed_at() + seed.between("cli-focus-clears", 0, 60, 180);
+            }
+            _ => {}
         }
+        plan
     }
 
     fn deposits(seed: Seed, calm: bool) -> Deposits {
@@ -1083,7 +1124,10 @@ impl World {
         let calm_end =
             self.plan.calm() && self.plan.kills.is_empty() && self.plan.funds != Funds::Short;
         if calm_end && settled {
+            let unconfirmed = self.plan.funds == Funds::Unconfirmed;
+            let unpaid = unconfirmed && matches!(self.plan.fee, Fee::Asked(_));
             let fine = swaps.iter().all(|finish| match (self.plan.mood, finish) {
+                (_, Finish::Abandoned) if unpaid => true,
                 (mood, Finish::Unfinished) if !mood.cheats_on_terms() => false,
                 (Mood::Honest | Mood::NeverReadies | Mood::Vanishes | Mood::OpensFar, end) => {
                     matches!(end, Finish::Paid(_))
@@ -1144,7 +1188,7 @@ impl World {
             if let Some(sent) = sent
                 && !mined
                 && self.plan.kills.is_empty()
-                && expires > sent.max(cleared) + 10 * 60
+                && expires > sent.max(cleared) + 4 * 60
             {
                 fail(
                     26,
