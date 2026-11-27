@@ -6,7 +6,7 @@ use crate::relayer::{ReverseService, Service};
 use crate::run::Report;
 use crate::seed::Seed;
 use crate::wallet::End;
-use crate::{Plan, deposits, lightwallet, reverse};
+use crate::{Plan, deposits, guards, lightwallet, reverse};
 
 const CRASH_REST: u64 = 300;
 const NEAR: u64 = 3 * 60;
@@ -16,6 +16,7 @@ type Forward = Report<Plan, End>;
 type Reverse = Report<reverse::Plan, reverse::Ended>;
 type Deposits = Report<deposits::Plan, deposits::Ended>;
 type Zcash = Report<lightwallet::Plan, lightwallet::Ended>;
+type Guards = Report<guards::Plan, guards::Ended>;
 type Situation<R> = (&'static str, fn(&R) -> bool);
 
 fn has<P, E>(report: &Report<P, E>, what: &str) -> bool {
@@ -922,4 +923,246 @@ pub(crate) fn zcash(report: &Zcash) -> (Vec<u16>, Vec<String>) {
 
 pub(crate) fn zcash_all() -> Vec<String> {
     all(ZCASH)
+}
+
+macro_rules! asked {
+    ($kind:ident :: $what:ident) => {
+        (
+            concat!("asked ", stringify!($kind), "::", stringify!($what)),
+            |r: &Guards| {
+                r.plan
+                    .requests
+                    .iter()
+                    .any(|request| request.ask == guards::Ask::$kind(guards::$kind::$what))
+            },
+        )
+    };
+}
+
+macro_rules! voiced {
+    ($said:literal) => {
+        (concat!("said: ", $said), |r: &Guards| has(r, $said))
+    };
+}
+
+const GUARDS: &[Situation<Guards>] = &[
+    asked!(Relayed::Private),
+    asked!(Relayed::Withdrawal),
+    asked!(Relayed::Batch),
+    asked!(Relayed::Twin),
+    asked!(Relayed::Rival),
+    asked!(Relayed::OtherChain),
+    asked!(Relayed::OtherProxy),
+    asked!(Relayed::WithValue),
+    asked!(Relayed::Oversized),
+    asked!(Relayed::TooManyTransactions),
+    asked!(Relayed::TooManyNullifiers),
+    asked!(Relayed::TooManyCommitments),
+    asked!(Relayed::LongAnnotation),
+    asked!(Relayed::LongMemo),
+    asked!(Relayed::ExtraCiphertext),
+    asked!(Relayed::Selector),
+    asked!(Relayed::Offset),
+    asked!(Relayed::Padding),
+    asked!(Relayed::Trailing),
+    asked!(Relayed::Truncated),
+    asked!(Relayed::DirtyWord),
+    asked!(Relayed::Empty),
+    asked!(Relayed::NoNullifiers),
+    asked!(Relayed::NoCommitments),
+    asked!(Relayed::BoundChain),
+    asked!(Relayed::BoundAdapt),
+    asked!(Relayed::Redirect),
+    asked!(Relayed::OtherUnshield),
+    asked!(Relayed::MinGasPrice),
+    asked!(Relayed::FeeShort),
+    asked!(Relayed::FeeToken),
+    asked!(Relayed::FeeReceiver),
+    asked!(Relayed::FeeGarbled),
+    asked!(Relayed::FeeClaims),
+    asked!(Relayed::FeeSecond),
+    asked!(Relayed::FeeUnderGas),
+    asked!(Relayed::Spent),
+    asked!(Relayed::Doubled),
+    asked!(Relayed::Forged),
+    asked!(Relayed::UnknownRoot),
+    asked!(Funded::Honest),
+    asked!(Funded::Again),
+    asked!(Funded::Short),
+    asked!(Funded::Late),
+    asked!(Funded::Rival),
+    asked!(Funded::OtherAdapter),
+    asked!(Funded::WithValue),
+    asked!(Funded::Selector),
+    asked!(Funded::DirtyBool),
+    asked!(Funded::ExtraCall),
+    asked!(Funded::MissingCall),
+    asked!(Funded::NoSuccess),
+    asked!(Funded::MinGas),
+    asked!(Funded::CallValue),
+    asked!(Funded::Reordered),
+    asked!(Funded::OtherContract),
+    asked!(Funded::OtherToken),
+    asked!(Funded::InnerTrailing),
+    asked!(Funded::InnerSelector),
+    asked!(Funded::FeeShort),
+    asked!(Funded::FeeElsewhere),
+    asked!(Funded::OtherMaker),
+    asked!(Funded::TermsToken),
+    asked!(Funded::NoUser),
+    asked!(Funded::NoAmount),
+    asked!(Funded::NoNote),
+    asked!(Funded::Deadlines),
+    asked!(Funded::Spender),
+    asked!(Funded::ApproveAmount),
+    asked!(Funded::TwoShields),
+    asked!(Funded::Dust),
+    asked!(Funded::DustToken),
+    asked!(Funded::DustNpk),
+    asked!(Funded::MakerShare),
+    asked!(Funded::UserShare),
+    asked!(Funded::SwapId),
+    asked!(Funded::ShortSignature),
+    asked!(Funded::Signer),
+    asked!(Funded::NoTransactions),
+    asked!(Funded::NoNullifiers),
+    asked!(Funded::BoundChain),
+    asked!(Funded::BoundAdapter),
+    asked!(Funded::BoundParams),
+    asked!(Funded::MinGasPrice),
+    asked!(Funded::Redirect),
+    asked!(Funded::UnshieldNpk),
+    asked!(Funded::UnshieldToken),
+    asked!(Funded::NoUnshield),
+    ("a request posted twice at once", |r| {
+        r.plan.requests.iter().any(|request| request.twice)
+    }),
+    ("calm weather", |r| r.plan.calm()),
+    ("honest requests only", |r| {
+        r.plan.requests.iter().all(|request| request.ask.honest())
+    }),
+    ("a gas-price cap under the fees' swing", |r| {
+        r.plan.stance.cap < guards::Stance::SOUND.cap
+    }),
+    ("the relayer low on ETH until topped up", |r| {
+        r.plan.stance.top_up > 0
+    }),
+    ("the relayer prices gas", |r| r.plan.stance.priced),
+    ("the relayer prices no gas", |r| !r.plan.stance.priced),
+    ("funding config Unset", |r| {
+        r.plan.stance.config == guards::Config::Unset
+    }),
+    ("funding config MakerIsRelayer", |r| {
+        r.plan.stance.config == guards::Config::MakerIsRelayer
+    }),
+    ("funding config FeeElsewhere", |r| {
+        r.plan.stance.config == guards::Config::FeeElsewhere
+    }),
+    ("funding config NoGas", |r| {
+        r.plan.stance.config == guards::Config::NoGas
+    }),
+    ("funding adapter on another Railgun", |r| {
+        r.plan.stance.adapter == guards::Adapter::OtherRailgun
+    }),
+    ("funding adapter with no code", |r| {
+        r.plan.stance.adapter == guards::Adapter::NoCode
+    }),
+    ("with Multicall3", |r| r.plan.multicall),
+    ("without Multicall3", |r| !r.plan.multicall),
+    ("the relayer restarted", |r| has(r, "the relayer crashed")),
+    ("a reorg", |r| has(r, "reorg of ")),
+    ("a transaction reverted", reverted),
+    ("a node answer lost", |r| has(r, " lost the answer to ")),
+    ("a node call stalled", |r| has(r, " stalled on ")),
+    voiced!("at terms: wrong chain"),
+    voiced!("at decode: wrong destination or ETH value"),
+    voiced!("at decode: the calldata is too large"),
+    voiced!("at decode: not a Railgun transact call"),
+    voiced!("at decode: noncanonical transact calldata"),
+    voiced!("at decode: the calldata holds more than the relayer takes"),
+    voiced!("at decode: expected at least one Railgun transaction"),
+    voiced!("at decode: each Railgun transaction must spend notes"),
+    voiced!("at decode: a proof is for another chain"),
+    voiced!("at decode: a proof is bound to an adapt contract"),
+    voiced!("at decode: redirected unshields are not supported"),
+    voiced!("at decode: a withdrawal must pay out the relayer's token"),
+    voiced!("at check: a proof's minimum gas price is above the relayer's cap"),
+    voiced!("at check: the transaction does not pay the relayer's fee"),
+    voiced!("at journal: its notes are in a send of its own"),
+    voiced!("its notes' send reverted"),
+    voiced!("a send of its notes has no outcome yet"),
+    voiced!("at send: the network's gas price is above the relayer's cap"),
+    voiced!("at send: the relayer is low on ETH"),
+    voiced!("at send: the transaction fails in simulation"),
+    voiced!("at send: the transaction needs more gas than the relayer's cap"),
+    voiced!("at send: the transaction does not pay the relayer's fee"),
+    voiced!("at send: spent"),
+    voiced!(", unheard"),
+    voiced!(": the simulation is unavailable"),
+    voiced!(": the gas price is unavailable"),
+    voiced!(": the relayer's balance is unavailable"),
+    voiced!(": Railgun's nullifiers are unavailable"),
+    voiced!("at config: funding addresses must be configured"),
+    voiced!("at config: funding relayer must be separate from maker"),
+    voiced!("at config: the funding fee must pay the relayer"),
+    voiced!("at config: funding gas limits must be positive"),
+    voiced!("at config: cannot read funding adapter's Railgun deployment"),
+    voiced!("at config: funding adapter uses a different Railgun deployment"),
+    voiced!("at validate: wrong funding destination or ETH value"),
+    voiced!("at validate: funding calldata is too large"),
+    voiced!("at validate: invalid V2 Relay Adapt calldata"),
+    voiced!("at validate: noncanonical Relay Adapt calldata"),
+    voiced!("at validate: the funding calldata holds more than the relayer takes"),
+    voiced!("at validate: funding must require every call to succeed"),
+    voiced!("at validate: Relay Adapt minimum gas exceeds sponsorship limit"),
+    voiced!("at validate: expected approve, openReverse, fee, and shield calls"),
+    voiced!("at validate: funding calls cannot send ETH"),
+    voiced!("at validate: unexpected funding call target"),
+    voiced!("at validate: invalid token approval"),
+    voiced!("at validate: invalid escrow open"),
+    voiced!("at validate: invalid relayer fee"),
+    voiced!("at validate: invalid dust shield"),
+    voiced!("at validate: noncanonical funding call"),
+    voiced!("at validate: funding must pay the relayer its advertised fee"),
+    voiced!("at validate: wrong escrow maker, token, or user"),
+    voiced!("at validate: invalid escrow amount or refund commitment"),
+    voiced!("at validate: invalid escrow deadlines"),
+    voiced!("at validate: approval must match the exact escrow amount and spender"),
+    voiced!("at validate: expected one dust shield"),
+    voiced!("at validate: dust shield must return the entire remaining escrow token balance"),
+    voiced!("at validate: invalid maker share"),
+    voiced!("at validate: invalid user share"),
+    voiced!("at validate: wrong reverse swap ID"),
+    voiced!("at validate: invalid escrow signature length"),
+    voiced!("at validate: escrow is not authorized by its user"),
+    voiced!("at validate: expected at least one Railgun transaction"),
+    voiced!("at validate: Railgun transaction must spend notes"),
+    voiced!("at validate: Railgun proof must bind this chain, adapter, and complete action"),
+    voiced!("at validate: proof gas price exceeds sponsorship limit"),
+    voiced!("at validate: redirected unshields are not supported"),
+    voiced!("at validate: unshield must fund Relay Adapt with the escrow token"),
+    voiced!("at validate: funding must unshield from Railgun"),
+    voiced!("at sponsor: existing escrow does not match funding authorization"),
+    voiced!("at sponsor: funding deadline passed"),
+    voiced!("at sponsor: network gas price exceeds sponsorship limit"),
+    voiced!("at sponsor: funding simulation failed"),
+    voiced!("at sponsor: funding gas exceeds sponsorship limit"),
+    voiced!(": funding submission outcome unknown"),
+    voiced!(": funding gas price unavailable"),
+    voiced!("'s escrow open"),
+    voiced!("the relayer knows request "),
+    voiced!("the relayer broadcast "),
+    voiced!("its nonce is not next"),
+    voiced!("the relayer forgot "),
+    voiced!("the operator tops up the relayer"),
+];
+
+const GUARDS_SAID: &[&str] = &["the relayer refused ", "the relayer failed "];
+
+pub(crate) fn guards(report: &Guards) -> (Vec<u16>, Vec<String>) {
+    reached(report, GUARDS, GUARDS_SAID)
+}
+
+pub(crate) fn guards_all() -> Vec<String> {
+    all(GUARDS)
 }

@@ -1,5 +1,6 @@
 mod alerts;
 pub mod deposits;
+pub mod guards;
 pub mod hunt;
 pub mod lightwallet;
 mod maker;

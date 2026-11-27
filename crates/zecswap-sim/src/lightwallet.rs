@@ -691,7 +691,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
     }
     let note = |what: String| ledger.note(what);
     let horizon = || start + Duration::from_secs(plan.blocks * SPACING);
-    let life = lives(&note, start, horizon, &plan.crashes, || {
+    let life = lives("the wallet", &note, start, horizon, &plan.crashes, || {
         spawn_local(actor.clone().live())
     })
     .await;

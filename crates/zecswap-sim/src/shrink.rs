@@ -7,6 +7,7 @@ use std::time::Instant;
 use zecswap_client::FeeCap;
 
 use crate::deposits::{self, Arrival, Offer, Where};
+use crate::guards::{self, Ask, Funded, Relayed, Request, Stance};
 use crate::hunt::{Kind, Labels, Outcome, Told, Tree, named, signature, spread, workspace};
 use crate::lightwallet::{self, Ahead, Era, Errand, Home, Sky, Trick};
 use crate::maker::{Fee, Mood};
@@ -513,6 +514,80 @@ impl Shrinks for lightwallet::Plan {
     }
 }
 
+fn plainer(request: &Request) -> Vec<(String, Request)> {
+    let mut out = Vec::new();
+    if request.twice {
+        let once = Request {
+            twice: false,
+            ..*request
+        };
+        out.push(("twice=false".to_owned(), once));
+    }
+    let honest = match request.ask {
+        Ask::Relayed(Relayed::Private) | Ask::Funded(Funded::Honest) => None,
+        Ask::Relayed(_) => Some(Ask::Relayed(Relayed::Private)),
+        Ask::Funded(_) => Some(Ask::Funded(Funded::Honest)),
+    };
+    if let Some(ask) = honest {
+        let plain = Request { ask, ..*request };
+        out.push((format!("ask={ask:?}"), plain));
+    }
+    out
+}
+
+impl Shrinks for guards::Plan {
+    type Ended = guards::Ended;
+
+    fn plain() -> Self {
+        Self::plain()
+    }
+
+    fn of(seed: u64) -> Self {
+        Self::from_seed(Seed(seed))
+    }
+
+    fn run(seed: u64, plan: Self) -> Report<Self, Self::Ended> {
+        guards::run_with(seed, plan)
+    }
+
+    fn calm(&self) -> bool {
+        self.calm()
+    }
+
+    fn breaks(&self) -> Vec<&'static str> {
+        let low = self.stance.eth < Stance::SOUND.eth;
+        broken(&[(
+            low == (self.stance.top_up > 0),
+            "a relayer low on ETH is topped up, and only one",
+        )])
+    }
+
+    fn simpler(&self) -> Vec<Step<Self>> {
+        let mut steps = Steps::of(self);
+        each!(steps, plan => plan, guards::Plan {
+            calms: [],
+            also: [multicall, clears],
+            apart: [weather, stance, requests, crashes],
+        });
+        steps.fewer("crashes", 0, true, |plan| &mut plan.crashes, whole);
+        steps.fewer("requests", 1, false, |plan| &mut plan.requests, plainer);
+        each!(steps, plan => plan.stance, Stance {
+            calms: [cap, eth, top_up, config, adapter],
+            also: [priced],
+            apart: [],
+        });
+        each!(steps, plan => plan.weather, Weather {
+            calms: [
+                reorg, reorg_after_tx, ambush, fork_delay, missed_slot, delayed, lost,
+                private_lost, fee_swing, rpc_error, rpc_stall, stale_read,
+            ],
+            also: [reorg_depth, delay_blocks],
+            apart: [],
+        });
+        steps.out
+    }
+}
+
 struct Withheld {
     calming: Vec<String>,
     outside: Vec<String>,
@@ -841,5 +916,6 @@ pub fn shrink(
         Kind::Reverse => shrunk::<reverse::Plan>(seed, way, folder),
         Kind::Deposits => shrunk::<deposits::Plan>(seed, way, folder),
         Kind::Zcash => shrunk::<lightwallet::Plan>(seed, way, folder),
+        Kind::Guards => shrunk::<guards::Plan>(seed, way, folder),
     }
 }

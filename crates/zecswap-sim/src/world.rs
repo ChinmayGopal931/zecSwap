@@ -81,7 +81,7 @@ pub fn key(seed: Seed, who: &str) -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&B256::from(seed.bytes::<32>(who))).expect("a signing key")
 }
 
-fn artifact(name: &str) -> Vec<u8> {
+pub(crate) fn artifact(name: &str) -> Vec<u8> {
     let path = format!(
         "{}/../../contracts/out/{name}.sol/{name}.json",
         env!("CARGO_MANIFEST_DIR")

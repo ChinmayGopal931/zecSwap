@@ -300,6 +300,7 @@ pub(crate) async fn zcash_blocks(zcash: Zcash, seed: Seed, loss: u64, clears: In
 }
 
 pub(crate) async fn lives(
+    who: &'static str,
     note: &dyn Fn(String),
     start: Instant,
     horizon: impl Fn() -> Instant,
@@ -320,22 +321,22 @@ pub(crate) async fn lives(
             () = sleep_until(end) => if horizon() == end { break },
             () = sleep_until(crash.unwrap_or(end)), if crash.is_some() => {
                 let (_, rest) = crashes.remove(0);
-                panics::end([("the wallet", life)]).await;
-                note(format!("the wallet crashed, away {rest}s"));
+                panics::end([(who, life)]).await;
+                note(format!("{who} crashed, away {rest}s"));
                 sleep(Duration::from_secs(rest)).await;
                 rested = Instant::now();
-                note("the wallet is back".into());
+                note(format!("{who} is back"));
                 life = live();
             }
             ended = &mut life => {
-                panics::judge("the wallet", ended);
+                panics::judge(who, ended);
                 sleep(SETTLE).await;
                 return None;
             }
         }
     }
     life.abort();
-    Some(("the wallet", life))
+    Some((who, life))
 }
 
 struct World {
@@ -455,9 +456,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         ),
     ];
     let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
-    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
-        spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
-    })
+    let life = lives(
+        "the wallet",
+        &*notes(&node),
+        start,
+        horizon,
+        &plan.crashes,
+        || spawn_local(Skewed::new(plan.skew, wallet.clone().live())),
+    )
     .await;
     panics::end(background.into_iter().chain(life)).await;
     world.report()

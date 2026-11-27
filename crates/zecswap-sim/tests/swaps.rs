@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 use zecswap_sim::hunt::{Hunt, Kind, Told, folder, seated, spread};
 use zecswap_sim::shrink::{self, Shrinks};
-use zecswap_sim::{End, Plan, Report, deposits, lightwallet, reverse, run, run_with};
+use zecswap_sim::{End, Plan, Report, deposits, guards, lightwallet, reverse, run, run_with};
 
 fn listed(spec: &str) -> Vec<u64> {
     match spec.split_once("..") {
@@ -100,7 +100,7 @@ fn asked(all: &[u64]) -> Vec<(Kind, Vec<u64>)> {
     let run = |asked: &str| {
         let (name, own) = asked.split_once('=').unzip();
         let kind = Kind::named(name.unwrap_or(asked));
-        let kind = kind.expect("a run: forward, reverse, deposits or zcash");
+        let kind = kind.expect("a run: forward, reverse, deposits, zcash or guards");
         (kind, own.map_or_else(|| all.to_vec(), listed))
     };
     match std::env::var("ZECSWAP_SIM_RUNS") {
@@ -127,7 +127,7 @@ fn shrunk(kind: Kind, seed: u64, way: Option<&str>) {
 }
 
 #[test]
-#[ignore = "hunts seeds over the four runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
+#[ignore = "hunts seeds over the five runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
 fn hunt() {
     let asked = Hunt {
         runs: asked(&seeds("ZECSWAP_SIM_SEEDS", 0..200)),
@@ -343,4 +343,51 @@ fn plain_zcash_story() {
 #[test]
 fn a_zcash_seed_replays_to_the_same_trace() {
     replays(lightwallet::run, 3..5);
+}
+
+#[test]
+fn a_relayer_asked_nothing_wrong_serves_each_request() {
+    let report = seated(|| guards::run_with(1, guards::Plan::plain()));
+    assert!(report.failures.is_empty(), "{}", report.story());
+    let ended = report.ended.as_ref().expect("a tally");
+    assert!(
+        ended.landed == 2 && ended.reverted == 0 && ended.refused == 0,
+        "{}",
+        report.story()
+    );
+}
+
+#[test]
+fn every_guard_seed_keeps_the_invariants() {
+    hold(&seeds("ZECSWAP_SIM_SEEDS", 0..24), guards::run);
+}
+
+#[test]
+fn guard_seeds_that_once_failed_still_hold() {
+    let seeds = regressions(include_str!("../guard-regressions.txt"));
+    hold(&seeds, guards::run);
+}
+
+#[test]
+#[ignore = "tells a relayer seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim guard_story -- --ignored --nocapture"]
+fn guard_story() {
+    tell::<guards::Plan>();
+}
+
+#[test]
+#[ignore = "one line a relayer seed: ZECSWAP_SIM_SEEDS=0..200 cargo test -p zecswap-sim guard_survey -- --ignored --nocapture"]
+fn guard_survey() {
+    surveyed(guards::run);
+}
+
+#[test]
+#[ignore = "tells the story of a relayer asked nothing wrong"]
+fn plain_guard_story() {
+    let report = guards::run_with(1, guards::Plan::plain());
+    println!("{}\n{}", report.story(), report.trace.join("\n"));
+}
+
+#[test]
+fn a_guard_seed_replays_to_the_same_trace() {
+    replays(guards::run, 3..6);
 }

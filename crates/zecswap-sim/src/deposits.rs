@@ -631,9 +631,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         ),
     ];
     let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
-    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
-        spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
-    })
+    let life = lives(
+        "the wallet",
+        &*notes(&node),
+        start,
+        horizon,
+        &plan.crashes,
+        || spawn_local(Skewed::new(plan.skew, wallet.clone().live())),
+    )
     .await;
     let scanned = world.scan().await;
     panics::end(background.into_iter().chain(life)).await;

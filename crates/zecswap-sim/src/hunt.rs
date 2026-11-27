@@ -12,7 +12,7 @@ use alloy::primitives::keccak256;
 use serde::{Deserialize, Serialize};
 
 use crate::run::Report;
-use crate::{End, Plan, deposits, lightwallet, reach, reverse};
+use crate::{End, Plan, deposits, guards, lightwallet, reach, reverse};
 
 const TOLD_EVERY: Duration = Duration::from_secs(5);
 const SHOWN: usize = 12;
@@ -27,10 +27,17 @@ pub enum Kind {
     Reverse,
     Deposits,
     Zcash,
+    Guards,
 }
 
 impl Kind {
-    pub const ALL: [Self; 4] = [Self::Forward, Self::Reverse, Self::Deposits, Self::Zcash];
+    pub const ALL: [Self; 5] = [
+        Self::Forward,
+        Self::Reverse,
+        Self::Deposits,
+        Self::Zcash,
+        Self::Guards,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -38,6 +45,7 @@ impl Kind {
             Self::Reverse => "reverse",
             Self::Deposits => "deposits",
             Self::Zcash => "zcash",
+            Self::Guards => "guards",
         }
     }
 
@@ -51,6 +59,7 @@ impl Kind {
             Self::Reverse => "reverse seed",
             Self::Deposits => "deposit seed",
             Self::Zcash => "zcash seed",
+            Self::Guards => "guard seed",
         }
     }
 
@@ -60,6 +69,7 @@ impl Kind {
             Self::Reverse => "reverse_story",
             Self::Deposits => "deposit_story",
             Self::Zcash => "zcash_story",
+            Self::Guards => "guard_story",
         };
         let steps = match steps.is_empty() {
             true => String::new(),
@@ -76,6 +86,7 @@ impl Kind {
             Self::Reverse => Outcome::of(&reverse::run(seed)),
             Self::Deposits => Outcome::of(&deposits::run(seed)),
             Self::Zcash => Outcome::of(&lightwallet::run(seed)),
+            Self::Guards => Outcome::of(&guards::run(seed)),
         }
     }
 
@@ -85,6 +96,7 @@ impl Kind {
             Self::Reverse => reach::reverse_all(),
             Self::Deposits => reach::deposits_all(),
             Self::Zcash => reach::zcash_all(),
+            Self::Guards => reach::guards_all(),
         }
     }
 }
@@ -213,6 +225,40 @@ impl Told for Report<lightwallet::Plan, lightwallet::Ended> {
 
     fn reached(&self) -> (Vec<u16>, Vec<String>) {
         reach::zcash(self)
+    }
+}
+
+impl Told for Report<guards::Plan, guards::Ended> {
+    const KIND: Kind = Kind::Guards;
+
+    fn line(&self) -> String {
+        let requests = &self.plan.requests;
+        let honest = requests
+            .iter()
+            .filter(|request| request.ask.honest())
+            .count();
+        let stance = &self.plan.stance;
+        format!(
+            "guard seed {}: {} requests, {honest} honest, cap {} gwei{}{} -> {:?} | {} | {}",
+            self.seed,
+            requests.len(),
+            stance.cap / 1_000_000_000,
+            match stance.top_up {
+                0 => "",
+                _ => ", low on ETH",
+            },
+            match stance.sponsors() {
+                true => "",
+                false => ", sponsoring nothing",
+            },
+            self.ended,
+            tally(&self.trace),
+            self.failures.join("; "),
+        )
+    }
+
+    fn reached(&self) -> (Vec<u16>, Vec<String>) {
+        reach::guards(self)
     }
 }
 
