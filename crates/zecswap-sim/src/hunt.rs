@@ -240,7 +240,8 @@ pub fn threads() -> usize {
         let asked = std::env::var("ZECSWAP_SIM_THREADS").ok();
         let asked = asked.and_then(|threads| threads.parse().ok());
         let cores = std::thread::available_parallelism().map_or(4, usize::from);
-        asked.filter(|threads| *threads > 0).unwrap_or(cores)
+        let asked = asked.filter(|threads| *threads > 0);
+        asked.unwrap_or(cores.div_ceil(2))
     })
 }
 
@@ -260,9 +261,15 @@ impl Drop for Seat {
 
 fn seat() -> Seat {
     static SEATS: OnceLock<Seats> = OnceLock::new();
-    let seats = SEATS.get_or_init(|| Seats {
-        free: Mutex::new(threads()),
-        freed: Condvar::new(),
+    let seats = SEATS.get_or_init(|| {
+        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+            let prover = rayon::ThreadPoolBuilder::new().num_threads(threads());
+            let _ = prover.build_global();
+        }
+        Seats {
+            free: Mutex::new(threads()),
+            freed: Condvar::new(),
+        }
     });
     let mut free = seats.free.lock().unwrap();
     while *free == 0 {
@@ -272,25 +279,27 @@ fn seat() -> Seat {
     Seat(seats)
 }
 
+pub fn seated<T>(run: impl FnOnce() -> T) -> T {
+    let _seat = seat();
+    run()
+}
+
 pub fn spread<T: Send>(seeds: &[u64], run: impl Fn(u64) -> T + Sync, mut each: impl FnMut(T)) {
-    let seated = |seed: u64| {
-        let _seat = seat();
-        run(seed)
-    };
+    let taken = |seed: u64| seated(|| run(seed));
     let workers = threads().min(seeds.len());
     if workers <= 1 {
-        return seeds.iter().for_each(|seed| each(seated(*seed)));
+        return seeds.iter().for_each(|seed| each(taken(*seed)));
     }
     let next = AtomicUsize::new(0);
     let (done, results) = mpsc::channel();
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            let (done, next, seated) = (done.clone(), &next, &seated);
+            let (done, next, taken) = (done.clone(), &next, &taken);
             scope.spawn(move || {
                 loop {
                     let at = next.fetch_add(1, Ordering::Relaxed);
                     let Some(seed) = seeds.get(at) else { break };
-                    if done.send((at, seated(*seed))).is_err() {
+                    if done.send((at, taken(*seed))).is_err() {
                         break;
                     }
                 }

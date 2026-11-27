@@ -37,7 +37,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all four runs over a range, or seeds by comma, on every core (ZECSWAP_SIM_THREADS for fewer): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all four runs over a range, or seeds by comma, on half the cores (ZECSWAP_SIM_THREADS for another count): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
 ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey and zcash_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
@@ -230,24 +230,26 @@ No hand-written example tests (Conventions). These stand in for them:
   fault, maker behaviour or check there, never by an example test. Faults stay within what the
   design assumes (reorgs two deep, a reveal landing inside `CLAIM_MARGIN`): past that a seed fails
   by design, not by a bug.
-- **Hunts** (`hunt.rs`; the test `hunt`). Seeds run on every core, as many at once as
-  `ZECSWAP_SIM_THREADS` says, each on a thread and a paused clock of its own, and are told in seed
-  order: `every_*`, the regressions and the surveys spread so too. A hunt runs a range of seeds
-  through the runs named in `ZECSWAP_SIM_RUNS` (all four by default; `zcash=0..2000` gives a run a
-  range of its own) and keeps what it finds under `docs/local/sim-hunts`, or the folder
-  `ZECSWAP_SIM_HUNTS` names, in a folder of the tree's: its commit and, where files are changed, a
-  hash of the changes, as a seed means something for one tree only. There: `seeds.jsonl`, a line a
-  seed with its digest (plan, verdict and whole trace), its failures and what it reached, which the
-  same command reads to go on where a hunt stopped; `failures.txt`, each failing seed's survey
-  line, plan, failures and replay command; `summary.txt`, what the hunt printed, and `reach.txt`.
-  Failures are grouped by their text with numbers, hashes and the checkout's path taken out, and
-  each way of failing is named by eight hex digits: a line `<name> <label>` in `labels.txt` of the
-  hunts folder marks one as known, the rest show as NEW. Reach (`reach.rs`) counts, run by run, the
-  seeds that met each situation worth meeting: every variant a plan picks, every way a run ends,
-  each alert and what the operator did about it, reorgs by depth, a wallet killed before or after
-  its deposit, and by their text the refusals the client and the wallet voiced. The summary names
-  the situations no seed reached. Nothing a hunt finds belongs in a tracked file or on CI: a
-  failing seed gives its finding away.
+- **Hunts** (`hunt.rs`; the test `hunt`). Seeds run as many at once as `ZECSWAP_SIM_THREADS` says,
+  half the cores unless it is set, each on a thread and a paused clock of its own, and are told in
+  seed order: `every_*`, the regressions, the replays and the surveys spread so too, and every seed
+  `cargo test` runs takes one of those seats. The prover's pool gets as many threads again
+  (`RAYON_NUM_THREADS` for another count), so at most twice that many are busy, and only while
+  Zcash seeds prove. A hunt runs a range of seeds through the runs named in `ZECSWAP_SIM_RUNS` (all
+  four by default; `zcash=0..2000` gives a run a range of its own) and keeps what it finds under
+  `docs/local/sim-hunts`, or the folder `ZECSWAP_SIM_HUNTS` names, in a folder of the tree's: its
+  commit and, where files are changed, a hash of the changes, as a seed means something for one
+  tree only. There: `seeds.jsonl`, a line a seed with its digest (plan, verdict and whole trace),
+  its failures and what it reached, which the same command reads to go on where a hunt stopped;
+  `failures.txt`, each failing seed's survey line, plan, failures and replay command;
+  `summary.txt`, what the hunt printed, and `reach.txt`. Failures are grouped by their text with
+  numbers, hashes and the checkout's path taken out, and each way of failing is named by eight hex
+  digits: a line `<name> <label>` in `labels.txt` of the hunts folder marks one as known, the rest
+  show as NEW. Reach (`reach.rs`) counts, run by run, the seeds that met each situation worth
+  meeting: every variant a plan picks, every way a run ends, each alert and what the operator did
+  about it, reorgs by depth, a wallet killed before or after its deposit, and by their text the
+  refusals the client and the wallet voiced. The summary names the situations no seed reached.
+  Nothing a hunt finds belongs in a tracked file or on CI: a failing seed gives its finding away.
 - **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client and fails if no seed
   notices: forward, the ready depth, the claim margin, the deposit deadline, the terms check, the
   fee cap, the claim window's start, the maker's hour after `t1`; reverse, no ready after a refund,

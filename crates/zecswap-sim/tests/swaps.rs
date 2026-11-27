@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 
-use zecswap_sim::hunt::{Hunt, Kind, Told, folder, spread};
+use zecswap_sim::hunt::{Hunt, Kind, Told, folder, seated, spread};
 use zecswap_sim::{End, Plan, Report, deposits, lightwallet, reverse, run, run_with};
 
 fn listed(spec: &str) -> Vec<u64> {
@@ -64,19 +64,27 @@ where
     });
 }
 
-fn replays<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>, some: std::ops::Range<u64>) {
-    for seed in seeds("ZECSWAP_SIM_REPLAY", some) {
-        let (first, second) = (run(seed), run(seed));
-        assert_eq!(first.trace, second.trace, "seed {seed} ran two ways");
-        assert_eq!(
-            first.failures, second.failures,
-            "seed {seed} judged two ways"
-        );
-    }
+fn replays<P: Debug + Send, E: Debug + Send>(
+    run: fn(u64) -> Report<P, E>,
+    some: std::ops::Range<u64>,
+) {
+    let twice = |seed| (run(seed), run(seed));
+    spread(
+        &seeds("ZECSWAP_SIM_REPLAY", some),
+        twice,
+        |(first, second)| {
+            let seed = first.seed;
+            assert_eq!(first.trace, second.trace, "seed {seed} ran two ways");
+            assert_eq!(
+                first.failures, second.failures,
+                "seed {seed} judged two ways"
+            );
+        },
+    );
 }
 
 #[test]
-#[ignore = "hunts seeds over the four runs on every core: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
+#[ignore = "hunts seeds over the four runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
 fn hunt() {
     let all = seeds("ZECSWAP_SIM_SEEDS", 0..200);
     let run = |asked: &str| {
@@ -98,7 +106,7 @@ fn hunt() {
 
 #[test]
 fn a_swap_with_nothing_wrong_pays_the_users_note() {
-    let report = run_with(1, Plan::plain());
+    let report = seated(|| run_with(1, Plan::plain()));
     assert!(report.failures.is_empty(), "{}", report.story());
     assert!(
         matches!(report.ended, Some(End::Paid(_))),
@@ -143,7 +151,7 @@ fn a_seed_replays_to_the_same_trace() {
 
 #[test]
 fn a_reverse_swap_with_nothing_wrong_sends_the_zec() {
-    let report = reverse::run_with(1, reverse::Plan::plain());
+    let report = seated(|| reverse::run_with(1, reverse::Plan::plain()));
     assert!(report.failures.is_empty(), "{}", report.story());
     assert!(
         matches!(report.ended, Some(reverse::Ended::Received(_))),
@@ -189,7 +197,7 @@ fn a_reverse_seed_replays_to_the_same_trace() {
 
 #[test]
 fn a_deposit_with_nothing_wrong_reaches_the_wallets_note() {
-    let report = deposits::run_with(1, deposits::Plan::plain());
+    let report = seated(|| deposits::run_with(1, deposits::Plan::plain()));
     assert!(report.failures.is_empty(), "{}", report.story());
     let ended = report.ended.as_ref().expect("a tally");
     assert!(
@@ -236,7 +244,7 @@ fn a_deposit_seed_replays_to_the_same_trace() {
 
 #[test]
 fn a_zcash_wallet_with_nothing_wrong_sweeps_its_deposit() {
-    let report = lightwallet::run_with(1, lightwallet::Plan::plain());
+    let report = seated(|| lightwallet::run_with(1, lightwallet::Plan::plain()));
     assert!(report.failures.is_empty(), "{}", report.story());
     let ended = report.ended.as_ref().expect("a tally");
     assert!(
