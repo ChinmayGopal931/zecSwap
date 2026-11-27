@@ -76,7 +76,9 @@ contract SimRailgun {
         ShieldCiphertext[] shieldCiphertext,
         uint256[] fees
     );
-    event Transact(uint256 treeNumber, uint256 startPosition, bytes32[] hash, CommitmentCiphertext[] ciphertext);
+    event Transact(
+        uint256 treeNumber, uint256 startPosition, bytes32[] hash, CommitmentCiphertext[] ciphertext
+    );
     event Unshield(address to, TokenData token, uint256 amount, uint256 fee);
     event Nullified(uint16 treeNumber, bytes32[] nullifier);
 
@@ -172,12 +174,21 @@ contract SimRailgun {
         uint256 made = transaction.commitments.length;
         require(spent > 0 && spent <= MAX_NOTES && made > 0 && made <= MAX_NOTES, "Verifier: Key not set");
         if (bound.unshield != 0) {
-            require(bound.commitmentCiphertext.length == made - 1, "RailgunLogic: Invalid Note Ciphertext Array Length");
+            require(
+                bound.commitmentCiphertext.length == made - 1,
+                "RailgunLogic: Invalid Note Ciphertext Array Length"
+            );
             CommitmentPreimage memory note = transaction.unshieldPreimage;
             if (bound.unshield == 2) note.npk = bytes32(uint256(uint160(msg.sender)));
-            require(keccak256(abi.encode(note)) == transaction.commitments[made - 1], "RailgunLogic: Invalid Withdraw Note");
+            require(
+                keccak256(abi.encode(note)) == transaction.commitments[made - 1],
+                "RailgunLogic: Invalid Withdraw Note"
+            );
         } else {
-            require(bound.commitmentCiphertext.length == made, "RailgunLogic: Invalid Note Ciphertext Array Length");
+            require(
+                bound.commitmentCiphertext.length == made,
+                "RailgunLogic: Invalid Note Ciphertext Array Length"
+            );
         }
         require(_verified(transaction), "RailgunLogic: Invalid Snark Proof");
     }
