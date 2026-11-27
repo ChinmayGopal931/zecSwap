@@ -504,7 +504,7 @@ impl Plan {
         )
     }
 
-    fn calm(&self) -> bool {
+    pub(crate) fn calm(&self) -> bool {
         let Sky {
             reorg,
             reorg_after_tx,

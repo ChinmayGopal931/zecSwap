@@ -231,7 +231,7 @@ impl Plan {
         plan
     }
 
-    fn calm(&self) -> bool {
+    pub(crate) fn calm(&self) -> bool {
         self.weather.rpc_error == 0
             && self.weather.delayed == 0
             && self.weather.reorg == 0

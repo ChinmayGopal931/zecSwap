@@ -27,7 +27,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, and `reach.rs` for the situations a seed reached; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
 | `crates/zecswap-sim-evm` | The simulated node's EVM: one call or transaction run by revm on a block's state, in a crate of its own so that it builds optimised (Testing, Its seams) |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
@@ -37,10 +37,11 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # hunt all four runs: ~0.4 s a seed each, the Zcash wallet's ~0.8 s on four threads; a range, or seeds by comma (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all four runs over a range, or seeds by comma, on every core (ZECSWAP_SIM_THREADS for fewer): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
+ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet)
-ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey and zcash_survey likewise)
-scripts/sim-mutants.py 0..150                           # breaks 89 client rules in turn, in place, and names the seeds that catch each (over three hours; a run cut short is undone by the next); names after the range pick mutants
+ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey and zcash_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
+scripts/sim-mutants.py 0..150                           # breaks 89 client rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
 (cd contracts && FOUNDRY_PROFILE=soak forge test --no-match-path 'test/{fork,ffi}/*')  # ~1 h: 4096×256 stateful runs, 65536 fuzz runs; the coverage corpus in cache/ carries over
@@ -158,7 +159,9 @@ No hand-written example tests (Conventions). These stand in for them:
   after another in a wallet with no other; a stalling lightwalletd; lost answers to broadcasts with
   a crash after building; each way a held payment ends; hostile sweeps for the signer; fee addresses
   under reorgs; restarts of an inventory or seed account. Some four seeds in ten prove, one to three
-  times, at ~0.8 s a proof; no prover is faked.
+  times, at ~0.8 s a proof; no prover is faked. A seed's wallet file starts as a copy of one the
+  wallet migrated from empty earlier in the process, once a network, so a seed's first open finds
+  its schema in place as a later one does.
 - **Alerts in the simulation** (`alerts.rs`). Every sender's alerts (How it behaves) reach one sink,
   which holds each against the chain as it is raised: the account's count, the transactions it
   names, whether they are mined or still in the pool, how many blocks a send has waited at that
@@ -218,7 +221,8 @@ No hand-written example tests (Conventions). These stand in for them:
   key and no note behind; a payment paid its amount and returned the change; no errand was paid
   twice; nothing the signer signed pays its destination less than its intent or the network more, an
   honest sweep is never refused, and one proved is taken and mined; with time enough once the
-  weather cleared, every errand ended as planned. The same seed gives the same trace.
+  weather cleared, every errand ended as planned. The same seed gives the same trace, alone or with
+  others running beside it on other threads.
 - **Working with it.** A failing seed prints its plan and last events: replay it with
   `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt` (or
   `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt`), which every
@@ -226,6 +230,24 @@ No hand-written example tests (Conventions). These stand in for them:
   fault, maker behaviour or check there, never by an example test. Faults stay within what the
   design assumes (reorgs two deep, a reveal landing inside `CLAIM_MARGIN`): past that a seed fails
   by design, not by a bug.
+- **Hunts** (`hunt.rs`; the test `hunt`). Seeds run on every core, as many at once as
+  `ZECSWAP_SIM_THREADS` says, each on a thread and a paused clock of its own, and are told in seed
+  order: `every_*`, the regressions and the surveys spread so too. A hunt runs a range of seeds
+  through the runs named in `ZECSWAP_SIM_RUNS` (all four by default; `zcash=0..2000` gives a run a
+  range of its own) and keeps what it finds under `docs/local/sim-hunts`, or the folder
+  `ZECSWAP_SIM_HUNTS` names, in a folder of the tree's: its commit and, where files are changed, a
+  hash of the changes, as a seed means something for one tree only. There: `seeds.jsonl`, a line a
+  seed with its digest (plan, verdict and whole trace), its failures and what it reached, which the
+  same command reads to go on where a hunt stopped; `failures.txt`, each failing seed's survey
+  line, plan, failures and replay command; `summary.txt`, what the hunt printed, and `reach.txt`.
+  Failures are grouped by their text with numbers, hashes and the checkout's path taken out, and
+  each way of failing is named by eight hex digits: a line `<name> <label>` in `labels.txt` of the
+  hunts folder marks one as known, the rest show as NEW. Reach (`reach.rs`) counts, run by run, the
+  seeds that met each situation worth meeting: every variant a plan picks, every way a run ends,
+  each alert and what the operator did about it, reorgs by depth, a wallet killed before or after
+  its deposit, and by their text the refusals the client and the wallet voiced. The summary names
+  the situations no seed reached. Nothing a hunt finds belongs in a tracked file or on CI: a
+  failing seed gives its finding away.
 - **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client and fails if no seed
   notices: forward, the ready depth, the claim margin, the deposit deadline, the terms check, the
   fee cap, the claim window's start, the maker's hour after `t1`; reverse, no ready after a refund,
