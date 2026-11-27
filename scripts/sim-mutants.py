@@ -42,7 +42,6 @@ BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
 ZCASH = ("zcash_survey", "zcash seed ")
 GUARD = ("guard_survey", "guard seed ")
-OPEN = {"zcash_survey"}
 SOUND = {}
 
 READY_SENT = """        self.relayer
@@ -1001,19 +1000,21 @@ def stopped(number, _):
 
 def told(name, ran, seeds, unchanged, escaped):
     test = MUTANTS[name][0][0]
-    if test in OPEN and test not in SOUND:
+    if test not in SOUND:
         SOUND[test] = unchanged(MUTANTS[name][0])
-        print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
-    seeds = [seed for seed, how in seeds.items() if SOUND.get(test, {}).get(seed) != how]
+        if SOUND[test]:
+            print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
+    seeds = [seed for seed, how in seeds.items() if SOUND[test].get(seed) != how]
     print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
     if not seeds:
         escaped.append(name)
 
 
 def in_place(home, chosen, escaped):
+    unchanged = {survey: home.survey(*survey)[1] for survey in dict.fromkeys(MUTANTS[name][0] for name in chosen)}
     for name in chosen:
         ran, seeds = home.mutant(name)
-        told(name, ran, seeds, lambda survey: home.survey(*survey)[1], escaped)
+        told(name, ran, seeds, unchanged.get, escaped)
 
 
 def in_copies(home, chosen, escaped):
@@ -1034,11 +1035,9 @@ def in_copies(home, chosen, escaped):
     try:
         for number in range(workers):
             copies.put(home.copy(number, workers))
-        surveys = dict.fromkeys(MUTANTS[name][0] for name in chosen)
         unchanged = {
             survey: pool.submit(on_a_copy(lambda copy, survey=survey: copy.survey(*survey)[1]))
-            for survey in surveys
-            if survey[0] in OPEN
+            for survey in dict.fromkeys(MUTANTS[name][0] for name in chosen)
         }
         mutants = [pool.submit(on_a_copy(lambda copy, name=name: copy.mutant(name))) for name in chosen]
         for name, mutant in zip(chosen, mutants):

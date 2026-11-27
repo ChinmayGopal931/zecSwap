@@ -367,9 +367,10 @@ No hand-written example tests (Conventions). These stand in for them:
   gas-price cap, gas limit and rival escrow, and what `transaction_status` and `nonce_taken` read.
   Three more turn a refusal into a panic. The five regressions lists also name seeds that caught
   each, so every `cargo test` would. A change to a plan or to a fault reshuffles what each
-  seed does: run the script again and replace those seeds. For a run with open findings the script
-  first counts the seeds that fail unchanged and leaves them out. The script touches every file it
-  restores, so cargo rebuilds it: a mutant never stays compiled in after it is undone.
+  seed does: run the script again and replace those seeds. The script first runs each survey with
+  nothing changed and leaves out the seeds that fail there, but where a mutant makes one fail
+  another way. The script touches every file it restores, so cargo rebuilds it: a mutant never stays
+  compiled in after it is undone.
 - **Its seams**, compiled only with the `sim` feature of chain, client and railgun:
   `evm::simulate_wall` (the wall clock, per task with `world::Skewed`), `Settlement::over` and
   `broadcast_privately_over` (an alloy transport in place of a URL), `MakerApi::over` and
