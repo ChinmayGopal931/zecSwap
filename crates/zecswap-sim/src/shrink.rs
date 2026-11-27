@@ -175,10 +175,9 @@ impl Shrinks for Plan {
         let mut steps = Steps::of(self);
         each!(steps, plan => plan, Plan {
             calms: [skew, linger_verify, linger_claim, zcash_loss],
-            also: [mood, service, max_open_fee, railgun, private, multicall, clears, units],
-            apart: [weather, maker_line, relayer_line, fee, crashes],
+            also: [mood, service, fee, max_open_fee, railgun, private, multicall, clears, units],
+            apart: [weather, maker_line, relayer_line, crashes],
         });
-        steps.set("fee", false, |plan| &mut plan.fee);
         steps.fewer("crashes", 0, true, |plan| &mut plan.crashes, whole);
         each!(steps, plan => plan.weather, Weather {
             calms: [

@@ -726,6 +726,10 @@ class Checkout:
         RUNNING.add(run)
         try:
             out, err = run.communicate()
+        except BaseException:
+            run.kill()
+            run.wait()
+            raise
         finally:
             RUNNING.discard(run)
         lines = [line for line in out.splitlines() if line.startswith(prefix)]

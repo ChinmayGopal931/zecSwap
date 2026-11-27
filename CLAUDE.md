@@ -274,8 +274,9 @@ No hand-written example tests (Conventions). These stand in for them:
   Nor is a step taken that breaks a rule every plan from a seed keeps and its plan kept (`breaks`:
   a maker that keeps the fee asks one under the cap; in the Zcash run, a tip that goes back comes
   with a fresh wallet and no reorgs, payments lost with their blocks with a watched account alone,
-  no transaction is lost after the upgrade, funds come with an account of the wallet's own): a
-  `from_seed` that comes to set one field by another adds its rule there.
+  no transaction is lost after the upgrade, funds come with an account of the wallet's own, and a
+  wallet of joint accounts alone only receives and signs): a `from_seed` that comes to set one
+  field by another adds its rule there.
   It keeps `shrunk-<run>-<seed>-<name>.txt` in the tree's folder among the hunts: the seed's line
   and plan before and after, the last run's failures and digest (`ZECSWAP_SIM_DIGEST=1` has a
   story print its own), the steps taken, the replay command, the steps left, each of which ends
