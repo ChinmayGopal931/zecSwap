@@ -31,6 +31,9 @@ LIGHTWALLETD = "crates/zecswap-chain/src/zcash/lightwalletd.rs"
 SWEEP = "crates/zecswap-core/src/sweep.rs"
 SYNC = "crates/zecswap-chain/src/zcash/wallet/sync.rs"
 ALERT = "crates/zecswap-chain/src/alert.rs"
+RAILGUN = "crates/zecswap-chain/src/evm/railgun.rs"
+FUNDING = "crates/zecswap-chain/src/evm/funding.rs"
+CANONICAL = "crates/zecswap-chain/src/evm/canonical.rs"
 BACKUP = pathlib.Path("target") / "sim-mutants"
 RUNNING = set()
 HALT = threading.Event()
@@ -38,6 +41,7 @@ FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
 ZCASH = ("zcash_survey", "zcash seed ")
+GUARD = ("guard_survey", "guard seed ")
 OPEN = {"zcash_survey"}
 SOUND = {}
 
@@ -695,6 +699,198 @@ MUTANTS = {
             let kept = kept.inspect_err(|refusal| {
 """,
         ),
+    ]),
+    "send-to-any-destination": (GUARD, [
+        (RAILGUN, 'to == self.railgun && value == 0,', 'true,'),
+    ]),
+    "send-of-any-size": (GUARD, [
+        (RAILGUN, '            data.len() <= MAX_CALLDATA_BYTES,\n            "the calldata is too large",', '            true,\n            "the calldata is too large",'),
+    ]),
+    "send-of-no-transactions": (GUARD, [
+        (RAILGUN, '            !transactions.is_empty(),\n            "expected at least one Railgun transaction",', '            true,\n            "expected at least one Railgun transaction",'),
+    ]),
+    "send-spending-nothing": (GUARD, [
+        (RAILGUN, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n                "each Railgun transaction must spend notes",', '                true,\n                "each Railgun transaction must spend notes",'),
+    ]),
+    "send-for-any-chain": (GUARD, [
+        (RAILGUN, 'require(bound.chainID == chain_id, "a proof is for another chain")?;', 'require(true, "a proof is for another chain")?;'),
+    ]),
+    "send-bound-to-an-adapter": (GUARD, [
+        (RAILGUN, 'bound.adaptContract.is_zero() && bound.adaptParams.is_zero(),', 'true,'),
+    ]),
+    "send-redirected": (GUARD, [
+        (RAILGUN, '                bound.unshield <= 1,\n', '                true,\n'),
+    ]),
+    "send-unshielding-any-token": (GUARD, [
+        (RAILGUN, 'bound.unshield == 0 || erc20(&tx.unshieldPreimage.token, self.token),', 'true,'),
+    ]),
+    "send-at-any-min-gas-price": (GUARD, [
+        (RAILGUN, 'transact.min_gas_price <= self.max_gas_price_wei,', 'true,'),
+    ]),
+    "send-for-any-fee": (GUARD, [
+        (RAILGUN, '            paid >= self.fee,\n', '            true,\n'),
+    ]),
+    "fee-in-any-token": (GUARD, [
+        (RAILGUN, '(received.token == token.into_word().0).then_some(received.value)', 'Some(received.value)'),
+    ]),
+    "sent-over-the-gas-cap": (GUARD, [
+        (RAILGUN, '            gas_price <= policy.max_gas_price_wei,\n', '            true,\n'),
+    ]),
+    "sent-over-the-gas-limit": (GUARD, [
+        (RAILGUN, '            estimate <= policy.max_gas_limit,\n', '            true,\n'),
+    ]),
+    "sent-uncovered": (GUARD, [
+        (RAILGUN, '            covers(estimate, gas_price),\n', '            true,\n'),
+    ]),
+    "sent-unafforded": (GUARD, [
+        (RAILGUN, '        require(afford(gas_limit), "the relayer is low on ETH")?;\n', ''),
+    ]),
+    "spent-unseen": (GUARD, [
+        (RAILGUN, '                if self.spends_spent_notes(transact).await? {', '                if self.spends_spent_notes(transact).await? && false {'),
+    ]),
+    "fourteen-nullifiers": (GUARD, [
+        (RAILGUN, 'const MAX_NULLIFIERS: usize = 13;', 'const MAX_NULLIFIERS: usize = 14;'),
+    ]),
+    "fourteen-commitments": (GUARD, [
+        (RAILGUN, 'const MAX_COMMITMENTS: usize = 13;', 'const MAX_COMMITMENTS: usize = 14;'),
+    ]),
+    "seventeen-transactions": (GUARD, [
+        (RAILGUN, 'pub const MAX_TRANSACTIONS: usize = 16;', 'pub const MAX_TRANSACTIONS: usize = 17;'),
+    ]),
+    "longer-annotations": (GUARD, [
+        (RAILGUN, 'const MAX_ANNOTATION_BYTES: usize = 62;', 'const MAX_ANNOTATION_BYTES: usize = 63;'),
+    ]),
+    "longer-memos": (GUARD, [
+        (RAILGUN, 'const MAX_MEMO_BYTES: usize = 1024;', 'const MAX_MEMO_BYTES: usize = 1025;'),
+    ]),
+    "larger-calldata": (GUARD, [
+        (RAILGUN, 'pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;', 'pub const MAX_CALLDATA_BYTES: usize = 128 * 1024;'),
+    ]),
+    "unknown-read-as-pending": (GUARD, [
+        (RAILGUN, '                None => Status::Unknown,', '                None => Status::Pending,'),
+    ]),
+    "nonce-taken-at-the-tip": (GUARD, [
+        (RAILGUN, 'let Some(block) = latest.checked_sub(depth) else {', 'let Some(block) = latest.checked_sub(depth.min(0)) else {'),
+    ]),
+    "any-offset": (GUARD, [
+        (CANONICAL, '                if self.word(head)? != U256::from(end - start) {', '                if self.word(head)? != U256::from(end - start) && false {'),
+    ]),
+    "trailing-bytes": (GUARD, [
+        (CANONICAL, '    if end != data.len() {', '    if end > data.len() {'),
+    ]),
+    "dirty-padding": (GUARD, [
+        (CANONICAL, '                if padded[len..].iter().any(|&byte| byte != 0) {', '                if padded[len..].iter().any(|&byte| byte != 0) && false {'),
+    ]),
+    "any-bool": (GUARD, [
+        (CANONICAL, '            Shape::Bool if self.word(at)? > U256::from(1) => Err(Malformed::Noncanonical),', '            Shape::Bool if self.word(at)? > U256::MAX => Err(Malformed::Noncanonical),'),
+    ]),
+    "uncapped-lengths": (GUARD, [
+        (CANONICAL, '        if len > U256::from(max) {', '        if len > U256::from(max.max(4096)) {'),
+    ]),
+    "uncapped-ciphertexts": (GUARD, [
+        (CANONICAL, '                let len = self.len(at, self.cap)?;', '                let len = self.len(at, self.cap.max(64))?;'),
+    ]),
+    "funding-to-any-destination": (GUARD, [
+        (FUNDING, 'to == self.relay_adapt && value == 0,', 'true,'),
+    ]),
+    "funding-without-success": (GUARD, [
+        (FUNDING, '            action.requireSuccess,\n', '            true,\n'),
+    ]),
+    "funding-any-minimum-gas": (GUARD, [
+        (FUNDING, 'action.minGasLimit <= U256::from(self.max_gas_limit),', 'true,'),
+    ]),
+    "funding-any-call-count": (GUARD, [
+        (FUNDING, 'action.calls.len() == 4,', 'true,'),
+    ]),
+    "funding-calls-with-eth": (GUARD, [
+        (FUNDING, 'action.calls.iter().all(|c| c.value.is_zero()),', 'true,'),
+    ]),
+    "funding-opens-any-contract": (GUARD, [
+        (FUNDING, '                && open_call.to == Address::from(domain.contract)\n', ''),
+    ]),
+    "funding-calls-any-target": (GUARD, [
+        (FUNDING, '            approve_call.to == self.token\n                && open_call.to == Address::from(domain.contract)\n                && fee_call.to == self.token\n                && shield_call.to == self.relay_adapt,', '            true,'),
+    ]),
+    "funding-fee-to-anyone": (GUARD, [
+        (FUNDING, 'payment.to == self.fee_recipient && payment.amount', 'payment.amount'),
+    ]),
+    "funding-any-fee": (GUARD, [
+        (FUNDING, 'payment.to == self.fee_recipient && payment.amount >= U256::from(self.fee),', 'payment.to == self.fee_recipient,'),
+    ]),
+    "funding-any-maker-token-user": (GUARD, [
+        (FUNDING, 'words.maker == self.maker && words.token == self.token && !words.user.is_zero(),', 'true,'),
+    ]),
+    "funding-any-amount-or-note": (GUARD, [
+        (FUNDING, 'words.amount > 0 && words.amount < (1u128 << 120) && !words.refundNote.is_zero(),', 'true,'),
+    ]),
+    "funding-any-deadlines": (GUARD, [
+        (FUNDING, 'words.deadline < words.t0 && words.t0 < words.t1,', 'true,'),
+    ]),
+    "funding-approves-anyone": (GUARD, [
+        (FUNDING, 'approve.spender == open_call.to && approve.amount', 'approve.amount'),
+    ]),
+    "funding-approves-any-amount": (GUARD, [
+        (FUNDING, 'approve.spender == open_call.to && approve.amount == U256::from(words.amount),', 'approve.spender == open_call.to,'),
+    ]),
+    "funding-several-shields": (GUARD, [
+        (FUNDING, '            shield._shieldRequests.len() == 1,\n', '            !shield._shieldRequests.is_empty(),\n'),
+    ]),
+    "funding-any-dust-shield": (GUARD, [
+        (FUNDING, 'erc20(&dust.token, self.token) && dust.value.is_zero() && !dust.npk.is_zero(),', 'true,'),
+    ]),
+    "funding-any-swap-id": (GUARD, [
+        (FUNDING, 'id == reverse_swap_id(words.user, &terms.maker_share),', 'true,'),
+    ]),
+    "funding-any-signer": (GUARD, [
+        (FUNDING, 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user),', 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user) || true,'),
+    ]),
+    "funding-no-transactions": (GUARD, [
+        (FUNDING, '            !relay._transactions.is_empty(),\n', '            true,\n'),
+    ]),
+    "funding-spending-nothing": (GUARD, [
+        (FUNDING, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n', '                true,\n'),
+    ]),
+    "funding-unbound": (GUARD, [
+        (FUNDING, '                bound.chainID == domain.chain_id\n                    && bound.adaptContract == self.relay_adapt\n                    && bound.adaptParams == adapt_params,', '                true,'),
+    ]),
+    "funding-any-min-gas-price": (GUARD, [
+        (FUNDING, '                min_gas_price <= self.max_gas_price_wei,\n', '                true,\n'),
+    ]),
+    "funding-redirected": (GUARD, [
+        (FUNDING, '                bound.unshield <= 1,\n', '                true,\n'),
+    ]),
+    "funding-unshield-anywhere": (GUARD, [
+        (FUNDING, '                    unshield.npk == self.relay_adapt.into_word()\n                        && erc20(&unshield.token, self.token)\n                        && !unshield.value.is_zero(),', '                    true,'),
+    ]),
+    "funding-without-unshield": (GUARD, [
+        (FUNDING, '        require(unshields > 0, "funding must unshield from Railgun")?;\n', ''),
+    ]),
+    "config-any-addresses": (GUARD, [
+        (FUNDING, '!self.relay_adapt.is_zero() && !self.token.is_zero() && !self.maker.is_zero(),', 'true,'),
+    ]),
+    "config-relayer-as-maker": (GUARD, [
+        (FUNDING, '            self.maker != account,\n', '            true,\n'),
+    ]),
+    "config-fee-elsewhere": (GUARD, [
+        (FUNDING, '            self.fee_recipient == account,\n', '            true,\n'),
+    ]),
+    "config-no-gas": (GUARD, [
+        (FUNDING, 'self.max_gas_limit > 0 && self.max_gas_price_wei > 0,', 'true,'),
+    ]),
+    "adapter-of-any-railgun": (GUARD, [
+        (FUNDING, '!railgun.is_zero() && actual == railgun,', 'true,'),
+    ]),
+    "funding-past-its-deadline": (GUARD, [
+        (FUNDING, 'self.now().await? < terms.deadline,', 'true,'),
+    ]),
+    "funding-over-the-gas-cap": (GUARD, [
+        (FUNDING, 'fees.max_fee_per_gas <= policy.max_gas_price_wei,', 'true,'),
+    ]),
+    "funding-over-the-gas-limit": (GUARD, [
+        (FUNDING, '            estimate <= policy.max_gas_limit,\n', '            true,\n'),
+    ]),
+    "funding-over-a-rival-escrow": (GUARD, [
+        (FUNDING, '            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),', '            Err(Error::WrongTerms(_)) => {}'),
     ]),
 }
 

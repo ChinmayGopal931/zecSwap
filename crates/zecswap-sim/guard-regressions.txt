@@ -1,0 +1,4 @@
+2 catches a fee note to another receiver taken for the relayer's fee
+6 catches calldata with trailing bytes taken as a transact call
+10 catches an unreadable fee note taken for the relayer's fee, and a send whose fee does not cover its gas
+43 catches calldata with trailing bytes taken as a transact call
