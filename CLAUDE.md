@@ -42,7 +42,7 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer, cli_story for its command-line wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey, guard_survey and cli_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 174 client, relayer and command-line rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
+scripts/sim-mutants.py 0..150                           # breaks 167 client, relayer and command-line rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then)
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -189,23 +189,28 @@ No hand-written example tests (Conventions). These stand in for them:
   after a noncanonical twin, one followed by another proof of its notes), honest fundings (one
   posted again once open), and every way one can be
   wrong: another chain, proxy or ETH value, oversized, too many transactions, notes, outputs or
-  ciphertexts, a long annotation or memo, each malformation of the calldata (selector, offset,
-  padding, trailing or missing bytes, a dirty word), no transactions or notes, bound to another chain
+  ciphertexts, a long annotation or memo, each malformation of the calldata (selector, a batch's two
+  offsets swapped, padding, trailing or missing bytes, a dirty word), no transactions or notes, bound
+  to another chain
   or an adapter, a redirect, a withdrawal of another token, a minimum gas price over the cap, a fee
   note short, in another token, to another receiver, unreadable, claiming more than it holds, second,
   or under the gas it buys, notes spent before or twice, a forged proof, an unknown root; a funding
   to another adapter, with ETH, malformed, with a call more or less, reordered, failing calls
   allowed,
-  too much minimum gas, ETH in a call, another contract, token, spender or amount, a short or
-  misdirected fee, another maker, token, user, amount, note, deadlines, swap id or signer, invalid
-  shares or a short signature, two shields, dust left, kept or shielded to nobody, a proof bound to
-  another chain, adapter or action, a redirect, an unshield elsewhere, of another token or none, one
-  short of what the calls need, past its deadline, or against a rival escrow of the same id; some
-  posted twice at once. And the relayer: its gas-price cap under the fees' swing, too little ETH
-  until the operator tops it up, gas priced or not, a funding config that fails (no token, the maker
-  as relayer, the fee elsewhere, no gas) or an adapter on another Railgun or with no code, and
-  restarts. A fifth of seeds run calm with honest requests only; a tenth each press the gas cap, lose
-  answers and transactions, and put reorgs behind every transaction.
+  too much minimum gas, ETH in a call, another contract (under a signature for this one), token,
+  spender or amount, a short or misdirected fee, another maker, token, user, amount, note,
+  deadlines, swap id or signer, invalid shares or a short signature, no dust shield, dust left, kept
+  or shielded to nobody, a proof bound to another chain, adapter or action, a redirected unshield
+  beside its own, an unshield elsewhere, of another token or none, one short of what the calls need,
+  past its deadline, or against a rival escrow of the same id, with another refund note or other
+  terms; some posted twice at once. A wallet that lies posts again where the relayer tells it to
+  come back, as an honest one does. And the relayer: its gas-price cap under the fees' swing, too
+  little ETH until the operator tops it up, gas priced or not, a funding config that fails (no
+  token, the maker as relayer, the fee elsewhere, no gas) or an adapter on another Railgun or with
+  no code, and restarts. A fifth of seeds run calm with honest requests only; a tenth each press the
+  gas cap, lose answers and transactions, and put reorgs behind every transaction; a sixth ask a
+  third of the wrong requests above, one after another, of a relayer in good order, so that each is
+  met often.
 - **The command-line wallet** (`cli.rs`; the person in `cli/person.rs`, the record of durable steps
   in `cli/desk.rs`, the maker's view of the Zcash chain in `cli/seen.rs`). The same seed run by
   `cli::run` is one data directory of `zecswap-cli` over two hours or so: its seed file, its
@@ -296,8 +301,9 @@ No hand-written example tests (Conventions). These stand in for them:
   twice; nothing the signer signed pays its destination less than its intent or the network more, an
   honest sweep is never refused, and one proved is taken and mined; with time enough once the
   weather cleared, every errand ended as planned.
-  The relayer's checks, at the end, from the chain and the relayer's own accounts: nothing its
-  policy must refuse was simulated or sent by it, and nothing the chain must refuse was sent; no
+  The relayer's checks, at the end, from the chain, the relayer's own accounts and its answers:
+  nothing its policy must refuse was simulated or sent by it, or answered as sent or as open
+  already, and nothing the chain must refuse was sent; no
   honest request was refused but for the relayer's own state (its gas cap, its ETH, a failed read),
   and each was mined once the weather and the relayer had settled; each of its transactions carries
   calldata a wallet posted, in the canonical encoding, mined once, at a gas price within its cap;
@@ -305,7 +311,9 @@ No hand-written example tests (Conventions). These stand in for them:
   reverted but where something else spent its notes or opened its escrow first; the fee it counted
   for a send is what its keys read from that send's `Transact` notes in its token; its ETH went only
   on gas and its token rose only by the funding fees it was paid; every funding that landed opened
-  its escrow and left Relay Adapt holding nothing. Along the way, what `transaction_status`,
+  its escrow and left Relay Adapt holding nothing; a relayer whose funding config or adapter fails
+  answered every funding with that failure; a send of notes spent before was told so, and not that
+  it fails in simulation. Along the way, what `transaction_status`,
   `nonce_taken`, `nonces` and `rebroadcast` read agrees with the node at that moment.
   The command-line wallet, at the end, from the two chains and the directory: no two swaps of one
   directory share an index, nor does one use an index at or past the next; no open fee paid twice,
@@ -406,11 +414,12 @@ No hand-written example tests (Conventions). These stand in for them:
   signer's receiver, fee cap, least amount, readable ciphertext and note commitment; the alerts, the
   private one and the queue's never raised, the private one with no send dropped or only at the next
   send, the queue's at once or while it drains, the wallet's on any reorg, and a sink's panic let
-  through; the relayer's checks, each refusal of `SendPolicy::decode` and `check` and each of their
-  caps, `send_transact`'s gas-price cap, gas limit, `covers`, ETH and spent-note look-up, the
-  canonical encoding's offsets, padding, trailing bytes, bools and lengths, `validate_config`, each
-  refusal of `FundingPolicy::validate`, the adapter check, `sponsor_reverse_funding`'s deadline,
-  gas-price cap, gas limit and rival escrow, and what `transaction_status` and `nonce_taken` read;
+  through; the relayer's checks, the refusals of `SendPolicy::decode` and `check` and their caps,
+  `send_transact`'s gas-price cap, `covers` and spent-note look-up, the canonical encoding's
+  offsets, padding, trailing bytes and lengths, `validate_config`, the refusals of
+  `FundingPolicy::validate`, the adapter check, `sponsor_reverse_funding`'s deadline, gas-price cap
+  and both refusals of an escrow already there, and what `transaction_status` and `nonce_taken`
+  read (eight of the relayer's rules have no mutant: Not simulated yet);
   the command-line wallet, saving the next index, the open fee's payment, the joint account and the
   deposit before what follows, the deposit saved before its broadcast, sending the open fee again,
   the funds check before it, the cancelled-before-deposit shortcut, sending an unmined deposit
@@ -492,10 +501,16 @@ No hand-written example tests (Conventions). These stand in for them:
   sighash of a shielded-only transaction to be its txid digest, checks no ZIP 317 action count
   beyond the fee and no coinbase or turnstile rule. Of the relayer's checks: its HTTP service (the
   run's relayer is a model answering calls, with its own journal and holds), private broadcasting
-  of Railgun sends, fees priced per `feeExpiresAt`, a funding over the calldata cap or the gas cap,
-  a send over the gas cap, the policy changing between `validate` and `sponsor_reverse_funding`;
-  the one dust shield `validate` asks is met only by fundings its encoding caps already refuse, and
-  `rebroadcast`'s nonce rule has no mutant, as a node refuses a transaction at a spent nonce anyway.
+  of Railgun sends, fees priced per `feeExpiresAt`, a funding over the calldata cap, the policy
+  changing between `validate` and `sponsor_reverse_funding`. Eight of its rules have no mutant, as
+  another rule refuses whatever they refuse: a send of no transactions (it pays no fee), a proof's
+  own least gas price over the cap, in a send and in a funding (the sender's cap on the price it
+  pays), a bool that is neither 0 nor 1 (alloy's validating decode), a funding of no transactions
+  (it unshields nothing), the gas limit after an estimate, in a send and in a funding (an estimate
+  asked at the limit answers no more), and a send's ETH check after its estimate (the node here
+  refuses an estimate its sender cannot pay for at the limit, where geth answers within what the
+  balance allows). `rebroadcast`'s nonce rule has none either, as a node refuses a transaction at a
+  spent nonce anyway.
 - **Open findings** stay out of this repo: the maintainers keep them, with the seeds that fail, in
   `docs/local/open-findings.md`. Seeds outside the default ranges may fail on one of them.
 - **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
