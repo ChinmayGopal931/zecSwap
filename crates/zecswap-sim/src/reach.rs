@@ -1016,7 +1016,7 @@ const GUARDS: &[Situation<Guards>] = &[
     asked!(Funded::Deadlines),
     asked!(Funded::Spender),
     asked!(Funded::ApproveAmount),
-    asked!(Funded::TwoShields),
+    asked!(Funded::NoShields),
     asked!(Funded::Dust),
     asked!(Funded::DustToken),
     asked!(Funded::DustNpk),
@@ -1039,6 +1039,9 @@ const GUARDS: &[Situation<Guards>] = &[
         r.plan.requests.iter().any(|request| request.twice)
     }),
     ("calm weather", |r| r.plan.calm()),
+    ("a third of the wrong requests, one after another", |r| {
+        r.plan.requests.len() > 9
+    }),
     ("honest requests only", |r| {
         r.plan.requests.iter().all(|request| request.ask.honest())
     }),

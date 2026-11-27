@@ -194,11 +194,11 @@ impl Ground {
                 must = Must::Serve;
                 drafts = Some(self.spread(&coins[..2], 2, fee));
             }
+            Relayed::Offset => drafts = Some(self.spread(&coins[..2], 2, fee)),
             Relayed::OtherChain
             | Relayed::OtherProxy
             | Relayed::WithValue
             | Relayed::Selector
-            | Relayed::Offset
             | Relayed::Trailing
             | Relayed::Truncated
             | Relayed::DirtyWord => {}
@@ -280,7 +280,8 @@ impl Ground {
         let mut data = honest.clone();
         match relayed {
             Relayed::Selector => data[0] ^= 1,
-            Relayed::Offset | Relayed::Twin => data = offset(&honest),
+            Relayed::Offset => data[68..132].rotate_left(32),
+            Relayed::Twin => data = offset(&honest),
             Relayed::Padding => *data.last_mut().expect("calldata") = 1,
             Relayed::Trailing => data.extend_from_slice(&[0; 32]),
             Relayed::Truncated => data.truncate(data.len() - 32),
@@ -335,6 +336,7 @@ impl Ground {
     pub fn rival(&self, number: usize, at: u64) -> [(Address, Vec<u8>); 2] {
         let (keys, _, mut open) = self.opened(number, at);
         open.refund_note = keccak256(b"a rival escrow").0;
+        open.amount -= u128::from(self.seed.chance("guard-rival-terms", number as u64, 500));
         let domain = Domain {
             chain_id: CHAIN_ID,
             contract: self.contract.into(),
@@ -369,7 +371,7 @@ impl Ground {
         };
         let domain = Domain {
             chain_id: CHAIN_ID,
-            contract: contract.into(),
+            contract: self.contract.into(),
         };
         let signer = match funded {
             Funded::Signer => {
@@ -419,7 +421,7 @@ impl Ground {
         };
         let npk = B256::from(note.npk);
         let shields = match funded {
-            Funded::TwoShields => vec![dust(self.token, 0, npk), dust(self.token, 0, npk)],
+            Funded::NoShields => Vec::new(),
             Funded::Dust => vec![dust(self.token, 1, npk)],
             Funded::DustToken => vec![dust(self.other_token, 0, npk)],
             Funded::DustNpk => vec![dust(self.token, 0, B256::ZERO)],
@@ -459,7 +461,7 @@ impl Ground {
             Funded::CallValue => calls[2].value = U256::from(1),
             Funded::Reordered => calls.swap(0, 2),
             Funded::InnerTrailing | Funded::InnerSelector => {
-                let call = &mut calls[number % 4];
+                let call = &mut calls[self.seed.below("guard-inner", number as u64, 4) as usize];
                 let mut data = call.data.to_vec();
                 match funded {
                     Funded::InnerTrailing => data.extend_from_slice(&[0; 32]),
@@ -505,10 +507,7 @@ impl Ground {
             },
             token: exit_token,
             value: unshielded,
-            kind: match funded {
-                Funded::Redirect => 2,
-                _ => 1,
-            },
+            kind: 1,
         };
         let exit = match funded {
             Funded::NoUnshield => {
@@ -532,6 +531,12 @@ impl Ground {
         };
         let drafts = match funded {
             Funded::NoTransactions => Vec::new(),
+            Funded::Redirect => {
+                let mut redirected = draft.clone();
+                redirected.spends = vec![self.coins[number][1]];
+                redirected.exit = redirected.exit.map(|exit| Exit { kind: 2, ..exit });
+                vec![draft, redirected]
+            }
             _ => vec![draft],
         };
         let mut transactions: Vec<Transaction> = drafts

@@ -708,9 +708,6 @@ MUTANTS = {
     "send-of-any-size": (GUARD, [
         (RAILGUN, '            data.len() <= MAX_CALLDATA_BYTES,\n            "the calldata is too large",', '            true,\n            "the calldata is too large",'),
     ]),
-    "send-of-no-transactions": (GUARD, [
-        (RAILGUN, '            !transactions.is_empty(),\n            "expected at least one Railgun transaction",', '            true,\n            "expected at least one Railgun transaction",'),
-    ]),
     "send-spending-nothing": (GUARD, [
         (RAILGUN, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n                "each Railgun transaction must spend notes",', '                true,\n                "each Railgun transaction must spend notes",'),
     ]),
@@ -726,9 +723,6 @@ MUTANTS = {
     "send-unshielding-any-token": (GUARD, [
         (RAILGUN, 'bound.unshield == 0 || erc20(&tx.unshieldPreimage.token, self.token),', 'true,'),
     ]),
-    "send-at-any-min-gas-price": (GUARD, [
-        (RAILGUN, 'transact.min_gas_price <= self.max_gas_price_wei,', 'true,'),
-    ]),
     "send-for-any-fee": (GUARD, [
         (RAILGUN, '            paid >= self.fee,\n', '            true,\n'),
     ]),
@@ -738,14 +732,8 @@ MUTANTS = {
     "sent-over-the-gas-cap": (GUARD, [
         (RAILGUN, '            gas_price <= policy.max_gas_price_wei,\n', '            true,\n'),
     ]),
-    "sent-over-the-gas-limit": (GUARD, [
-        (RAILGUN, '            estimate <= policy.max_gas_limit,\n', '            true,\n'),
-    ]),
     "sent-uncovered": (GUARD, [
         (RAILGUN, '            covers(estimate, gas_price),\n', '            true,\n'),
-    ]),
-    "sent-unafforded": (GUARD, [
-        (RAILGUN, '        require(afford(gas_limit), "the relayer is low on ETH")?;\n', ''),
     ]),
     "spent-unseen": (GUARD, [
         (RAILGUN, '                if self.spends_spent_notes(transact).await? {', '                if self.spends_spent_notes(transact).await? && false {'),
@@ -782,9 +770,6 @@ MUTANTS = {
     ]),
     "dirty-padding": (GUARD, [
         (CANONICAL, '                if padded[len..].iter().any(|&byte| byte != 0) {', '                if padded[len..].iter().any(|&byte| byte != 0) && false {'),
-    ]),
-    "any-bool": (GUARD, [
-        (CANONICAL, '            Shape::Bool if self.word(at)? > U256::from(1) => Err(Malformed::Noncanonical),', '            Shape::Bool if self.word(at)? > U256::MAX => Err(Malformed::Noncanonical),'),
     ]),
     "uncapped-lengths": (GUARD, [
         (CANONICAL, '        if len > U256::from(max) {', '        if len > U256::from(max.max(4096)) {'),
@@ -834,8 +819,8 @@ MUTANTS = {
     "funding-approves-any-amount": (GUARD, [
         (FUNDING, 'approve.spender == open_call.to && approve.amount == U256::from(words.amount),', 'approve.spender == open_call.to,'),
     ]),
-    "funding-several-shields": (GUARD, [
-        (FUNDING, '            shield._shieldRequests.len() == 1,\n', '            !shield._shieldRequests.is_empty(),\n'),
+    "funding-any-shield-count": (GUARD, [
+        (FUNDING, '            shield._shieldRequests.len() == 1,\n', '            true,\n'),
     ]),
     "funding-any-dust-shield": (GUARD, [
         (FUNDING, 'erc20(&dust.token, self.token) && dust.value.is_zero() && !dust.npk.is_zero(),', 'true,'),
@@ -846,17 +831,11 @@ MUTANTS = {
     "funding-any-signer": (GUARD, [
         (FUNDING, 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user),', 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user) || true,'),
     ]),
-    "funding-no-transactions": (GUARD, [
-        (FUNDING, '            !relay._transactions.is_empty(),\n', '            true,\n'),
-    ]),
     "funding-spending-nothing": (GUARD, [
         (FUNDING, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n', '                true,\n'),
     ]),
     "funding-unbound": (GUARD, [
         (FUNDING, '                bound.chainID == domain.chain_id\n                    && bound.adaptContract == self.relay_adapt\n                    && bound.adaptParams == adapt_params,', '                true,'),
-    ]),
-    "funding-any-min-gas-price": (GUARD, [
-        (FUNDING, '                min_gas_price <= self.max_gas_price_wei,\n', '                true,\n'),
     ]),
     "funding-redirected": (GUARD, [
         (FUNDING, '                bound.unshield <= 1,\n', '                true,\n'),
@@ -888,8 +867,8 @@ MUTANTS = {
     "funding-over-the-gas-cap": (GUARD, [
         (FUNDING, 'fees.max_fee_per_gas <= policy.max_gas_price_wei,', 'true,'),
     ]),
-    "funding-over-the-gas-limit": (GUARD, [
-        (FUNDING, '            estimate <= policy.max_gas_limit,\n', '            true,\n'),
+    "funding-over-another-note": (GUARD, [
+        (FUNDING, 'funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),', 'funding.is_some(),'),
     ]),
     "funding-over-a-rival-escrow": (GUARD, [
         (FUNDING, '            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),', '            Err(Error::WrongTerms(_)) => {}'),

@@ -179,7 +179,7 @@ pub enum Funded {
     Deadlines,
     Spender,
     ApproveAmount,
-    TwoShields,
+    NoShields,
     Dust,
     DustToken,
     DustNpk,
@@ -230,7 +230,7 @@ impl Funded {
         Self::Deadlines,
         Self::Spender,
         Self::ApproveAmount,
-        Self::TwoShields,
+        Self::NoShields,
         Self::Dust,
         Self::DustToken,
         Self::DustNpk,
@@ -317,6 +317,20 @@ impl Stance {
     fn sound(&self) -> bool {
         self.cap == Self::SOUND.cap && self.eth == Self::SOUND.eth && self.sponsors()
     }
+
+    fn refusal(&self) -> Option<&'static str> {
+        match (self.config, self.adapter) {
+            (Config::Unset, _) => Some("funding addresses must be configured"),
+            (Config::MakerIsRelayer, _) => Some("funding relayer must be separate from maker"),
+            (Config::FeeElsewhere, _) => Some("the funding fee must pay the relayer"),
+            (Config::NoGas, _) => Some("funding gas limits must be positive"),
+            (Config::Sound, Adapter::OtherRailgun) => {
+                Some("funding adapter uses a different Railgun deployment")
+            }
+            (Config::Sound, Adapter::NoCode) => Some(UNREAD),
+            (Config::Sound, Adapter::Checked) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -353,12 +367,14 @@ pub struct Ended {
     pub reverted: usize,
 }
 
+const UNREAD: &str = "cannot read funding adapter's Railgun deployment";
+const UNSEEN: &str = "the transaction fails in simulation";
 const RETRIED: &[&str] = &[
     "the network's gas price is above the relayer's cap",
     "the relayer is low on ETH",
     "network gas price exceeds sponsorship limit",
     "funding simulation failed",
-    "cannot read funding adapter's Railgun deployment",
+    UNREAD,
 ];
 
 impl Plan {
@@ -482,6 +498,28 @@ impl Plan {
             3 => {
                 plan.weather.reorg_after_tx = 1000;
                 plan.weather.fork_delay = 900;
+            }
+            4 | 5 => {
+                let lies: Vec<Ask> = Relayed::LIES
+                    .map(Ask::Relayed)
+                    .into_iter()
+                    .chain(Funded::LIES.map(Ask::Funded))
+                    .collect();
+                let third = lies.len().div_ceil(3);
+                let from = roll("guard-parade", 3) as usize * third;
+                plan.stance = Stance {
+                    priced: plan.stance.priced,
+                    ..Stance::SOUND
+                };
+                plan.requests = lies[from..lies.len().min(from + third)]
+                    .iter()
+                    .zip(0..)
+                    .map(|(ask, n)| Request {
+                        at: seed.between("guard-at", n, 60, 40 * 60),
+                        ask: *ask,
+                        twice: false,
+                    })
+                    .collect();
             }
             _ => {}
         }
@@ -854,7 +892,7 @@ impl World {
                     }
                     0
                 }
-                Reply::Rejected(why) if must == Must::Serve && retried(&why) => 60,
+                Reply::Rejected(why) if retried(&why) => 60,
                 Reply::Rejected(_) | Reply::Spent(_) => return,
                 Reply::Busy(seconds) => seconds,
                 Reply::Internal(_) | Reply::Lost => 30,
@@ -891,6 +929,33 @@ impl World {
                         Reply::Rejected(_) | Reply::Spent(_) => ended.refused += 1,
                         _ => {}
                     }
+                }
+                if let (Some(_), Some(reason)) = (post.swap, self.plan.stance.refusal()) {
+                    let unread = self.plan.stance.config == Config::Sound;
+                    for reply in &heard {
+                        if let Reply::Rejected(why) = reply
+                            && why != reason
+                            && !(unread && why == UNREAD)
+                        {
+                            fail(format!(
+                                "{told}: a relayer that must sponsor nothing answered: {why}"
+                            ));
+                        }
+                    }
+                }
+                if *must == Must::Refuse
+                    && heard.iter().any(|reply| matches!(reply, Reply::Sent(_)))
+                {
+                    fail(format!(
+                        "{told}: the relayer answered as sent what its policy must refuse"
+                    ));
+                }
+                if ask == Ask::Relayed(Relayed::Spent)
+                    && heard.contains(&Reply::Rejected(UNSEEN.into()))
+                {
+                    fail(format!(
+                        "{told}: a send of spent notes was refused as one that fails otherwise"
+                    ));
                 }
                 match must {
                     Must::Refuse if simulated.contains(&post.data) => fail(format!(
