@@ -12,6 +12,7 @@ pub mod reverse;
 mod rpc;
 mod run;
 mod seed;
+pub mod shrink;
 mod wallet;
 mod world;
 mod zcash;

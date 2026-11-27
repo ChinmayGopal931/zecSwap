@@ -27,7 +27,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, and `reach.rs` for the situations a seed reached; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, `reach.rs` for the situations a seed reached, and `shrink.rs` for a failing seed's plan made simpler a step at a time; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
 | `crates/zecswap-sim-evm` | The simulated node's EVM: one call or transaction run by revm on a block's state, in a crate of its own so that it builds optimised (Testing, Its seams) |
 | `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
@@ -38,7 +38,8 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
 ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all four runs over a range, or seeds by comma, on half the cores (ZECSWAP_SIM_THREADS for another count): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
-ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped
+ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped, and it fails on a way of failing with no label
+ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey and zcash_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
 scripts/sim-mutants.py 0..150                           # breaks 89 client rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
@@ -245,11 +246,41 @@ No hand-written example tests (Conventions). These stand in for them:
   `summary.txt`, what the hunt printed, and `reach.txt`. Failures are grouped by their text with
   numbers, hashes and the checkout's path taken out, and each way of failing is named by eight hex
   digits: a line `<name> <label>` in `labels.txt` of the hunts folder marks one as known, the rest
-  show as NEW. Reach (`reach.rs`) counts, run by run, the seeds that met each situation worth
-  meeting: every variant a plan picks, every way a run ends, each alert and what the operator did
-  about it, reorgs by depth, a wallet killed before or after its deposit, and by their text the
-  refusals the client and the wallet voiced. The summary names the situations no seed reached.
+  show as NEW, and a hunt that met one fails, once its files are written and its summary printed,
+  so that one left alone tells by its exit. Reach (`reach.rs`) counts, run by run, the seeds that
+  met each situation worth meeting: every variant a plan picks, every way a run ends, each alert
+  and what the operator did about it, reorgs by depth, a wallet killed before or after its deposit,
+  and by their text the refusals the client and the wallet voiced. The summary names the
+  situations no seed reached.
   Nothing a hunt finds belongs in a tracked file or on CI: a failing seed gives its finding away.
+- **Shrinking** (`shrink.rs`; the test `shrink`). A failing seed's plan is taken a step at a time
+  towards `Plan::plain()` for as long as the seed still fails the same way, that is, with a failure
+  of the same name. A step turns one fault off, takes one entry from a list (crashes, arrivals,
+  errands, notes, funds; a list over four long is cut to its first half or to one), makes a
+  counterparty honest, a clock true, a wait or a choice the plain plan's, or brings the Zcash run's
+  length halfway to the plain one's. A round runs every plan one step away, as many at once as
+  seeds run; the steps that still fail so are taken together where the plan they make fails so too,
+  else the first half of them, and so down to the first alone; the shrink ends when no step fails
+  the same way, and tells only a plan it ran and saw fail. A step has a name (`weather.reorg=0`,
+  `crashes-1`, `errands.0.notes[..1]`, `blocks=39`), and a story test takes the steps in
+  `ZECSWAP_SIM_STEPS` from its seed's plan before it runs, so a shrunk plan replays with its whole
+  trace: the shrinker writes that command, its steps ending in `plan=` and eight hex digits of the
+  plan it saw fail, and a story refuses a step it does not know and steps that lead to another
+  plan. The steps of a plan list every field of it and of the types in it, each as a fault a calm
+  seed never has (`calms`), as another choice (`also`) or as handled apart: a field in no list
+  stops the build as a missing field. A step that would make a plan calm waits until no `calms`
+  step is left, as a calm plan is held to more, and the shrink names the steps it left for that.
+  Nor is a step taken that breaks a rule every plan from a seed keeps and its plan kept (`breaks`:
+  a maker that keeps the fee asks one under the cap; in the Zcash run, a tip that goes back comes
+  with a fresh wallet and no reorgs, payments lost with their blocks with a watched account alone,
+  no transaction is lost after the upgrade, funds come with an account of the wallet's own): a
+  `from_seed` that comes to set one field by another adds its rule there.
+  It keeps `shrunk-<run>-<seed>-<name>.txt` in the tree's folder among the hunts: the seed's line
+  and plan before and after, the last run's failures and digest (`ZECSWAP_SIM_DIGEST=1` has a
+  story print its own), the steps taken, the replay command, the steps left, each of which ends
+  the failure or turns it into another, and the first simpler plan that failed in each other way,
+  which is a second finding or only a plan no seed gives, as a step can take a plan where its
+  checks were never meant to hold. The same command again prints what was kept.
 - **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client and fails if no seed
   notices: forward, the ready depth, the claim margin, the deposit deadline, the terms check, the
   fee cap, the claim window's start, the maker's hour after `t1`; reverse, no ready after a refund,

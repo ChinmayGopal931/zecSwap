@@ -54,15 +54,19 @@ impl Kind {
         }
     }
 
-    pub fn replay(self, seed: u64) -> String {
+    pub fn replay(self, seed: u64, steps: &[String]) -> String {
         let story = match self {
             Self::Forward => "story",
             Self::Reverse => "reverse_story",
             Self::Deposits => "deposit_story",
             Self::Zcash => "zcash_story",
         };
+        let steps = match steps.is_empty() {
+            true => String::new(),
+            false => format!(" ZECSWAP_SIM_STEPS='{}'", steps.join(" ")),
+        };
         format!(
-            "ZECSWAP_SIM_SEEDS={seed} ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim {story} -- --exact --ignored --nocapture"
+            "ZECSWAP_SIM_SEEDS={seed}{steps} ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim {story} -- --exact --ignored --nocapture"
         )
     }
 
@@ -334,7 +338,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn of<P: Debug, E: Debug>(report: &Report<P, E>) -> Self
+    pub(crate) fn of<P: Debug, E: Debug>(report: &Report<P, E>) -> Self
     where
         Report<P, E>: Told,
     {
@@ -397,7 +401,7 @@ pub fn signature(failure: &str) -> String {
     out
 }
 
-fn named(signature: &str) -> String {
+pub(crate) fn named(signature: &str) -> String {
     keccak256(signature.as_bytes()).to_string()[2..10].to_owned()
 }
 
@@ -533,7 +537,7 @@ impl Pace {
 pub struct Summary {
     pub text: String,
     pub failing: usize,
-    pub unnamed: usize,
+    pub new: Vec<(Kind, u64, String)>,
 }
 
 impl Display for Summary {
@@ -542,13 +546,28 @@ impl Display for Summary {
     }
 }
 
-fn labels(folder: &Path) -> BTreeMap<String, String> {
-    let text = fs::read_to_string(folder.join("labels.txt")).unwrap_or_default();
-    let labelled = text.lines().filter_map(|line| {
-        let (name, label) = line.trim().split_once(char::is_whitespace)?;
-        Some((name.to_owned(), label.trim().to_owned()))
-    });
-    labelled.collect()
+pub(crate) struct Labels(BTreeMap<String, String>);
+
+impl Labels {
+    pub(crate) fn read(folder: &Path) -> Self {
+        let text = fs::read_to_string(folder.join("labels.txt")).unwrap_or_default();
+        let labelled = text.lines().filter_map(|line| {
+            let (name, label) = line.trim().split_once(char::is_whitespace)?;
+            Some((name.to_owned(), label.trim().to_owned()))
+        });
+        Self(labelled.collect())
+    }
+
+    pub(crate) fn knows(&self, way: &str) -> bool {
+        self.0.contains_key(way)
+    }
+
+    pub(crate) fn told(&self, way: &str) -> String {
+        match self.0.get(way) {
+            Some(label) => format!("known: {label}"),
+            None => "NEW".to_owned(),
+        }
+    }
 }
 
 pub fn hunt(asked: &Hunt) -> std::io::Result<Summary> {
@@ -621,8 +640,7 @@ pub fn hunt(asked: &Hunt) -> std::io::Result<Summary> {
     let failed: Vec<&Outcome> = hunted
         .filter(|outcome| !outcome.failures.is_empty())
         .collect();
-    let labels = labels(&asked.folder);
-    let (told, unnamed) = failures(&failed, &labels);
+    let (told, new) = failures(&failed, &Labels::read(&asked.folder));
     text.push_str(&told);
     fs::write(home.join("summary.txt"), &text)?;
     fs::write(home.join("reach.txt"), every)?;
@@ -630,7 +648,7 @@ pub fn hunt(asked: &Hunt) -> std::io::Result<Summary> {
     Ok(Summary {
         text,
         failing: failed.len(),
-        unnamed,
+        new,
     })
 }
 
@@ -684,7 +702,7 @@ fn reached(kind: Kind, hunted: &[&Outcome]) -> (String, String) {
     (text, also)
 }
 
-fn failures(failed: &[&Outcome], labels: &BTreeMap<String, String>) -> (String, usize) {
+fn failures(failed: &[&Outcome], labels: &Labels) -> (String, Vec<(Kind, u64, String)>) {
     let mut kinds: BTreeMap<String, Failing> = BTreeMap::new();
     for outcome in failed {
         let signatures = outcome.failures.iter().map(|failure| signature(failure));
@@ -700,17 +718,14 @@ fn failures(failed: &[&Outcome], labels: &BTreeMap<String, String>) -> (String, 
         failed.len(),
         kinds.len()
     );
-    let mut unnamed = 0;
+    let mut new = Vec::new();
     let mut ordered: Vec<(&String, &Failing)> = kinds.iter().collect();
     ordered.sort_by_key(|(name, (_, seeds))| (std::cmp::Reverse(seeds.len()), *name));
     for (name, (signature, seeds)) in ordered {
-        let label = match labels.get(name) {
-            Some(label) => format!("known: {label}"),
-            None => {
-                unnamed += 1;
-                "NEW".to_owned()
-            }
-        };
+        let (first, label) = (seeds[0], labels.told(name));
+        if !labels.knows(name) {
+            new.push((first.kind, first.seed, name.clone()));
+        }
         let some = seeds.iter().take(SHOWN);
         let some: Vec<String> = some
             .map(|outcome| format!("{} {}", outcome.kind.name(), outcome.seed))
@@ -719,16 +734,15 @@ fn failures(failed: &[&Outcome], labels: &BTreeMap<String, String>) -> (String, 
             true => ", ...",
             false => "",
         };
-        let first = seeds[0];
         let _ = writeln!(
             text,
             "  [{name}] {label}: {} failing ({}{more})\n      {signature}\n      {}",
             seeds.len(),
             some.join(", "),
-            first.kind.replay(first.seed),
+            first.kind.replay(first.seed, &[]),
         );
     }
-    (text, unnamed)
+    (text, new)
 }
 
 fn stories(failed: &[&Outcome]) -> String {
@@ -745,7 +759,7 @@ fn stories(failed: &[&Outcome]) -> String {
         for failure in &outcome.failures {
             let _ = writeln!(text, "  [{}] {failure}", named(&signature(failure)));
         }
-        let _ = writeln!(text, "  {}\n", outcome.kind.replay(outcome.seed));
+        let _ = writeln!(text, "  {}\n", outcome.kind.replay(outcome.seed, &[]));
     }
     text
 }

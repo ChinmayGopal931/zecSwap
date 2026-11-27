@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 
 use zecswap_sim::hunt::{Hunt, Kind, Told, folder, seated, spread};
+use zecswap_sim::shrink::{self, Shrinks};
 use zecswap_sim::{End, Plan, Report, deposits, lightwallet, reverse, run, run_with};
 
 fn listed(spec: &str) -> Vec<u64> {
@@ -40,13 +41,29 @@ fn hold<P: Debug + Send, E: Debug + Send>(seeds: &[u64], run: fn(u64) -> Report<
     );
 }
 
-fn tell<P: Debug, E: Debug>(run: fn(u64) -> Report<P, E>) {
+fn digested<P: Debug, E: Debug>(report: &Report<P, E>)
+where
+    Report<P, E>: Told,
+{
+    if std::env::var("ZECSWAP_SIM_DIGEST").is_ok() {
+        let kind = <Report<P, E>>::KIND.told();
+        println!("digest of {kind} {}: {}", report.seed, report.digest());
+    }
+}
+
+fn tell<P: Shrinks>()
+where
+    Report<P, P::Ended>: Told,
+{
+    let steps = std::env::var("ZECSWAP_SIM_STEPS").unwrap_or_default();
     for seed in seeds("ZECSWAP_SIM_SEEDS", 0..1) {
-        let report = run(seed);
+        let plan = shrink::stepped(P::of(seed), &steps);
+        let report = P::run(seed, plan.unwrap_or_else(|refused| panic!("{refused}")));
         println!("{}\n", report.story());
         if std::env::var("ZECSWAP_SIM_TRACE").is_ok() {
             println!("{}", report.trace.join("\n"));
         }
+        digested(&report);
     }
 }
 
@@ -54,13 +71,9 @@ fn surveyed<P: Debug + Send, E: Debug + Send>(run: fn(u64) -> Report<P, E>)
 where
     Report<P, E>: Told,
 {
-    let digests = std::env::var("ZECSWAP_SIM_DIGEST").is_ok();
-    let kind = <Report<P, E>>::KIND.told();
     spread(&seeds("ZECSWAP_SIM_SEEDS", 0..24), run, |report| {
         println!("{}", report.line());
-        if digests {
-            println!("digest of {kind} {}: {}", report.seed, report.digest());
-        }
+        digested(&report);
     });
 }
 
@@ -83,25 +96,68 @@ fn replays<P: Debug + Send, E: Debug + Send>(
     );
 }
 
-#[test]
-#[ignore = "hunts seeds over the four runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
-fn hunt() {
-    let all = seeds("ZECSWAP_SIM_SEEDS", 0..200);
+fn asked(all: &[u64]) -> Vec<(Kind, Vec<u64>)> {
     let run = |asked: &str| {
         let (name, own) = asked.split_once('=').unzip();
         let kind = Kind::named(name.unwrap_or(asked));
         let kind = kind.expect("a run: forward, reverse, deposits or zcash");
-        (kind, own.map_or_else(|| all.clone(), listed))
+        (kind, own.map_or_else(|| all.to_vec(), listed))
     };
+    match std::env::var("ZECSWAP_SIM_RUNS") {
+        Ok(runs) => runs.split(',').map(run).collect(),
+        Err(_) => Kind::ALL.map(|kind| (kind, all.to_vec())).to_vec(),
+    }
+}
+
+fn shrunk(kind: Kind, seed: u64, way: Option<&str>) {
+    let shrunk = shrink::shrink(kind, seed, way, &folder());
+    let shrunk = shrunk.expect("a folder to keep the shrunk plan in");
+    if shrunk.is_empty() {
+        let so = way.map_or(String::new(), |way| format!(" as [{way}]"));
+        let run = kind.name();
+        println!("{run} seed {seed} does not fail{so} on this tree: nothing to shrink\n");
+    }
+    for shrunk in shrunk {
+        let kept = match shrunk.earlier {
+            true => "kept from an earlier shrink on this tree in",
+            false => "kept in",
+        };
+        println!("{}{kept} {}\n", shrunk.text, shrunk.kept.display());
+    }
+}
+
+#[test]
+#[ignore = "hunts seeds over the four runs, ZECSWAP_SIM_THREADS at once: ZECSWAP_SIM_SEEDS=0..4000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture"]
+fn hunt() {
     let asked = Hunt {
-        runs: match std::env::var("ZECSWAP_SIM_RUNS") {
-            Ok(runs) => runs.split(',').map(run).collect(),
-            Err(_) => Kind::ALL.map(|kind| (kind, all.clone())).to_vec(),
-        },
+        runs: asked(&seeds("ZECSWAP_SIM_SEEDS", 0..200)),
         folder: folder(),
     };
     let summary = zecswap_sim::hunt::hunt(&asked).expect("a folder to keep the hunt in");
     println!("{summary}");
+    if std::env::var("ZECSWAP_SIM_SHRINK").is_ok() {
+        for (kind, seed, way) in &summary.new {
+            shrunk(*kind, *seed, Some(way));
+        }
+    }
+    let new: Vec<&str> = summary.new.iter().map(|(.., way)| way.as_str()).collect();
+    assert!(
+        new.is_empty(),
+        "the hunt met ways of failing with no label in {}: {}",
+        folder().join("labels.txt").display(),
+        new.join(" ")
+    );
+}
+
+#[test]
+#[ignore = "shrinks failing seeds to the simplest plans that fail the same way: ZECSWAP_SIM_SEEDS=<seed> ZECSWAP_SIM_RUNS=<run> cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture"]
+fn shrink() {
+    let seeds = std::env::var("ZECSWAP_SIM_SEEDS").expect("ZECSWAP_SIM_SEEDS, the seeds to shrink");
+    for (kind, seeds) in asked(&listed(&seeds)) {
+        for seed in seeds {
+            shrunk(kind, seed, None);
+        }
+    }
 }
 
 #[test]
@@ -128,7 +184,7 @@ fn seeds_that_once_failed_still_hold() {
 #[test]
 #[ignore = "tells a seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim story -- --ignored --nocapture"]
 fn story() {
-    tell(run);
+    tell::<Plan>();
 }
 
 #[test]
@@ -174,7 +230,7 @@ fn reverse_seeds_that_once_failed_still_hold() {
 #[test]
 #[ignore = "tells a reverse seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim reverse_story -- --ignored --nocapture"]
 fn reverse_story() {
-    tell(reverse::run);
+    tell::<reverse::Plan>();
 }
 
 #[test]
@@ -221,7 +277,7 @@ fn deposit_seeds_that_once_failed_still_hold() {
 #[test]
 #[ignore = "tells a deposit seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim deposit_story -- --ignored --nocapture"]
 fn deposit_story() {
-    tell(deposits::run);
+    tell::<deposits::Plan>();
 }
 
 #[test]
@@ -268,7 +324,7 @@ fn zcash_seeds_that_once_failed_still_hold() {
 #[test]
 #[ignore = "tells a Zcash wallet seed's story: ZECSWAP_SIM_SEEDS=<seed> cargo test -p zecswap-sim zcash_story -- --ignored --nocapture"]
 fn zcash_story() {
-    tell(lightwallet::run);
+    tell::<lightwallet::Plan>();
 }
 
 #[test]
