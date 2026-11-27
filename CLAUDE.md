@@ -27,9 +27,9 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`) |
-| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, `reach.rs` for the situations a seed reached, and `shrink.rs` for a failing seed's plan made simpler a step at a time; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt` and `zcash-regressions.txt` hold seeds that once failed |
+| `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `guards.rs` and `guards/` (Railgun's notes and transactions as a wallet proves them, the wallets' requests, honest and hostile, and the relayer that serves them) for the relayer's request checks; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, `reach.rs` for the situations a seed reached, and `shrink.rs` for a failing seed's plan made simpler a step at a time; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt` and `guard-regressions.txt` hold seeds that once failed |
 | `crates/zecswap-sim-evm` | The simulated node's EVM: one call or transaction run by revm on a block's state, in a crate of its own so that it builds optimised (Testing, Its seams) |
-| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD |
+| `contracts` | Foundry: `src/ZecSwap.sol` (the windows contract), `test/deployed/ZecSwapLocks.sol` (the lock contract as deployed, kept as a record), `src/ShieldVault.sol` (per-swap payout vaults), `src/Deposits.sol`, `src/Pallas.sol`, `src/Token.sol`; tests: stateful invariants (`test/*.invariants.t.sol`), known answers (`test/Vectors.t.sol`, on Rust-made vectors in `test/vectors`), `test/fork` and `test/ffi`; `test/utils/TestToken.sol` is testnet's tUSD; `test/sim` holds the simulation's stand-ins for Railgun and Relay Adapt |
 | `deployments/` | The mainnet contracts as deployed (`scripts/deploy-contract.sh` writes them) |
 | `scripts/` | `build-android.sh` (the Android libraries), `deploy-contract.sh` (a mainnet contract) |
 
@@ -37,12 +37,12 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 
 ```sh
 cargo test --workspace                                  # the simulation (needs `forge build`), the audit's cases and the known answers
-ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all four runs over a range, or seeds by comma, on half the cores (ZECSWAP_SIM_THREADS for another count): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed or every_zcash_seed for one)
-ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped, and it fails on a way of failing with no label
+ZECSWAP_SIM_SEEDS=0..2000 cargo test -p zecswap-sim every_                # all five runs over a range, or seeds by comma, on half the cores (ZECSWAP_SIM_THREADS for another count): ~0.15 s of CPU a seed each, the Zcash wallet's ~3.5 s, most of it proofs (every_seed, every_reverse_seed, every_deposit_seed, every_zcash_seed or every_guard_seed for one)
+ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcash=0..2000 cargo test -p zecswap-sim hunt -- --exact --ignored --nocapture   # a hunt (Testing, Hunts): failures by kind and what was reached, kept in docs/local/sim-hunts (ZECSWAP_SIM_HUNTS for another folder); the same command again goes on where it stopped, and it fails on a way of failing with no label
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
-ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet)
-ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey and zcash_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 89 client rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
+ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer)
+ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey and guard_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
+scripts/sim-mutants.py 0..150                           # breaks 154 client and relayer rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then)
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -164,6 +164,47 @@ No hand-written example tests (Conventions). These stand in for them:
   times, at ~0.8 s a proof; no prover is faked. A seed's wallet file starts as a copy of one the
   wallet migrated from empty earlier in the process, once a network, so a seed's first open finds
   its schema in place as a later one does.
+- **The relayer's request checks** (`guards.rs`; Railgun's notes and transactions as a wallet proves
+  them in `guards/railgun.rs`, the requests in `guards/wallet.rs`, the relayer in
+  `guards/relayer.rs`). The same seed run by `guards::run` is an hour and a half of one relayer
+  serving four to nine requests from wallets, honest and hostile, on the forward faults: relayed
+  Railgun sends to the proxy and sponsored reverse fundings through Relay Adapt. Railgun's contracts
+  are stand-ins in `contracts/test/sim` (`SimRailgun`, `SimRelayAdapt`), written from Railgun's
+  source: nullifiers spent once, a known merkle root, the gas price, adapt contract, chain and
+  ciphertext count each proof binds, the withdraw note against the last commitment (redirects
+  included), the unshield and its 25 bp fee, the `Nullified`, `Transact` and `Shield` events, Relay
+  Adapt's adapt parameters, multicall with or without required success and its shield of the whole
+  remaining balance; a proof is a stand-in circuit's signature over the root, nullifiers,
+  commitments and bound parameters, given only to drafts that spend known notes and conserve each
+  token. Notes are real: Poseidon commitments and ciphertexts sealed to the receiver's viewing key,
+  as `zecswap-railgun` reads them. The relayer is a model written from `docs/railgun-sends.md` and
+  `docs/reverse-flow.md`, round the public calls: a send is decoded and checked (`SendPolicy`),
+  held while another of its notes has no outcome, matched against its journal of sends it signed
+  (recorded before each broadcast, kept across restarts), sent with `send_transact` (gas priced at a
+  fixed rate, or not at all) and followed: `transaction_status`, `nonce_taken` twelve deep,
+  `nonces`, and `rebroadcast` a minute after no node knows it; a funding is refused while its config
+  (`validate_config`) or adapter (`check_funding_adapter`) fails, then validated and sponsored. The
+  seed picks the requests: honest sends (a private send, a withdrawal, a batch of two, one posted
+  after a noncanonical twin, one followed by another proof of its notes), honest fundings (one
+  posted again once open), and every way one can be
+  wrong: another chain, proxy or ETH value, oversized, too many transactions, notes, outputs or
+  ciphertexts, a long annotation or memo, each malformation of the calldata (selector, offset,
+  padding, trailing or missing bytes, a dirty word), no transactions or notes, bound to another chain
+  or an adapter, a redirect, a withdrawal of another token, a minimum gas price over the cap, a fee
+  note short, in another token, to another receiver, unreadable, claiming more than it holds, second,
+  or under the gas it buys, notes spent before or twice, a forged proof, an unknown root; a funding
+  to another adapter, with ETH, malformed, with a call more or less, reordered, failing calls
+  allowed,
+  too much minimum gas, ETH in a call, another contract, token, spender or amount, a short or
+  misdirected fee, another maker, token, user, amount, note, deadlines, swap id or signer, invalid
+  shares or a short signature, two shields, dust left, kept or shielded to nobody, a proof bound to
+  another chain, adapter or action, a redirect, an unshield elsewhere, of another token or none, one
+  short of what the calls need, past its deadline, or against a rival escrow of the same id; some
+  posted twice at once. And the relayer: its gas-price cap under the fees' swing, too little ETH
+  until the operator tops it up, gas priced or not, a funding config that fails (no token, the maker
+  as relayer, the fee elsewhere, no gas) or an adapter on another Railgun or with no code, and
+  restarts. A fifth of seeds run calm with honest requests only; a tenth each press the gas cap, lose
+  answers and transactions, and put reorgs behind every transaction.
 - **Alerts in the simulation** (`alerts.rs`). Every sender's alerts (How it behaves) reach one sink,
   which holds each against the chain as it is raised: the account's count, the transactions it
   names, whether they are mined or still in the pool, how many blocks a send has waited at that
@@ -223,11 +264,23 @@ No hand-written example tests (Conventions). These stand in for them:
   key and no note behind; a payment paid its amount and returned the change; no errand was paid
   twice; nothing the signer signed pays its destination less than its intent or the network more, an
   honest sweep is never refused, and one proved is taken and mined; with time enough once the
-  weather cleared, every errand ended as planned. The same seed gives the same trace, alone or with
-  others running beside it on other threads.
+  weather cleared, every errand ended as planned.
+  The relayer's checks, at the end, from the chain and the relayer's own accounts: nothing its
+  policy must refuse was simulated or sent by it, and nothing the chain must refuse was sent; no
+  honest request was refused but for the relayer's own state (its gas cap, its ETH, a failed read),
+  and each was mined once the weather and the relayer had settled; each of its transactions carries
+  calldata a wallet posted, in the canonical encoding, mined once, at a gas price within its cap;
+  none
+  reverted but where something else spent its notes or opened its escrow first; the fee it counted
+  for a send is what its keys read from that send's `Transact` notes in its token; its ETH went only
+  on gas and its token rose only by the funding fees it was paid; every funding that landed opened
+  its escrow and left Relay Adapt holding nothing. Along the way, what `transaction_status`,
+  `nonce_taken`, `nonces` and `rebroadcast` read agrees with the node at that moment.
+  The same seed gives the same trace, alone or with others running beside it on other threads.
 - **Working with it.** A failing seed prints its plan and last events: replay it with
   `ZECSWAP_SIM_SEEDS=<seed>`, fix the cause, and add the seed to `regressions.txt` (or
-  `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt`), which every
+  `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt`,
+  `guard-regressions.txt`), which every
   `cargo test` replays. A new behaviour is tested by a new
   fault, maker behaviour or check there, never by an example test. Faults stay within what the
   design assumes (reorgs two deep, a reveal landing inside `CLAIM_MARGIN`): past that a seed fails
@@ -238,7 +291,7 @@ No hand-written example tests (Conventions). These stand in for them:
   `cargo test` runs takes one of those seats. The prover's pool gets as many threads again
   (`RAYON_NUM_THREADS` for another count), so at most twice that many are busy, and only while
   Zcash seeds prove. A hunt runs a range of seeds through the runs named in `ZECSWAP_SIM_RUNS` (all
-  four by default; `zcash=0..2000` gives a run a range of its own) and keeps what it finds under
+  five by default; `zcash=0..2000` gives a run a range of its own) and keeps what it finds under
   `docs/local/sim-hunts`, or the folder `ZECSWAP_SIM_HUNTS` names, in a folder of the tree's: its
   commit and, where files are changed, a hash of the changes, as a seed means something for one
   tree only. There: `seeds.jsonl`, a line a seed with its digest (plan, verdict and whole trace),
@@ -283,9 +336,10 @@ No hand-written example tests (Conventions). These stand in for them:
   the failure or turns it into another, and the first simpler plan that failed in each other way,
   which is a second finding or only a plan no seed gives, as a step can take a plan where its
   checks were never meant to hold. The same command again prints what was kept.
-- **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client and fails if no seed
-  notices: forward, the ready depth, the claim margin, the deposit deadline, the terms check, the
-  fee cap, the claim window's start, the maker's hour after `t1`; reverse, no ready after a refund,
+- **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client or the relayer's checks
+  and fails if no seed notices: forward, the ready depth, the claim margin, the deposit deadline,
+  the terms check, the fee cap, the claim window's start, the maker's hour after `t1`; reverse, no
+  ready after a refund,
   the whole deposit before a ready, a ready's life before `t0`, saving a ready's deadline and a
   refund before sending them, no refund while a signed ready may land or before `t1` when ready, the
   quote's deployment, amounts, user and note, deadlines and maker proof, the day's limit on a lock,
@@ -306,8 +360,13 @@ No hand-written example tests (Conventions). These stand in for them:
   signer's receiver, fee cap, least amount, readable ciphertext and note commitment; the alerts, the
   private one and the queue's never raised, the private one with no send dropped or only at the next
   send, the queue's at once or while it drains, the wallet's on any reorg, and a sink's panic let
-  through. Three more turn a refusal into a panic. The four regressions lists also name seeds that
-  caught each, so every `cargo test` would. A change to a plan or to a fault reshuffles what each
+  through; the relayer's checks, each refusal of `SendPolicy::decode` and `check` and each of their
+  caps, `send_transact`'s gas-price cap, gas limit, `covers`, ETH and spent-note look-up, the
+  canonical encoding's offsets, padding, trailing bytes, bools and lengths, `validate_config`, each
+  refusal of `FundingPolicy::validate`, the adapter check, `sponsor_reverse_funding`'s deadline,
+  gas-price cap, gas limit and rival escrow, and what `transaction_status` and `nonce_taken` read.
+  Three more turn a refusal into a panic. The five regressions lists also name seeds that caught
+  each, so every `cargo test` would. A change to a plan or to a fault reshuffles what each
   seed does: run the script again and replace those seeds. For a run with open findings the script
   first counts the seeds that fail unchanged and leaves them out. The script touches every file it
   restores, so cargo rebuilds it: a mutant never stays compiled in after it is undone.
@@ -339,10 +398,12 @@ No hand-written example tests (Conventions). These stand in for them:
 - **Not simulated yet**, and so without tests beyond the known answers: tokens,
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable
-  balance), the relayer-side request checks (`evm/funding.rs`, `evm/canonical.rs`, the policies in
-  `evm/railgun.rs`; of `evm/deposits.rs`, the gas-price cap, the ETH check and `covers`, which the
-  deposit relayer never trips), the Railgun cross-contract funding of an escrow and its proof (the
-  relayer funds from tokens of its own), reverse status and token returns, swap relayers that serve
+  balance), of the relayer-side request checks, `evm/deposits.rs`'s gas-price cap, ETH check and
+  `covers`, which the deposit relayer never trips; the reverse run's funding of an escrow (its
+  relayer funds
+  from tokens of its own, the relayer run's through stand-ins of Railgun and Relay Adapt whose proofs
+  are a stand-in circuit's signatures, which check no merkle path and no note's ownership beyond
+  what the stand-in circuit holds); reverse status and token returns, swap relayers that serve
   another deployment, ask over the fee cap or are the maker, the CLI's own resume logic (the
   simulation's wallets mirror it) and the JNI bindings. Of deposits: the sanctions oracle, a deposit
   address with code, fees priced by gas (`feeExpiresAt`), deposits sent privately, a relayer's
@@ -362,7 +423,12 @@ No hand-written example tests (Conventions). These stand in for them:
   signer's refusals of transparent or Sapling parts, of a value balance that does not add up and of
   spends already signed are met only by sweeps other rules refuse too. The node model takes the
   sighash of a shielded-only transaction to be its txid digest, checks no ZIP 317 action count
-  beyond the fee and no coinbase or turnstile rule.
+  beyond the fee and no coinbase or turnstile rule. Of the relayer's checks: its HTTP service (the
+  run's relayer is a model answering calls, with its own journal and holds), private broadcasting
+  of Railgun sends, fees priced per `feeExpiresAt`, a funding over the calldata cap or the gas cap,
+  a send over the gas cap, the policy changing between `validate` and `sponsor_reverse_funding`;
+  the one dust shield `validate` asks is met only by fundings its encoding caps already refuse, and
+  `rebroadcast`'s nonce rule has no mutant, as a node refuses a transaction at a spent nonce anyway.
 - **Open findings** stay out of this repo: the maintainers keep them, with the seeds that fail, in
   `docs/local/open-findings.md`. Seeds outside the default ranges may fail on one of them.
 - **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
