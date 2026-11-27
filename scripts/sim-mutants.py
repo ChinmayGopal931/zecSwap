@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
+import concurrent.futures
 import hashlib
 import json
 import os
 import pathlib
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEEDS = sys.argv[1] if len(sys.argv) > 1 else "0..150"
 ONLY = set(sys.argv[2:])
+WORKERS = int(os.environ.get("ZECSWAP_SIM_WORKERS", "1"))
+CORES = os.cpu_count() or 4
+SHARED = {"CARGO_BUILD_JOBS": CORES, "ZECSWAP_SIM_THREADS": (CORES + 1) // 2}
+COPIED = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates", "contracts/out")
+CLONE = ["cp", "-Rpc"] if sys.platform == "darwin" else ["cp", "-Rp", "--reflink=auto"]
 JUDGE = "crates/zecswap-chain/src/evm/judge.rs"
 EVM = "crates/zecswap-chain/src/evm.rs"
 USER = "crates/zecswap-client/src/user.rs"
@@ -23,8 +31,9 @@ LIGHTWALLETD = "crates/zecswap-chain/src/zcash/lightwalletd.rs"
 SWEEP = "crates/zecswap-core/src/sweep.rs"
 SYNC = "crates/zecswap-chain/src/zcash/wallet/sync.rs"
 ALERT = "crates/zecswap-chain/src/alert.rs"
-BACKUP = ROOT / "target" / "sim-mutants"
-UNDO = BACKUP / "undo.json"
+BACKUP = pathlib.Path("target") / "sim-mutants"
+RUNNING = set()
+HALT = threading.Event()
 FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
@@ -690,96 +699,183 @@ MUTANTS = {
 }
 
 
-def survey(test, prefix):
-    run = subprocess.run(
-        ["cargo", "test", "-p", "zecswap-sim", "--test", "swaps", test, "--", "--exact", "--ignored", "--nocapture"],
-        cwd=ROOT,
-        env={**os.environ, "ZECSWAP_SIM_SEEDS": SEEDS},
-        capture_output=True,
-        text=True,
-    )
-    lines = [line for line in run.stdout.splitlines() if line.startswith(prefix)]
-    if not lines:
-        sys.exit(run.stderr[-3000:])
-    failing = [line for line in lines if not line.rstrip().endswith("|")]
-    return len(lines), {line.split(":")[0].removeprefix(prefix): line.rsplit(" | ", 1)[-1] for line in failing}
-
-
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def put(path, text):
-    new = BACKUP / "new"
-    new.write_text(text)
-    if path.exists():
-        shutil.copymode(path, new)
-    os.replace(new, path)
+class Checkout:
+    def __init__(self, root, env, apart):
+        self.root = root
+        self.env = env
+        self.apart = apart
+        self.backup = root / BACKUP
+        self.undo = self.backup / "undo.json"
 
-
-def restore():
-    if not UNDO.exists():
-        return False
-    theirs = []
-    for path, (original, mutated) in json.loads(UNDO.read_text()).items():
-        source = ROOT / path
-        now = source.read_text() if source.exists() else None
-        if now is not None and digest(now) == mutated:
-            put(source, original)
-        elif now == original:
-            os.utime(source)
-        else:
-            theirs.append(path)
-    if theirs:
-        sys.exit(
-            f"not undone, as edited since the mutant went in: {' '.join(theirs)}. "
-            f"Take the mutant out by hand ({UNDO} holds each file as it was), then delete {UNDO}"
+    def survey(self, test, prefix):
+        if HALT.is_set():
+            sys.exit("stopped")
+        run = subprocess.Popen(
+            ["cargo", "test", "-p", "zecswap-sim", "--test", "swaps", test, "--", "--exact", "--ignored", "--nocapture"],
+            cwd=self.root,
+            env={**self.env, "ZECSWAP_SIM_SEEDS": SEEDS},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=self.apart,
         )
-    UNDO.unlink()
-    return True
+        RUNNING.add(run)
+        try:
+            out, err = run.communicate()
+        finally:
+            RUNNING.discard(run)
+        lines = [line for line in out.splitlines() if line.startswith(prefix)]
+        if not lines:
+            sys.exit(err[-3000:])
+        failing = [line for line in lines if not line.rstrip().endswith("|")]
+        return len(lines), {line.split(":")[0].removeprefix(prefix): line.rsplit(" | ", 1)[-1] for line in failing}
 
+    def put(self, path, text):
+        new = self.backup / "new"
+        new.write_text(text)
+        if path.exists():
+            shutil.copymode(path, new)
+        os.replace(new, path)
 
-def edited(name, edits):
-    files = {}
-    for path, old, new in edits:
-        text = files[path] if path in files else (ROOT / path).read_text()
-        if text.count(old) != 1:
-            sys.exit(f"{name}: {path} no longer has the line this mutant changes")
-        files[path] = text.replace(old, new)
-    return files
+    def restore(self):
+        if not self.undo.exists():
+            return False
+        theirs = []
+        for path, (original, mutated) in json.loads(self.undo.read_text()).items():
+            source = self.root / path
+            now = source.read_text() if source.exists() else None
+            if now is not None and digest(now) == mutated:
+                self.put(source, original)
+            elif now == original:
+                os.utime(source)
+            else:
+                theirs.append(path)
+        if theirs:
+            sys.exit(
+                f"not undone, as edited since the mutant went in: {' '.join(theirs)}. "
+                f"Take the mutant out by hand ({self.undo} holds each file as it was), then delete {self.undo}"
+            )
+        self.undo.unlink()
+        return True
+
+    def edited(self, name, edits):
+        files = {}
+        for path, old, new in edits:
+            text = files[path] if path in files else (self.root / path).read_text()
+            if text.count(old) != 1:
+                sys.exit(f"{name}: {path} no longer has the line this mutant changes")
+            files[path] = text.replace(old, new)
+        return files
+
+    def mutant(self, name):
+        (test, prefix), edits = MUTANTS[name]
+        files = self.edited(name, edits)
+        held = {path: ((self.root / path).read_text(), digest(text)) for path, text in files.items()}
+        try:
+            self.put(self.undo, json.dumps(held))
+            for path, text in files.items():
+                self.put(self.root / path, text)
+            return self.survey(test, prefix)
+        finally:
+            self.restore()
+
+    def copy(self, number, of):
+        root = self.backup / f"worker-{number}"
+        built = [f"target/{entry.name}" for entry in (self.root / "target").iterdir() if entry.name != BACKUP.name]
+        for part in (*COPIED, *built):
+            if (self.root / part).exists():
+                (root / part).parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run([*CLONE, self.root / part, root / part], check=True)
+        (root / BACKUP).mkdir(parents=True)
+        share = {name: str(max(1, int(self.env.get(name, whole)) // of)) for name, whole in SHARED.items()}
+        return Checkout(root, {**self.env, **share, "CARGO_TARGET_DIR": str(root / "target")}, True)
 
 
 def stopped(number, _):
     sys.exit(128 + number)
 
 
+def told(name, ran, seeds, unchanged, escaped):
+    test = MUTANTS[name][0][0]
+    if test in OPEN and test not in SOUND:
+        SOUND[test] = unchanged(MUTANTS[name][0])
+        print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
+    seeds = [seed for seed, how in seeds.items() if SOUND.get(test, {}).get(seed) != how]
+    print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
+    if not seeds:
+        escaped.append(name)
+
+
+def in_place(home, chosen, escaped):
+    for name in chosen:
+        ran, seeds = home.mutant(name)
+        told(name, ran, seeds, lambda survey: home.survey(*survey)[1], escaped)
+
+
+def in_copies(home, chosen, escaped):
+    copies = queue.Queue()
+
+    def on_a_copy(work):
+        def run():
+            copy = copies.get()
+            try:
+                return work(copy)
+            finally:
+                copies.put(copy)
+
+        return run
+
+    workers = max(1, min(WORKERS, len(chosen)))
+    pool = concurrent.futures.ThreadPoolExecutor(workers)
+    try:
+        for number in range(workers):
+            copies.put(home.copy(number, workers))
+        surveys = dict.fromkeys(MUTANTS[name][0] for name in chosen)
+        unchanged = {
+            survey: pool.submit(on_a_copy(lambda copy, survey=survey: copy.survey(*survey)[1]))
+            for survey in surveys
+            if survey[0] in OPEN
+        }
+        mutants = [pool.submit(on_a_copy(lambda copy, name=name: copy.mutant(name))) for name in chosen]
+        for name, mutant in zip(chosen, mutants):
+            ran, seeds = mutant.result()
+            told(name, ran, seeds, lambda survey: unchanged[survey].result(), escaped)
+    finally:
+        HALT.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        for run in list(RUNNING):
+            try:
+                os.killpg(run.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        pool.shutdown()
+        left(home)
+
+
+def left(home):
+    for copy in home.backup.glob("worker-*"):
+        shutil.rmtree(copy, ignore_errors=True)
+
+
 def main():
     for number in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, stopped)
-    BACKUP.mkdir(parents=True, exist_ok=True)
-    if restore():
+    home = Checkout(ROOT, os.environ, False)
+    home.backup.mkdir(parents=True, exist_ok=True)
+    if home.restore():
         print("undid the mutant an earlier run left in place", flush=True)
-    (BACKUP / "new").unlink(missing_ok=True)
+    (home.backup / "new").unlink(missing_ok=True)
+    left(home)
+    chosen = [name for name in MUTANTS if not ONLY or name in ONLY]
     escaped = []
-    for name, ((test, prefix), edits) in MUTANTS.items():
-        if ONLY and name not in ONLY:
-            continue
-        files = edited(name, edits)
-        held = {path: ((ROOT / path).read_text(), digest(text)) for path, text in files.items()}
-        try:
-            put(UNDO, json.dumps(held))
-            for path, text in files.items():
-                put(ROOT / path, text)
-            ran, seeds = survey(test, prefix)
-        finally:
-            restore()
-        if test in OPEN and test not in SOUND:
-            SOUND[test] = survey(test, prefix)[1]
-            print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
-        seeds = [seed for seed, how in seeds.items() if SOUND.get(test, {}).get(seed) != how]
-        print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
-        if not seeds:
-            escaped.append(name)
+    if WORKERS > 1:
+        in_copies(home, chosen, escaped)
+    else:
+        in_place(home, chosen, escaped)
     if escaped:
         sys.exit(f"escaped the simulation: {' '.join(escaped)}")
 
