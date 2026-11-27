@@ -34,6 +34,8 @@ ALERT = "crates/zecswap-chain/src/alert.rs"
 RAILGUN = "crates/zecswap-chain/src/evm/railgun.rs"
 FUNDING = "crates/zecswap-chain/src/evm/funding.rs"
 CANONICAL = "crates/zecswap-chain/src/evm/canonical.rs"
+CLI_SWAP = "crates/zecswap-cli/src/swap.rs"
+CLI_DEPOSIT = "crates/zecswap-cli/src/deposit.rs"
 BACKUP = pathlib.Path("target") / "sim-mutants"
 RUNNING = set()
 HALT = threading.Event()
@@ -42,6 +44,7 @@ BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
 ZCASH = ("zcash_survey", "zcash seed ")
 GUARD = ("guard_survey", "guard seed ")
+COMMAND = ("cli_survey", "cli seed ")
 SOUND = {}
 
 READY_SENT = """        self.relayer
@@ -890,6 +893,97 @@ MUTANTS = {
     ]),
     "funding-over-a-rival-escrow": (GUARD, [
         (FUNDING, '            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),', '            Err(Error::WrongTerms(_)) => {}'),
+    ]),
+    "cli-index-unsaved": (COMMAND, [
+        (CLI_SWAP, "    store.save(NEXT_INDEX, &(index + 1))?;\n", ""),
+    ]),
+    "cli-quote-unsaved": (COMMAND, [
+        (CLI_SWAP, "        finished: false,\n    };\n    store.save(STATE, &run)?;\n", "        finished: false,\n    };\n"),
+    ]),
+    "cli-fee-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "                    fee: Some(*txid.as_ref()),\n                };\n                wallet.store().save(STATE, run)?;\n",
+            "                    fee: Some(*txid.as_ref()),\n                };\n",
+        ),
+    ]),
+    "cli-fee-never-sent-again": (COMMAND, [
+        (CLI_SWAP, "if waited.is_none_or(|polls| polls >= FEE_RESEND) {", "if waited.is_none() {"),
+    ]),
+    "cli-no-funds-check": (COMMAND, [
+        (CLI_SWAP, "                if held < needed {", "                if held < needed && false {"),
+    ]),
+    "cli-accept-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.progress = Progress::Accepted(swap.clone());\n    wallet.store().save(STATE, run)?;\n",
+            "    run.progress = Progress::Accepted(swap.clone());\n",
+        ),
+    ]),
+    "cli-no-cancelled-shortcut": (COMMAND, [
+        (
+            CLI_SWAP,
+            "if resumed && run.deposit.is_none() && user.state(&swap).await?.stage == Stage::Refunded {",
+            "if false {",
+        ),
+    ]),
+    "cli-joint-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "        run.joint_account = Some(account);\n        ctx.store.save(STATE, run)?;\n",
+            "        run.joint_account = Some(account);\n",
+        ),
+    ]),
+    "cli-deposit-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.store.save(STATE, run)?;\n    ctx.broadcast(txid).await?;\n",
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.broadcast(txid).await?;\n",
+        ),
+    ]),
+    "cli-deposit-sent-first": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.store.save(STATE, run)?;\n    ctx.broadcast(txid).await?;\n",
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.broadcast(txid).await?;\n    ctx.store.save(STATE, run)?;\n",
+        ),
+    ]),
+    "cli-deposit-not-sent-again": (COMMAND, [
+        (CLI_SWAP, "            if let Err(e) = ctx.broadcast(txid).await {", "            if let Err(e) = Ok::<(), anyhow::Error>(()) {"),
+    ]),
+    "cli-deposit-without-spendable-funds": (COMMAND, [
+        (CLI_SWAP, "        Ok(funds.spendable >= deposit_zat || funds.spendable == funds.total)", "        Ok(funds.total >= deposit_zat || true)"),
+    ]),
+    "cli-sweep-before-the-deposit-is-mined": (COMMAND, [
+        (CLI_SWAP, "        Ok(ctx.wallet.is_mined(deposit)? && funds.spendable == funds.total)", "        Ok(funds.spendable == funds.total)"),
+    ]),
+    "cli-sweep-not-awaited": (COMMAND, [
+        (CLI_SWAP, "        ctx.sync_until(|ctx| Ok(ctx.wallet.is_mined(txid)?)).await?;\n", ""),
+    ]),
+    "cli-forget-before-finished": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.finished = true;\n    ctx.store.save(STATE, run)?;\n    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n",
+            "    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n    run.finished = true;\n    ctx.store.save(STATE, run)?;\n",
+        ),
+    ]),
+    "cli-nothing-forgotten": (COMMAND, [
+        (CLI_SWAP, "        ctx.wallet.forget(account)?;\n", "        let _ = account;\n"),
+    ]),
+    "cli-unfinished-runs-replaced": (COMMAND, [
+        (CLI_SWAP, "        && !run.finished\n", "        && run.finished\n"),
+    ]),
+    "cli-other-versions-overwritten": (COMMAND, [
+        (CLI_SWAP, "    let saved = store.load::<Run>(STATE).with_context(|| {", "    let saved = store.load::<Run>(STATE).or_else(|_| Ok::<_, anyhow::Error>(None)).with_context(|| {"),
+    ]),
+    "cli-request-unsaved": (COMMAND, [
+        (CLI_DEPOSIT, "            store.save(PENDING, &pending)\n", "            let _ = pending;\n            Ok(())\n"),
+    ]),
+    "cli-request-not-resumed": (COMMAND, [
+        (CLI_DEPOSIT, "    if let Some(pending) = store.load::<Pending>(PENDING)? {", "    if let Some(pending) = None::<Pending> {"),
+    ]),
+    "cli-landed-request-kept": (COMMAND, [
+        (CLI_DEPOSIT, "                report(index, &deposit);\n                store.remove(PENDING)?;\n", "                report(index, &deposit);\n"),
     ]),
 }
 
