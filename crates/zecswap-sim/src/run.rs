@@ -596,6 +596,11 @@ impl World {
                 "the wallet deposited on an opening under {READY_DEPTH} blocks deep"
             ));
         }
+        if saved.paid_shallow {
+            fail(format!(
+                "the wallet called the swap paid on a payout under {READY_DEPTH} blocks deep"
+            ));
+        }
         if let (Some(swap), Some(recorded), Some(z)) = (swap, recorded, self.z(&saved)) {
             let e = self.maker.share(swap.nonce);
             if shown(&z) && recorded.stage != CLAIMED {

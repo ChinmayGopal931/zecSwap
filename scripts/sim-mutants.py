@@ -86,9 +86,19 @@ MUTANTS = {
     "opening-depth-0": (FORWARD, [
         (
             USER,
-            "BlockId::number(head.number.saturating_sub(READY_DEPTH))",
-            "BlockId::number(head.number)",
+            '            .deep(swap, "opening", |chain| chain.stage == Stage::Open)',
+            "            .caught_up(swap, |chain| chain.stage == Stage::Open)",
         ),
+    ]),
+    "payout-depth-0": (FORWARD, [
+        (
+            USER,
+            '        self.deep(swap, "payout", |chain| chain.paid_out).await?;',
+            "        self.caught_up(swap, |chain| chain.paid_out).await?;",
+        ),
+    ]),
+    "withdrawal-depth-0": (FORWARD, [
+        (USER, "        self.withdrawn_deep(tx, chain.token).await?;\n", ""),
     ]),
     "no-claim-margin": (FORWARD, [
         (
@@ -942,6 +952,31 @@ MUTANTS = {
     ]),
     "cli-landed-request-kept": (COMMAND, [
         (CLI_DEPOSIT, "                report(index, &deposit);\n                store.remove(PENDING)?;\n", "                report(index, &deposit);\n"),
+    ]),
+    "cli-sweep-unsaved": (COMMAND, [
+        (CLI_SWAP, "            run.sweep = Some(*txid.as_ref());\n            ctx.store.save(STATE, run)?;\n", ""),
+    ]),
+    "cli-sweep-before-the-deposit-is-mined": (COMMAND, [
+        (CLI_SWAP, "        Ok(ctx.wallet.is_mined(deposit)? && funds.spendable == funds.total)", "        Ok(funds.spendable == funds.total)"),
+    ]),
+    "cli-sweep-not-awaited": (COMMAND, [
+        (
+            CLI_SWAP,
+            '        ctx.sync_until(|ctx| Ok(ctx.wallet.is_mined(txid)? || ctx.wallet.is_expired(txid)?))\n'
+            '            .await?;\n'
+            '        anyhow::ensure!(\n'
+            '            ctx.wallet.is_mined(txid)?,\n'
+            '            "the sweep back {txid} expired unmined: type swap again to sweep afresh"\n'
+            '        );\n',
+            "",
+        ),
+    ]),
+    "cli-forget-before-finished": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.finished = true;\n    ctx.store.save(STATE, run)?;\n    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n",
+            "    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n    run.finished = true;\n    ctx.store.save(STATE, run)?;\n",
+        ),
     ]),
 }
 

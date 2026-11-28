@@ -255,9 +255,10 @@ No hand-written example tests (Conventions). These stand in for them:
   sides never may reveal at once, and the user's share is never public while the maker may still
   refund. At the end: no open fee over the cap, outside Orchard or built twice; no deposit to terms
   the user didn't agree, with under `MIN_TIME_TO_T0` left or on an opening under `READY_DEPTH`
-  blocks deep; a claimed swap carries the user's share and paid the user's note or account in
-  full; a refunded one was swept back; a deposit is never left stuck once the weather has cleared.
-  Reverse, every block: the same windows and exclusion, no
+  blocks deep; no swap called paid on a payout under `READY_DEPTH` blocks deep; a claimed swap
+  carries the user's share and paid the user's note or account in full; a refunded one was swept
+  back; a deposit is never left stuck once the weather has cleared. Reverse, every block: the same
+  windows and exclusion, no
   transaction carrying either share just reverted, and the relayer never holds the user's share
   while the maker may claim. At the end: no funding asked for a lying quote, to another deployment,
   or locking the USDC more than a day; every ready signed with the whole deposit spendable, ending
@@ -391,7 +392,8 @@ No hand-written example tests (Conventions). These stand in for them:
   checks were never meant to hold. The same command again prints what was kept.
 - **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client, the relayer's checks
   or the command-line wallet and fails if no seed notices: forward, the ready depth, the opening's
-  depth before a deposit, the claim margin, the deposit deadline,
+  depth before a deposit, the payout's and the withdrawal's before a swap is called paid, the claim
+  margin, the deposit deadline,
   the terms check, the fee cap, the claim window's start, the maker's hour after `t1`; reverse, no
   ready after a refund,
   the whole deposit before a ready, a ready's life before `t0`, saving a ready's deadline and a
@@ -536,7 +538,9 @@ No hand-written example tests (Conventions). These stand in for them:
   later of it and the wall clock, less the margin. Before `t0` a claim needs a ready with
   `READY_DEPTH` (2) blocks above it; a reverse claim one with `REVERSE_READY_DEPTH` (4) above it;
   and a wallet pays its ZEC in only once the swap's opening has `READY_DEPTH` above it
-  (`User::verify`), so no reorg the design allows can take the swap from under the deposit.
+  (`User::verify`), so no reorg the design allows can take the swap from under the deposit, and
+  calls a swap paid only once its payout, or the withdrawal to its account, has as many above it
+  (`User::claim`).
   The audit's 97 cases replay against them (`crates/zecswap-chain/tests/windows-spec-vectors.json`,
   `windows_spec.rs`).
 - **Contract identity.** Every client reads `MIN_WINDOW()` and `LATE_WINDOW()` and refuses the lock
@@ -544,7 +548,8 @@ No hand-written example tests (Conventions). These stand in for them:
   `/v1/terms` and the maker's `/v1/info` say `contractKind: "windows"`, `minWindow` and
   `lateWindow`, and a forward accept answers `lateWindow`; the client refuses a relayer that names
   others.
-- **Saved before sending:** the client's ready signature deadlines and its refund request. The
+- **Saved before sending:** the client's ready signature deadlines and its refund request, and the
+  CLI's sweep back of a refunded deposit, whose swap it finishes only once the sweep is mined. The
   client refuses a swap whose `t1` follows `t0` by under twice `CLAIM_MARGIN`.
 - **Protect.** Reveals that go out privately go through Flashbots Protect: `evm::check_keeps_secrets`
   refuses any URL but Protect's default endpoint with `hint=hash` and its few safe parameters. A

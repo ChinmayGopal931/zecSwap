@@ -205,7 +205,9 @@ impl User {
         let chain = self.caught_up(swap, |_| true).await?;
         let keys = self.keys(swap.index)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
-        let chain = self.opened_deep(swap).await?;
+        let chain = self
+            .deep(swap, "opening", |chain| chain.stage == Stage::Open)
+            .await?;
         let now = self.settlement.now().await?;
         check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1)?;
         Ok(JointAccount::derive(
@@ -283,6 +285,7 @@ impl User {
             .settlement
             .withdraw(chain.token, amount, chain.user)
             .await?;
+        self.withdrawn_deep(tx, chain.token).await?;
         Ok(Paid {
             amount,
             tx: Some(tx),
@@ -367,7 +370,7 @@ impl User {
                 .await?;
             paid = sent.and_then(|sent| last(&sent));
         }
-        self.caught_up(swap, |chain| chain.paid_out).await?;
+        self.deep(swap, "payout", |chain| chain.paid_out).await?;
         Ok(Paid {
             amount: chain.amount - terms.fee,
             tx: paid,
@@ -472,13 +475,17 @@ impl User {
         }
     }
 
-    async fn opened_deep(&self, swap: &UserSwap) -> Result<OnChainSwap> {
+    async fn deep(
+        &self,
+        swap: &UserSwap,
+        what: &str,
+        seen: impl Fn(&OnChainSwap) -> bool,
+    ) -> Result<OnChainSwap> {
         let terms = self.terms(swap)?;
         let deadline = Instant::now() + CATCH_UP;
         loop {
             let (chain, head) = self.settlement.read(swap.swap_id, &terms).await?;
-            if let Some(chain) = chain {
-                ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
+            if let Some(chain) = chain.filter(&seen) {
                 let then = self
                     .settlement
                     .swap_at(
@@ -487,13 +494,35 @@ impl User {
                         BlockId::number(head.number.saturating_sub(READY_DEPTH)),
                     )
                     .await?;
-                if then.is_some() {
+                if then.as_ref().is_some_and(&seen) {
                     return Ok(chain);
                 }
             }
             ensure!(
                 Instant::now() < deadline,
-                "the swap's opening never got {READY_DEPTH} blocks deep"
+                "the swap's {what} never got {READY_DEPTH} blocks deep"
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    async fn withdrawn_deep(&self, tx: B256, token: Address) -> Result<()> {
+        let deadline = Instant::now() + CATCH_UP;
+        loop {
+            let head = self.settlement.head().await?;
+            if self
+                .settlement
+                .transaction_facts(tx, token)
+                .await?
+                .is_some_and(|facts| {
+                    facts.succeeded && facts.block_number + READY_DEPTH <= head.number
+                })
+            {
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the withdrawal {tx} never got {READY_DEPTH} blocks deep"
             );
             tokio::time::sleep(Duration::from_secs(2)).await;
         }

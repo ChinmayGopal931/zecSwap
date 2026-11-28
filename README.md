@@ -98,7 +98,6 @@ doesn't take their word for anything: it checks every term against the contract 
 | `crates/zecswap-railgun` | Railgun keys, `0zk` addresses and the shield notes payouts go to, checked against Railgun's own engine |
 | `crates/zecswap-client` | The user's side, step by step, in both directions: the reference wallets follow |
 | `crates/zecswap-api` | The maker's and relayer's HTTP APIs, as wallets speak them |
-| `crates/zecswap-tokens` | Privacy Pass tokens, retired: kept only for the Android bindings until the app's own token code goes |
 | `crates/zecswap-jni` | The Android bindings, built as `libzecswap.so` |
 | `crates/zecswap-cli` | A testnet wallet and swap CLI |
 | `crates/zecswap-sim` | Whole swaps, both ways, a wallet's deposits and its Zcash wallet, simulated from one seed: the real client against a simulated chain, maker, relayer and lightwalletd |
