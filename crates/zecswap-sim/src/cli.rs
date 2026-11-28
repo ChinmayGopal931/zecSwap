@@ -304,13 +304,18 @@ impl Plan {
                     step: Step::Finish,
                     after: false,
                 };
-                plan.kills = match focus {
-                    0 => vec![Kill {
-                        aim: Aim::Tear(tear),
-                        rest: seed.between("cli-focus-rest", 0, 2, SHORT_REST),
-                    }],
-                    _ => Vec::new(),
+                let sweep = Tear {
+                    step: Step::SweepOut,
+                    after: false,
                 };
+                let aim = match (focus, roll("focus-sweep", 3)) {
+                    (0, _) => Some(Aim::Tear(tear)),
+                    (_, 0) => Some(Aim::Tear(sweep)),
+                    (_, 1) => Some(Aim::Unsent(Step::SweepOut)),
+                    _ => None,
+                };
+                let rest = seed.between("cli-focus-rest", 0, 2, SHORT_REST);
+                plan.kills = aim.map(|aim| Kill { aim, rest }).into_iter().collect();
             }
             2 => {
                 (plan.fee, plan.max_open_fee) = (Fee::Asked(OPEN_FEE), 500_000);
@@ -327,6 +332,12 @@ impl Plan {
                 plan.sky.reorg_after_tx = 0;
                 plan.lightwalletd = lightwallet::Service::HONEST;
                 plan.clears = plan.typed_at() + seed.between("cli-focus-clears", 0, 60, 180);
+                if roll("focus-fee-refused", 2) == 0 {
+                    plan.kills = vec![Kill {
+                        aim: Aim::Unsent(Step::FeeOut),
+                        rest: seed.between("cli-focus-rest", 0, 2, SHORT_REST),
+                    }];
+                }
             }
             _ => {}
         }

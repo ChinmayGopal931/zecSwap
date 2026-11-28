@@ -230,9 +230,10 @@ No hand-written example tests (Conventions). These stand in for them:
   around `deposit.json`. A fifth of seeds run calm with no kills, where the commands must end as the
   maker dictates; a fifth calm with kills alone, each also run without its kills, and the two must
   end the same. Of the rest, a tenth have a maker that cancels on a Zcash chain that delays and
-  loses transactions, half of them killed just before `finish`, a twentieth short funds against an
-  open fee, and a twentieth an open fee lost from the pool until the weather clears minutes into
-  its quote. A kill is a panic of a marker type at the fuse of the store (`Touch`), or an abort
+  loses transactions, half of them killed just before `finish` and a third of the rest each killed
+  before the sweep back's broadcast or refused it, a twentieth short funds against an open fee,
+  and a twentieth an open fee lost from the pool until the weather clears minutes into its quote,
+  or refused its broadcast. A kill is a panic of a marker type at the fuse of the store (`Touch`), or an abort
   of the command's task on the clock; neither runs a line of the command after it. A seed proves
   two to five times.
 - **Alerts in the simulation** (`alerts.rs`). Every sender's alerts (How it behaves) reach one sink,
