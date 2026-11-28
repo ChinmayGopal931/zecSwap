@@ -1335,7 +1335,10 @@ impl World {
             && settled
             && delivers
         {
-            fail(22, format!("the last deposit command failed: {e}"));
+            fail(
+                22,
+                format!("the last deposit command failed: {}", person::brief(e)),
+            );
         }
         if settled && delivers && matches!(shown, Some(Ok(()))) {
             for (index, from) in depositing.addresses.iter().enumerate() {

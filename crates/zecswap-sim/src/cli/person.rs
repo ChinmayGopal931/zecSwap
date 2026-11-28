@@ -146,7 +146,7 @@ impl Person {
             match made {
                 Ok(()) => break,
                 Err(e) => {
-                    self.note(format!("init failed: {e}"));
+                    self.note(format!("init failed: {}", brief(&e)));
                     sleep(Duration::from_secs(20 + 10 * attempt.min(6))).await;
                 }
             }
@@ -371,7 +371,7 @@ impl Person {
     }
 }
 
-fn brief(error: &str) -> String {
+pub fn brief(error: &str) -> String {
     let error = error.split(", source: ").next().unwrap_or(error);
     let words = error.split_whitespace().filter(|word| {
         let digits = word.chars().filter(char::is_ascii_hexdigit).count();
