@@ -54,7 +54,7 @@ pub struct OpenFee {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Acceptance {
     #[serde(with = "bytes64")]
     pub user_share: PublicShare,
