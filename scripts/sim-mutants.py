@@ -971,13 +971,6 @@ MUTANTS = {
             "",
         ),
     ]),
-    "cli-forget-before-finished": (COMMAND, [
-        (
-            CLI_SWAP,
-            "    run.finished = true;\n    ctx.store.save(STATE, run)?;\n    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n",
-            "    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n    run.finished = true;\n    ctx.store.save(STATE, run)?;\n",
-        ),
-    ]),
 }
 
 

@@ -1,5 +1,8 @@
 0 catches a deposit on an opening a reorg can still drop
-3 catches a deposit on an opening a reorg can still drop
+3 catches a deposit on an opening a reorg can still drop, and a swap called paid on a payout a reorg can still drop
+4 catches a swap called paid on a payout a reorg can still drop
+13 catches a swap called paid on a withdrawal a reorg can still drop
+22 catches a swap called paid on a withdrawal a reorg can still drop
 32 catches a deposit made with too little time before t0, and that refusal turned into a panic
 35 catches an open fee paid over the cap
 39 catches a claim sent in the maker's hour after t1

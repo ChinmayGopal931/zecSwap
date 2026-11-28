@@ -41,7 +41,7 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer, cli_story for its command-line wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey, guard_survey and cli_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 161 client, relayer and command-line rules in turn, in place, and names the seeds that catch each; a mutant rebuilds the crates it touches, incrementally unless CARGO_INCREMENTAL=0 (a second set of the workspace's artifacts and a gigabyte or two of caches under target), then runs its survey: a quarter of a minute for a forward, reverse, deposit or relayer mutant, a minute and a half for a Zcash wallet one, some three for a command-line one, about two hours in all on ten cores; a run cut short is undone by the next; names after the range pick mutants
+scripts/sim-mutants.py 0..150                           # breaks 166 client, relayer and command-line rules in turn, in place, and names the seeds that catch each; a mutant rebuilds the crates it touches, incrementally unless CARGO_INCREMENTAL=0 (a second set of the workspace's artifacts and a gigabyte or two of caches under target), then runs its survey: a quarter of a minute for a forward, reverse, deposit or relayer mutant, a minute and a half for a Zcash wallet one, some three for a command-line one, about two hours in all on ten cores; a run cut short is undone by the next; names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then); with incremental builds it no longer pays on ten cores, where eight relayer mutants took 231 s on two copies and 267 s on three against 140 s in place
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -425,8 +425,10 @@ No hand-written example tests (Conventions). These stand in for them:
   the command-line wallet, saving the next index, the open fee's payment, the joint account and the
   deposit before what follows, the deposit saved before its broadcast, sending the open fee again,
   the funds check before it, the cancelled-before-deposit shortcut, sending an unmined deposit
-  again, forgetting a finished swap's joint account, resuming only an unfinished run, refusing
-  another version's file, and of `deposit`, saving a request and removing it once landed.
+  again, forgetting a finished swap's joint account, saving a sweep back before its broadcast, the
+  deposit mined before a sweep back and the sweep mined before `finish`, resuming only an
+  unfinished run, refusing another version's file, and of `deposit`, saving a request and removing
+  it once landed.
   Three more turn a refusal into a panic. The six regressions lists also name seeds that caught
   each, so every `cargo test` would. A change to a plan or to a fault reshuffles what each
   seed does: run the script again and replace those seeds. The script first runs each survey with
@@ -479,13 +481,12 @@ No hand-written example tests (Conventions). These stand in for them:
   swap relayers that serve
   another deployment, ask over the fee cap or are the maker, the JNI bindings, and of the CLI
   `init`, `status`, `send`, `send-many`, a mainnet directory and a crash inside
-  a save itself (a kill lands between steps, never inside a write). Seven of the CLI's rules have no
+  a save itself (a kill lands between steps, never inside a write). Five of the CLI's rules have no
   mutant, as no seed notices them gone: saving the quote or the accept (a lost quote is asked again
   at the next index, and the maker answers an accept again with the same swap), waiting for
   spendable funds before the deposit (a payment that fails is typed again), `finish` saving before
-  it forgets (forgetting first is harmless once the chain holds nothing), resuming a saved deposit
-  request (the address is shielded afresh), the deposit mined before a sweep back, and the sweep
-  mined before `finish`. Of
+  it forgets (forgetting first is harmless once the chain holds nothing), and resuming a saved
+  deposit request (the address is shielded afresh). Of
   deposits: the sanctions oracle, a deposit address with code, fees priced by gas
   (`feeExpiresAt`), deposits sent privately, a relayer's
   hour-long hold after a revert (five minutes here), and Railgun's screening itself. A swap payout's
