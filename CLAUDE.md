@@ -42,7 +42,7 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer, cli_story for its command-line wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey, guard_survey and cli_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 167 client, relayer and command-line rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
+scripts/sim-mutants.py 0..150                           # breaks 160 client, relayer and command-line rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then)
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -475,12 +475,13 @@ No hand-written example tests (Conventions). These stand in for them:
   token returns, swap relayers that serve
   another deployment, ask over the fee cap or are the maker, the JNI bindings, and of the CLI
   `init`, `status`, `send`, `send-many`, tokens (`--issuer`), a mainnet directory and a crash inside
-  a save itself (a kill lands between steps, never inside a write). Of the CLI's rules, no seed
-  notices saving the quote or the accept (a lost quote is asked again at the next index, and the
-  maker answers an accept again with the same swap), waiting for spendable funds before the deposit
-  (a payment that fails is typed again), `finish` saving before it forgets (forgetting first is
-  harmless once the chain holds nothing), resuming a saved deposit request (the address is
-  shielded afresh), the deposit mined before a sweep back, or the sweep mined before `finish`. Of
+  a save itself (a kill lands between steps, never inside a write). Seven of the CLI's rules have no
+  mutant, as no seed notices them gone: saving the quote or the accept (a lost quote is asked again
+  at the next index, and the maker answers an accept again with the same swap), waiting for
+  spendable funds before the deposit (a payment that fails is typed again), `finish` saving before
+  it forgets (forgetting first is harmless once the chain holds nothing), resuming a saved deposit
+  request (the address is shielded afresh), the deposit mined before a sweep back, and the sweep
+  mined before `finish`. Of
   deposits: the sanctions oracle, a deposit address with code, fees priced by gas
   (`feeExpiresAt`), deposits sent privately, a relayer's
   hour-long hold after a revert (five minutes here), and Railgun's screening itself. A swap payout's

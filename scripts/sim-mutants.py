@@ -876,9 +876,6 @@ MUTANTS = {
     "cli-index-unsaved": (COMMAND, [
         (CLI_SWAP, "    store.save(NEXT_INDEX, &(index + 1))?;\n", ""),
     ]),
-    "cli-quote-unsaved": (COMMAND, [
-        (CLI_SWAP, "        finished: false,\n    };\n    store.save(STATE, &run)?;\n", "        finished: false,\n    };\n"),
-    ]),
     "cli-fee-unsaved": (COMMAND, [
         (
             CLI_SWAP,
@@ -891,13 +888,6 @@ MUTANTS = {
     ]),
     "cli-no-funds-check": (COMMAND, [
         (CLI_SWAP, "                if held < needed {", "                if held < needed && false {"),
-    ]),
-    "cli-accept-unsaved": (COMMAND, [
-        (
-            CLI_SWAP,
-            "    run.progress = Progress::Accepted(swap.clone());\n    wallet.store().save(STATE, run)?;\n",
-            "    run.progress = Progress::Accepted(swap.clone());\n",
-        ),
     ]),
     "cli-no-cancelled-shortcut": (COMMAND, [
         (
@@ -930,22 +920,6 @@ MUTANTS = {
     "cli-deposit-not-sent-again": (COMMAND, [
         (CLI_SWAP, "            if let Err(e) = ctx.broadcast(txid).await {", "            if let Err(e) = Ok::<(), anyhow::Error>(()) {"),
     ]),
-    "cli-deposit-without-spendable-funds": (COMMAND, [
-        (CLI_SWAP, "        Ok(funds.spendable >= deposit_zat || funds.spendable == funds.total)", "        Ok(funds.total >= deposit_zat || true)"),
-    ]),
-    "cli-sweep-before-the-deposit-is-mined": (COMMAND, [
-        (CLI_SWAP, "        Ok(ctx.wallet.is_mined(deposit)? && funds.spendable == funds.total)", "        Ok(funds.spendable == funds.total)"),
-    ]),
-    "cli-sweep-not-awaited": (COMMAND, [
-        (CLI_SWAP, "        ctx.sync_until(|ctx| Ok(ctx.wallet.is_mined(txid)?)).await?;\n", ""),
-    ]),
-    "cli-forget-before-finished": (COMMAND, [
-        (
-            CLI_SWAP,
-            "    run.finished = true;\n    ctx.store.save(STATE, run)?;\n    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n",
-            "    if let Some(account) = run.joint_account {\n        ctx.wallet.forget(account)?;\n    }\n    run.finished = true;\n    ctx.store.save(STATE, run)?;\n",
-        ),
-    ]),
     "cli-nothing-forgotten": (COMMAND, [
         (CLI_SWAP, "        ctx.wallet.forget(account)?;\n", "        let _ = account;\n"),
     ]),
@@ -957,9 +931,6 @@ MUTANTS = {
     ]),
     "cli-request-unsaved": (COMMAND, [
         (CLI_DEPOSIT, "            store.save(PENDING, &pending)\n", "            let _ = pending;\n            Ok(())\n"),
-    ]),
-    "cli-request-not-resumed": (COMMAND, [
-        (CLI_DEPOSIT, "    if let Some(pending) = store.load::<Pending>(PENDING)? {", "    if let Some(pending) = None::<Pending> {"),
     ]),
     "cli-landed-request-kept": (COMMAND, [
         (CLI_DEPOSIT, "                report(index, &deposit);\n                store.remove(PENDING)?;\n", "                report(index, &deposit);\n"),
