@@ -110,23 +110,15 @@ impl ReverseUser {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
-            token_request: None,
         };
         let quote_id = swap.quote.terms.quote_id;
-        let accepted = self
-            .maker
-            .accept_reverse(quote_id, swap.swap_id, &acceptance)
-            .await?;
+        let accepted = self.maker.accept_reverse(quote_id, &acceptance).await?;
         ensure!(
             accepted.swap_id == swap.swap_id,
             "maker reported a different reverse swap"
         );
         swap.ticket = Some(accepted.ticket);
         Ok(())
-    }
-
-    pub async fn collect_token(&self, swap: &ReverseSwap) -> Result<bool> {
-        self.maker.collect_reverse_token(swap.swap_id).await
     }
 
     pub async fn watch_deposit(

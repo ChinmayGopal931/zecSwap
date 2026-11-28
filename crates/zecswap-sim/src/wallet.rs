@@ -40,6 +40,7 @@ pub struct Saved {
     pub deposit: Option<PaymentId>,
     pub deposited_at: Option<u64>,
     pub deposited_shallow: bool,
+    pub paid_shallow: bool,
     pub ended: Option<End>,
     pub runs: u32,
     pub lingered: bool,
@@ -272,6 +273,15 @@ impl Wallet {
             self.save(|saved| saved.lingered = true);
         }
         let paid = user.claim(swap).await?;
+        let below = self.chain.node.head().0.saturating_sub(READY_DEPTH);
+        let shallow = paid.amount > 0
+            && match &self.way {
+                Way::Account { key, .. } => {
+                    self.chain.token_balance_at(key.address(), below) < paid.amount
+                }
+                Way::Railgun { .. } => !self.chain.recorded_at(swap.swap_id, below).paid_out,
+            };
+        self.save(|saved| saved.paid_shallow = shallow);
         self.end(End::Paid(paid.amount));
         Ok(())
     }

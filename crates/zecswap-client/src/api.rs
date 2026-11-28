@@ -2,19 +2,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy_primitives::{Address, B256};
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
+use reqwest::header::RETRY_AFTER;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zecswap_api::relayer::{
     Claim, Conflict, Payout, RailgunTransact, RescueDeposit, Sent, ShieldDeposit, Terms,
 };
 use zecswap_api::service::{ErrorCode, ErrorResponse};
-use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, Status, TICKET_HEADER};
+use zecswap_api::{Acceptance, Accepted, Quote, QuoteRequest, TICKET_HEADER};
 use zecswap_chain::evm::wall_now;
-
-use crate::tokens::Tokens;
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 const BUSY_PATIENCE: Duration = Duration::from_secs(90);
@@ -95,11 +93,6 @@ impl MakerApi {
         Self(Endpoint::over("maker", url, wire))
     }
 
-    pub fn with_tokens(mut self, tokens: Arc<Tokens>) -> Self {
-        self.0.tokens = Some(tokens);
-        self
-    }
-
     pub async fn info(&self) -> Result<zecswap_api::service::MakerInfo> {
         self.0.get("/v1/info").await
     }
@@ -114,30 +107,15 @@ impl MakerApi {
     pub async fn accept_reverse(
         &self,
         quote_id: B256,
-        swap_id: B256,
         acceptance: &Acceptance,
     ) -> Result<Accepted> {
         let path = format!("/v1/reverse/quote/{quote_id}/accept");
-        let response = self.0.accept(&path, swap_id, acceptance).await?;
+        let response = self.0.accept(&path, acceptance).await?;
         self.0.read(response).await
     }
 
     pub async fn reverse_status(&self, swap_id: B256) -> Result<zecswap_api::reverse::Status> {
         self.0.get(&format!("/v1/reverse/swaps/{swap_id}")).await
-    }
-
-    pub async fn collect_token(&self, swap_id: B256) -> Result<bool> {
-        let status: Status = self.0.get(&format!("/v1/swaps/{swap_id}")).await?;
-        self.0
-            .tokens()?
-            .collect(swap_id, status.token_return.as_deref())
-    }
-
-    pub async fn collect_reverse_token(&self, swap_id: B256) -> Result<bool> {
-        let status = self.reverse_status(swap_id).await?;
-        self.0
-            .tokens()?
-            .collect(swap_id, status.token_return.as_deref())
     }
 
     pub(crate) async fn quote(
@@ -159,13 +137,12 @@ impl MakerApi {
         quote_id: B256,
         expires_at: u64,
         paid: bool,
-        swap_id: B256,
         acceptance: &Acceptance,
     ) -> Result<Accepted> {
         let path = format!("/v1/quote/{quote_id}/accept");
         let mut pace = FEE_WAIT_MIN;
         loop {
-            let response = self.0.accept(&path, swap_id, acceptance).await?;
+            let response = self.0.accept(&path, acceptance).await?;
             let busy = paid && response.status() == StatusCode::SERVICE_UNAVAILABLE;
             if !busy && response.status() != StatusCode::PAYMENT_REQUIRED {
                 return self.0.read(response).await;
@@ -365,7 +342,6 @@ struct Endpoint {
     name: &'static str,
     http: reqwest::Client,
     url: String,
-    tokens: Option<Arc<Tokens>>,
     #[cfg(feature = "sim")]
     wire: Option<Arc<dyn Wire>>,
 }
@@ -376,7 +352,6 @@ impl Endpoint {
             name,
             http: reqwest::Client::builder().timeout(TIMEOUT).build()?,
             url: url.into(),
-            tokens: None,
             #[cfg(feature = "sim")]
             wire: None,
         })
@@ -389,7 +364,6 @@ impl Endpoint {
             name,
             http: HTTP.get_or_init(reqwest::Client::new).clone(),
             url: url.into(),
-            tokens: None,
             wire: Some(wire),
         }
     }
@@ -405,48 +379,9 @@ impl Endpoint {
         request.send().await
     }
 
-    async fn accept(
-        &self,
-        path: &str,
-        swap_id: B256,
-        acceptance: &Acceptance,
-    ) -> Result<reqwest::Response> {
+    async fn accept(&self, path: &str, acceptance: &Acceptance) -> Result<reqwest::Response> {
         let url = format!("{}{path}", self.url);
-        let mut response = self.send(|| self.http.post(&url).json(acceptance)).await?;
-        if let Some(tokens) = &self.tokens {
-            for _ in 0..3 {
-                if response.status() != StatusCode::UNAUTHORIZED {
-                    break;
-                }
-                let Some(asked) = response.headers().get(WWW_AUTHENTICATE) else {
-                    break;
-                };
-                let payment = tokens.pay(asked.to_str()?).await?;
-                let paid = Acceptance {
-                    token_request: Some(payment.request.clone()),
-                    ..acceptance.clone()
-                };
-                let authorization = payment.token.authorization();
-                let sent = self
-                    .send(|| {
-                        self.http
-                            .post(&url)
-                            .header(AUTHORIZATION, &authorization)
-                            .json(&paid)
-                    })
-                    .await;
-                let status = sent.as_ref().ok().map(reqwest::Response::status);
-                tokens.settle(swap_id, payment, status);
-                response = sent?;
-            }
-        }
-        Ok(response)
-    }
-
-    fn tokens(&self) -> Result<&Tokens> {
-        self.tokens
-            .as_deref()
-            .context("this client spends no tokens")
+        Ok(self.send(|| self.http.post(&url).json(acceptance)).await?)
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {

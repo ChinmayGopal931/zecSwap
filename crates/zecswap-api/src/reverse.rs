@@ -90,5 +90,4 @@ pub struct Status {
     pub deposit_txid: Option<String>,
     pub ready_deadline: u64,
     pub refund_after: u64,
-    pub token_return: Option<String>,
 }

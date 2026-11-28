@@ -29,7 +29,6 @@ pub struct SwapArgs {
     pub token: Address,
     pub units: u32,
     pub payee: Payee,
-    pub tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
     pub max_open_fee: u64,
 }
 
@@ -43,6 +42,8 @@ struct Run {
     progress: Progress,
     joint_account: Option<AccountUuid>,
     deposit: Option<[u8; 32]>,
+    #[serde(default)]
+    sweep: Option<[u8; 32]>,
     finished: bool,
 }
 
@@ -113,10 +114,6 @@ impl FeeWallet for Session {
 }
 
 pub async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
-    let spending = |api: MakerApi| match &args.tokens {
-        Some(tokens) => api.with_tokens(tokens.clone()),
-        None => api,
-    };
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -130,7 +127,7 @@ pub async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
             },
         ),
     };
-    let maker = spending(MakerApi::new(args.maker)?);
+    let maker = MakerApi::new(args.maker)?;
     let seed = ctx.store.seed()?;
     let user = User::new(
         &seed,
@@ -199,6 +196,7 @@ async fn start(store: &Store, maker: &impl Opener, units: u32) -> Result<Run> {
         },
         joint_account: None,
         deposit: None,
+        sweep: None,
         finished: false,
     };
     store.save(STATE, &run)?;
@@ -359,12 +357,28 @@ async fn sweep_back(ctx: &mut Session, user: &User, run: &mut Run, swap: &UserSw
         Ok(ctx.wallet.is_mined(deposit)? && funds.spendable == funds.total)
     })
     .await?;
-    if ctx.wallet.funds(account)?.total > 0 {
-        let home: ZcashAddress = ctx.wallet.fresh_address(ctx.account()?)?.parse()?;
-        let txid = ctx.wallet.sweep(&ctx.prover, account, &key, &home)?;
-        ctx.broadcast(txid).await?;
+    let txid = match run.sweep.map(TxId::from_bytes) {
+        Some(txid) if !ctx.wallet.is_expired(txid)? => Some(txid),
+        _ if ctx.wallet.funds(account)?.total > 0 => {
+            let home: ZcashAddress = ctx.wallet.fresh_address(ctx.account()?)?.parse()?;
+            let txid = ctx.wallet.sweep(&ctx.prover, account, &key, &home)?;
+            run.sweep = Some(*txid.as_ref());
+            ctx.store.save(STATE, run)?;
+            Some(txid)
+        }
+        _ => None,
+    };
+    if let Some(txid) = txid {
+        if !ctx.wallet.is_mined(txid)? {
+            ctx.broadcast(txid).await?;
+        }
         println!("swept the deposit back in {txid}; waiting for it to be mined");
-        ctx.sync_until(|ctx| Ok(ctx.wallet.is_mined(txid)?)).await?;
+        ctx.sync_until(|ctx| Ok(ctx.wallet.is_mined(txid)? || ctx.wallet.is_expired(txid)?))
+            .await?;
+        anyhow::ensure!(
+            ctx.wallet.is_mined(txid)?,
+            "the sweep back {txid} expired unmined: type swap again to sweep afresh"
+        );
     }
     finish(ctx, run)
 }
