@@ -42,8 +42,8 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer, cli_story for its command-line wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey, guard_survey and cli_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 160 client, relayer and command-line rules in turn, in place, and names the seeds that catch each (hours, as every mutant rebuilds the crates it touches; a run cut short is undone by the next); names after the range pick mutants
-ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then)
+scripts/sim-mutants.py 0..150                           # breaks 160 client, relayer and command-line rules in turn, in place, and names the seeds that catch each; a mutant rebuilds the crates it touches, incrementally unless CARGO_INCREMENTAL=0 (a second set of the workspace's artifacts and a gigabyte or two of caches under target), then runs its survey: a quarter of a minute for a forward, reverse, deposit or relayer mutant, a minute and a half for a Zcash wallet one, some three for a command-line one, about two hours in all on ten cores; a run cut short is undone by the next; names after the range pick mutants
+ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then); with incremental builds it no longer pays on ten cores, where eight relayer mutants took 231 s on two copies and 267 s on three against 140 s in place
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
 (cd contracts && FOUNDRY_PROFILE=soak forge test --no-match-path 'test/{fork,ffi}/*')  # ~1 h: 4096×256 stateful runs, 65536 fuzz runs; the coverage corpus in cache/ carries over
@@ -451,18 +451,20 @@ No hand-written example tests (Conventions). These stand in for them:
   same reason: revm's interpreter is generic over the state it runs on, so it is compiled where it
   is called, and `zecswap-sim` itself builds at `opt-level = 1` (at 3 it compiles for over ten
   minutes, which every mutant would pay). Waits measure with tokio's clock, so a paused runtime
-  moves them. Not seeded: the OS randomness in the client's proofs, which no decision depends on. A
-  whole-workspace build turns the feature on for every crate: the two that remember answer every
-  caller with what the derivation gives, and the rest are inert until called; a `-p` build, as the
-  scripts and `cargo run -p zecswap-cli` make, or one that names no crate (`default-members`)
-  leaves it out. `zecswap-cli` is a library its binary runs; with the feature its `Store` takes a
-  fuse (`Store::fused`) told of every save and removal, before and after, and `Session::broadcast`
-  tells it of every broadcast, which is how the simulation records each durable step and kills the
-  command there. The run builds the `Session`, `User` and `Depositor` itself, as `main`, `swap::run`
-  and `deposit::run` would from their URLs, and writes the seed file `init` would (with a seeded
-  seed); of the binary it runs no argument parsing, URL, `connect`, `USER_PRIVATE_KEY`, tracing,
-  `status`, `send` or `send-many`. `Session.prover` is shared, so a typing does not build the proving
-  key again.
+  moves them. Not seeded: the OS randomness in the client's proofs and in the Zcash transactions the
+  command-line wallet builds, which no decision depends on: the transaction ids that wallet prints
+  in a story differ from run to run, the trace and its digest do not. A whole-workspace build turns
+  the feature on for every crate: the two that remember answer every caller with what the derivation
+  gives, and the rest are inert until called; a `-p` build, as the scripts and
+  `cargo run -p zecswap-cli` make, or one that names no crate (`default-members`) leaves it out.
+  `zecswap-cli` is a library its binary runs; with the feature its `Store` takes a fuse
+  (`Store::fused`) told of every save and removal, before and after, and `Session::broadcast` tells
+  it of every broadcast, which is how the simulation records each durable step and kills the command
+  there. The run builds the `Session`, `User` and `Depositor` itself, as `main`, `swap::run` and
+  `deposit::run` would from their URLs, and writes the seed file `init` would (with a seeded seed);
+  of the binary it runs no argument parsing, URL, `connect`, `USER_PRIVATE_KEY`, tracing, `status`,
+  `send` or `send-many`. `Session.prover` is shared, so a typing does not build the proving key
+  again.
 - **Not simulated yet**, and so without tests beyond the known answers: tokens,
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable

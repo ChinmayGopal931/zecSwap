@@ -17,6 +17,7 @@ ONLY = set(sys.argv[2:])
 WORKERS = int(os.environ.get("ZECSWAP_SIM_WORKERS", "1"))
 CORES = os.cpu_count() or 4
 SHARED = {"CARGO_BUILD_JOBS": CORES, "ZECSWAP_SIM_THREADS": (CORES + 1) // 2}
+BUILD = {"CARGO_INCREMENTAL": "1"}
 COPIED = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates", "contracts/out")
 CLONE = ["cp", "-Rpc"] if sys.platform == "darwin" else ["cp", "-Rp", "--reflink=auto"]
 JUDGE = "crates/zecswap-chain/src/evm/judge.rs"
@@ -956,7 +957,7 @@ class Checkout:
         run = subprocess.Popen(
             ["cargo", "test", "-p", "zecswap-sim", "--test", "swaps", test, "--", "--exact", "--ignored", "--nocapture"],
             cwd=self.root,
-            env={**self.env, "ZECSWAP_SIM_SEEDS": SEEDS},
+            env={**BUILD, **self.env, "ZECSWAP_SIM_SEEDS": SEEDS},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
