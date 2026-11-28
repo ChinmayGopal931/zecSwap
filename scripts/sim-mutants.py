@@ -83,6 +83,13 @@ MUTANTS = {
     "ready-depth-0": (FORWARD, [
         (JUDGE, "pub const READY_DEPTH: u64 = 2;", "pub const READY_DEPTH: u64 = 0;"),
     ]),
+    "opening-depth-0": (FORWARD, [
+        (
+            USER,
+            "BlockId::number(head.number.saturating_sub(READY_DEPTH))",
+            "BlockId::number(head.number)",
+        ),
+    ]),
     "no-claim-margin": (FORWARD, [
         (
             JUDGE,

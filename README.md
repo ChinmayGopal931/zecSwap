@@ -34,8 +34,8 @@ Once one half is revealed the swap is settled, so every swap ends one of these t
    with `Z`, a proof you know `z`, and the Railgun note your USDC must be paid to.
 2. **Open.** Before you send anything, the maker locks the USDC in the contract under `E`, `Z`,
    two deadlines (`t0` and `t1`) and your payout note.
-3. **Check and pay.** Your wallet reads the swap back from Ethereum and sends the ZEC to the
-   joint address only if every term matches.
+3. **Check and pay.** Your wallet reads the swap back from Ethereum, waits until two blocks sit
+   on top of it, and sends the ZEC to the joint address only if every term matches.
 4. **Ready.** Once the ZEC has 2 confirmations, the maker calls `ready()`, giving up its right to
    cancel.
 5. **Claim.** A relayer sends your claim, which reveals `z`, through Flashbots Protect, so `z`

@@ -5,6 +5,7 @@ use alloy::primitives::{B256, U256};
 use alloy::signers::local::PrivateKeySigner;
 use tokio::task::{JoinHandle, LocalSet, spawn_local};
 use tokio::time::{Instant, sleep, sleep_until};
+use zecswap_chain::evm::judge::READY_DEPTH;
 use zecswap_chain::evm::{Reveal, Settlement, Stage, Window, Windows, simulate_wall};
 use zecswap_client::MIN_TIME_TO_T0;
 use zecswap_core::{NetworkType, SecretShare, derive_user_keys};
@@ -588,6 +589,11 @@ impl World {
             fail(format!(
                 "the wallet deposited {}s before t0",
                 swap.opened.t0.saturating_sub(at)
+            ));
+        }
+        if saved.deposited_shallow {
+            fail(format!(
+                "the wallet deposited on an opening under {READY_DEPTH} blocks deep"
             ));
         }
         if let (Some(swap), Some(recorded), Some(z)) = (swap, recorded, self.z(&saved)) {

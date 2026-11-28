@@ -4,6 +4,7 @@ use std::time::Duration;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use zecswap_api::Network;
+use zecswap_chain::evm::judge::READY_DEPTH;
 use zecswap_chain::evm::{Settlement, Stage, wall_now};
 use zecswap_client::{
     FeeNotHonoured, MakerApi, Quoted, RelayerApi, Route, ServiceError, User, UserSwap, Wire,
@@ -38,6 +39,7 @@ pub struct Saved {
     pub joint: Option<String>,
     pub deposit: Option<PaymentId>,
     pub deposited_at: Option<u64>,
+    pub deposited_shallow: bool,
     pub ended: Option<End>,
     pub runs: u32,
     pub lingered: bool,
@@ -162,11 +164,14 @@ impl Wallet {
                 let joint = user.verify(&swap).await?;
                 let address = joint.unified_address(NetworkType::Test);
                 let id = self.zcash.build(&address, swap.quote.deposit_zat);
-                let head = self.chain.node.head().1;
+                let (block, head) = self.chain.node.head();
+                let below = block.saturating_sub(READY_DEPTH);
+                let shallow = self.chain.recorded_at(swap.swap_id, below).stage == 0;
                 self.save(|saved| {
                     saved.joint = Some(address);
                     saved.deposit = Some(id);
                     saved.deposited_at = Some(head);
+                    saved.deposited_shallow = shallow;
                 });
                 self.zcash.broadcast(id);
                 self.chain.node.note("wallet deposited".into());

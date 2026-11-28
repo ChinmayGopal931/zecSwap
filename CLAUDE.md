@@ -42,7 +42,7 @@ ZECSWAP_SIM_SEEDS=0..20000 ZECSWAP_SIM_RUNS=forward,reverse,deposits,guards,zcas
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_RUNS=forward cargo test -p zecswap-sim shrink -- --exact --ignored --nocapture   # a failing seed's plan made as simple as still fails the same way (Testing, Shrinking), kept beside the hunts with the command that replays it; ZECSWAP_SIM_SHRINK=1 has a hunt do so for the first seed of each new way of failing
 ZECSWAP_SIM_SEEDS=42 ZECSWAP_SIM_TRACE=1 cargo test -p zecswap-sim story -- --exact --ignored --nocapture   # one seed's plan, verdict and every event (reverse_story for its reverse swap, deposit_story for its deposits, zcash_story for its Zcash wallet, guard_story for its relayer, cli_story for its command-line wallet)
 ZECSWAP_SIM_SEEDS=0..300 cargo test -p zecswap-sim survey -- --exact --ignored --nocapture   # one line a seed: what was planned, how it ended (reverse_survey, deposit_survey, zcash_survey, guard_survey and cli_survey likewise); ZECSWAP_SIM_DIGEST=1 adds a digest of each seed's plan, verdict and whole trace
-scripts/sim-mutants.py 0..150                           # breaks 160 client, relayer and command-line rules in turn, in place, and names the seeds that catch each; a mutant rebuilds the crates it touches, incrementally unless CARGO_INCREMENTAL=0 (a second set of the workspace's artifacts and a gigabyte or two of caches under target), then runs its survey: a quarter of a minute for a forward, reverse, deposit or relayer mutant, a minute and a half for a Zcash wallet one, some three for a command-line one, about two hours in all on ten cores; a run cut short is undone by the next; names after the range pick mutants
+scripts/sim-mutants.py 0..150                           # breaks 161 client, relayer and command-line rules in turn, in place, and names the seeds that catch each; a mutant rebuilds the crates it touches, incrementally unless CARGO_INCREMENTAL=0 (a second set of the workspace's artifacts and a gigabyte or two of caches under target), then runs its survey: a quarter of a minute for a forward, reverse, deposit or relayer mutant, a minute and a half for a Zcash wallet one, some three for a command-line one, about two hours in all on ten cores; a run cut short is undone by the next; names after the range pick mutants
 ZECSWAP_SIM_WORKERS=2 scripts/sim-mutants.py 0..150      # the same lines in the same order, two mutants at once, each in its own copy of the checkout and its target under target/sim-mutants (copy-on-write clones on APFS, which cargo takes as fresh; reflinks or whole copies elsewhere), removed at the end; the workers share CARGO_BUILD_JOBS and ZECSWAP_SIM_THREADS, so each costs a build's and a survey's memory, and on disk only what its builds change (a clone of a 3 GB target costs next to nothing until then); with incremental builds it no longer pays on ten cores, where eight relayer mutants took 231 s on two copies and 267 s on three against 140 s in place
 cargo clippy --workspace --all-targets; cargo fmt --all
 (cd contracts && forge test)                            # FOUNDRY_DISABLE_NIGHTLY_WARNING=1 hides the nightly banner
@@ -255,9 +255,10 @@ No hand-written example tests (Conventions). These stand in for them:
   (`panics.rs`). Every block: the windows the client judges by are the contract's, the two
   sides never may reveal at once, and the user's share is never public while the maker may still
   refund. At the end: no open fee over the cap, outside Orchard or built twice; no deposit to terms
-  the user didn't agree or with under `MIN_TIME_TO_T0` left; a claimed swap carries the user's share
-  and paid the user's note or account in full; a refunded one was swept back; a deposit is never
-  left stuck once the weather has cleared. Reverse, every block: the same windows and exclusion, no
+  the user didn't agree, with under `MIN_TIME_TO_T0` left or on an opening under `READY_DEPTH`
+  blocks deep; a claimed swap carries the user's share and paid the user's note or account in
+  full; a refunded one was swept back; a deposit is never left stuck once the weather has cleared.
+  Reverse, every block: the same windows and exclusion, no
   transaction carrying either share just reverted, and the relayer never holds the user's share
   while the maker may claim. At the end: no funding asked for a lying quote, to another deployment,
   or locking the USDC more than a day; every ready signed with the whole deposit spendable, ending
@@ -390,8 +391,8 @@ No hand-written example tests (Conventions). These stand in for them:
   which is a second finding or only a plan no seed gives, as a step can take a plan where its
   checks were never meant to hold. The same command again prints what was kept.
 - **Its teeth.** `scripts/sim-mutants.py` removes a rule from the client, the relayer's checks
-  or the command-line wallet and fails if no seed notices: forward, the ready depth, the claim
-  margin, the deposit deadline,
+  or the command-line wallet and fails if no seed notices: forward, the ready depth, the opening's
+  depth before a deposit, the claim margin, the deposit deadline,
   the terms check, the fee cap, the claim window's start, the maker's hour after `t1`; reverse, no
   ready after a refund,
   the whole deposit before a ready, a ready's life before `t0`, saving a ready's deadline and a
@@ -534,7 +535,9 @@ No hand-written example tests (Conventions). These stand in for them:
 - **Reveal judgements** are pure functions on one read, the swap at the newest block's hash
   (`Settlement::read`), in `evm/judge.rs`. A window opens by the block's time and ends by the
   later of it and the wall clock, less the margin. Before `t0` a claim needs a ready with
-  `READY_DEPTH` (2) blocks above it; a reverse claim one with `REVERSE_READY_DEPTH` (4) above it.
+  `READY_DEPTH` (2) blocks above it; a reverse claim one with `REVERSE_READY_DEPTH` (4) above it;
+  and a wallet pays its ZEC in only once the swap's opening has `READY_DEPTH` above it
+  (`User::verify`), so no reorg the design allows can take the swap from under the deposit.
   The audit's 97 cases replay against them (`crates/zecswap-chain/tests/windows-spec-vectors.json`,
   `windows_spec.rs`).
 - **Contract identity.** Every client reads `MIN_WINDOW()` and `LATE_WINDOW()` and refuses the lock
