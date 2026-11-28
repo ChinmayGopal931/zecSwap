@@ -211,6 +211,7 @@ impl User {
         let chain = self.caught_up(swap, |_| true).await?;
         let keys = self.keys(swap.index)?;
         ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
+        let chain = self.opened_deep(swap).await?;
         let now = self.settlement.now().await?;
         check_deadlines(now, self.min_time_to_t0, chain.t0, chain.t1)?;
         Ok(JointAccount::derive(
@@ -474,6 +475,33 @@ impl User {
                 "the swap's ready never got {READY_DEPTH} blocks deep"
             );
             tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    async fn opened_deep(&self, swap: &UserSwap) -> Result<OnChainSwap> {
+        let terms = self.terms(swap)?;
+        let deadline = Instant::now() + CATCH_UP;
+        loop {
+            let (chain, head) = self.settlement.read(swap.swap_id, &terms).await?;
+            if let Some(chain) = chain {
+                ensure!(chain.stage == Stage::Open, "the swap is {:?}", chain.stage);
+                let then = self
+                    .settlement
+                    .swap_at(
+                        swap.swap_id,
+                        &terms,
+                        BlockId::number(head.number.saturating_sub(READY_DEPTH)),
+                    )
+                    .await?;
+                if then.is_some() {
+                    return Ok(chain);
+                }
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the swap's opening never got {READY_DEPTH} blocks deep"
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
 
