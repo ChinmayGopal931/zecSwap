@@ -25,3 +25,6 @@ zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-client = { path = "../zecswap-client" }
 zecswap-core = { path = "../zecswap-core" }
+
+[features]
+sim = []

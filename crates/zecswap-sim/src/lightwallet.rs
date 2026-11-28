@@ -1,5 +1,5 @@
-mod ledger;
-mod server;
+pub(crate) mod ledger;
+pub(crate) mod server;
 mod signer;
 mod wallet;
 
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::Duration;
 
 use orchard::ValuePool;
@@ -21,7 +21,7 @@ use zcash_address::unified::{self, Encoding, Receiver};
 use zcash_protocol::consensus::{
     BlockHeight, BranchId, Network, NetworkType, NetworkUpgrade, Parameters,
 };
-use zecswap_chain::zcash::{Prover, SWEEP_FEE_CEILING};
+use zecswap_chain::zcash::{Prover, SWEEP_FEE_CEILING, Wallet};
 use zecswap_core::{SweepIntent, sign_pczt_bytes};
 
 use crate::panics;
@@ -42,16 +42,16 @@ const SEASON: u32 = 13;
 const STALE: Duration = Duration::from_secs(24 * 60 * 60);
 const FUNDS: usize = usize::MAX;
 
-static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
+pub(crate) static PROVER: LazyLock<Prover> = LazyLock::new(Prover::default);
 
-fn unified(address: orchard::Address, network: NetworkType) -> String {
+pub(crate) fn unified(address: orchard::Address, network: NetworkType) -> String {
     let receiver = Receiver::Orchard(address.to_raw_address_bytes());
     unified::Address::try_from_items(unified::Revision::R0, vec![unified::Uitem::Data(receiver)])
         .expect("a lone Orchard receiver is a unified address")
         .encode(&network)
 }
 
-fn receiver(address: &str, network: NetworkType) -> orchard::Address {
+pub(crate) fn receiver(address: &str, network: NetworkType) -> orchard::Address {
     zecswap_core::SweepIntent::recipient(address, network).expect("an Orchard receiver")
 }
 
@@ -504,7 +504,7 @@ impl Plan {
         )
     }
 
-    fn calm(&self) -> bool {
+    pub(crate) fn calm(&self) -> bool {
         let Sky {
             reorg,
             reorg_after_tx,
@@ -548,7 +548,7 @@ pub struct Ended {
     pub audited: bool,
 }
 
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 
 impl Scratch {
     fn shaped(name: &str) -> bool {
@@ -557,7 +557,7 @@ impl Scratch {
         numbers.split('-').count() == 3 && numbers.split('-').all(digits)
     }
 
-    fn new(seed: Seed) -> Self {
+    pub(crate) fn new(seed: Seed) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let ours = format!("zecswap-sim-{}-", std::process::id());
         let stale = |entry: &std::fs::DirEntry| {
@@ -581,6 +581,24 @@ impl Scratch {
         let path = std::env::temp_dir().join(name);
         std::fs::create_dir_all(&path).expect("a scratch directory");
         Self(path)
+    }
+
+    pub(crate) fn wallet(&self, network: Network) -> PathBuf {
+        static MIGRATED: [OnceLock<Option<Vec<u8>>>; 2] = [OnceLock::new(), OnceLock::new()];
+        let path = self.0.join("wallet.sqlite");
+        let migrated = &MIGRATED[usize::from(matches!(network, Network::MainNetwork))];
+        let migrated = migrated.get_or_init(|| {
+            let opened = Wallet::open(&path, network).is_ok();
+            let file = opened.then(|| std::fs::read(&path).ok()).flatten();
+            let _ = std::fs::remove_file(&path);
+            file
+        });
+        if let Some(file) = migrated
+            && std::fs::write(&path, file).is_err()
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+        path
     }
 }
 
@@ -648,7 +666,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         ledger: ledger.clone(),
         server: server.clone(),
         keys: keys.clone(),
-        path: scratch.0.join("wallet.sqlite"),
+        path: scratch.wallet(network),
         start,
         saved: Rc::new(RefCell::new(saved)),
         failures: Rc::default(),
@@ -673,7 +691,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
     }
     let note = |what: String| ledger.note(what);
     let horizon = || start + Duration::from_secs(plan.blocks * SPACING);
-    let life = lives(&note, start, horizon, &plan.crashes, || {
+    let life = lives("the wallet", &note, start, horizon, &plan.crashes, || {
         spawn_local(actor.clone().live())
     })
     .await;
@@ -713,10 +731,12 @@ impl World {
             let mut due = Vec::new();
             {
                 let saved = self.actor.saved.borrow();
+                let paid = self.paid.borrow();
+                let owed = |key: (usize, usize)| !paid.contains_key(&key);
                 let own = saved.own.as_ref();
                 for (n, (delay, value)) in self.plan.funds.iter().enumerate() {
                     let ripe = own.filter(|(_, since)| since.elapsed().as_secs() >= *delay);
-                    if let Some((address, _)) = ripe {
+                    if let Some((address, _)) = ripe.filter(|_| owed((FUNDS, n))) {
                         due.push(((FUNDS, n), receiver(address, kind), *value));
                     }
                 }
@@ -726,11 +746,14 @@ impl World {
                             let Some(since) = saved.imported[index] else {
                                 continue;
                             };
-                            let to = self.keys.joints[index].account.deposit_address();
-                            let ripe = notes.iter().enumerate();
-                            let ripe =
-                                ripe.filter(|(_, (delay, _))| since.elapsed().as_secs() >= *delay);
-                            due.extend(ripe.map(|(n, (_, value))| ((index, n), to, *value)));
+                            let ripe = notes.iter().enumerate().filter(|(n, (delay, _))| {
+                                since.elapsed().as_secs() >= *delay && owed((index, *n))
+                            });
+                            let mut ripe = ripe.peekable();
+                            if ripe.peek().is_some() {
+                                let to = self.keys.joints[index].account.deposit_address();
+                                due.extend(ripe.map(|(n, (_, value))| ((index, n), to, *value)));
+                            }
                         }
                         Errand::Fee {
                             at,
@@ -738,7 +761,7 @@ impl World {
                             value,
                         } => {
                             let ripe = own.is_some() && self.actor.start.elapsed().as_secs() >= *at;
-                            if ripe {
+                            if ripe && owed((index, 0)) {
                                 let to = self.keys.fee_address(*slot);
                                 due.push(((index, 0), to, *value));
                             }

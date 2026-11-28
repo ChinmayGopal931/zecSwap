@@ -1,5 +1,27 @@
 use std::sync::{Arc, Mutex};
 
+use zecswap_core::JointAccount;
+
+pub trait Sees: Send + Sync {
+    fn watch(&self, account: &JointAccount);
+
+    fn received(&self, address: &str, confirmations: u64) -> u64;
+
+    fn sweep(&self, address: &str) -> u64;
+}
+
+impl Sees for Zcash {
+    fn watch(&self, _: &JointAccount) {}
+
+    fn received(&self, address: &str, confirmations: u64) -> u64 {
+        Zcash::received(self, address, confirmations)
+    }
+
+    fn sweep(&self, address: &str) -> u64 {
+        Zcash::sweep(self, address)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaymentId(pub usize);
 

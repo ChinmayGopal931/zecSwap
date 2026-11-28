@@ -57,6 +57,8 @@ pub struct Depositor {
     deployment: DepositDeployment,
     cap: FeeCap,
     contract: OnceCell<Deployment>,
+    #[cfg(feature = "sim")]
+    derived: std::sync::Mutex<std::collections::BTreeMap<(u32, u32), Address>>,
 }
 
 impl Depositor {
@@ -79,6 +81,8 @@ impl Depositor {
             deployment,
             cap,
             contract: OnceCell::new(),
+            #[cfg(feature = "sim")]
+            derived: Default::default(),
         }
     }
 
@@ -97,7 +101,17 @@ impl Depositor {
     }
 
     pub fn address(&self, index: u32) -> Result<Address> {
-        Ok(self.keys(index)?.key.address().into())
+        #[cfg(feature = "sim")]
+        if let Some(address) = self.derived.lock().unwrap().get(&(self.account, index)) {
+            return Ok(*address);
+        }
+        let address = self.keys(index)?.key.address().into();
+        #[cfg(feature = "sim")]
+        self.derived
+            .lock()
+            .unwrap()
+            .insert((self.account, index), address);
+        Ok(address)
     }
 
     pub fn railgun(&self) -> &RailgunKeys {

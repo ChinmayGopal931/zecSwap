@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
 alloy = { version = "1.8", default-features = false, features = [
     "consensus",
     "contract",
@@ -22,17 +24,22 @@ alloy = { version = "1.8", default-features = false, features = [
     "std",
 ] }
 anyhow = "1"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
 bytes = "1"
+curve25519-dalek = "4"
 h2 = "0.4"
 hex = "0.4"
 http = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 incrementalmerkletree = { version = "0.9", features = ["legacy-api"] }
+light-poseidon = "0.4"
 orchard = { workspace = true, features = ["circuit"] }
 pczt = { workspace = true, features = ["io-finalizer", "prover", "spend-finalizer", "tx-extractor", "zcp-builder"] }
 prost = "0.14"
 rand.workspace = true
 rand_chacha = "0.10"
+rayon = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 revm = { version = "43", default-features = false, features = [
     "optional_balance_check",
@@ -43,6 +50,7 @@ revm = { version = "43", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
 tokio = { version = "1", features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
 tonic = { version = "0.14", default-features = false, features = ["channel"] }
 tower = { version = "0.5", features = ["util"] }
@@ -55,7 +63,9 @@ zcash_primitives = "0.31.0"
 zcash_protocol.workspace = true
 zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain", features = ["sim"] }
+zecswap-cli = { path = "../zecswap-cli", features = ["sim"] }
 zecswap-client = { path = "../zecswap-client", features = ["sim"] }
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }
+zecswap-sim-evm = { path = "../zecswap-sim-evm" }
 zip32 = "0.3"

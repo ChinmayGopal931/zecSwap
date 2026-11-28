@@ -7,7 +7,7 @@ use alloy::primitives::U256;
 use tokio::task::spawn_local;
 use tokio::time::{Instant, sleep};
 use zecswap_chain::evm::{Reveal, Stage, Window, Windows, simulate_wall};
-use zecswap_core::{NetworkType, SecretShare, derive_user_keys};
+use zecswap_core::SecretShare;
 
 use crate::alerts::Alarms;
 pub use crate::maker::ReverseMood;
@@ -21,7 +21,7 @@ pub use crate::relayer::ReverseService;
 use crate::relayer::{Errand, FEE, Relayer, ReverseRelayer, ReverseRelayerDoor, Service};
 use crate::run::{Report, SETTLE, connect, lives, notes, paused, shielded_to, ticks, zcash_blocks};
 use crate::seed::Seed;
-use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Skewed, UNIT, key};
+use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Shares, Skewed, UNIT, key};
 use crate::zcash::Zcash;
 pub use wallet::Ended;
 use wallet::{CLAIMED, OPEN, READY, READY_LIFE, REFUNDED, Wallet};
@@ -231,7 +231,7 @@ impl Plan {
         plan
     }
 
-    fn calm(&self) -> bool {
+    pub(crate) fn calm(&self) -> bool {
         self.weather.rpc_error == 0
             && self.weather.delayed == 0
             && self.weather.reorg == 0
@@ -264,6 +264,7 @@ struct World {
     relayer: Arc<ReverseRelayer>,
     wallet: Arc<Wallet>,
     user_seed: [u8; 64],
+    shares: Shares,
     disagreements: Arc<Mutex<Vec<String>>>,
     alarms: Arc<Alarms>,
 }
@@ -352,6 +353,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         relayer,
         wallet: wallet.clone(),
         user_seed,
+        shares: Shares::default(),
         disagreements: Arc::default(),
         alarms,
     });
@@ -372,9 +374,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         ),
     ];
     let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
-    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
-        spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
-    })
+    let life = lives(
+        "the wallet",
+        &*notes(&node),
+        start,
+        horizon,
+        &plan.crashes,
+        || spawn_local(Skewed::new(plan.skew, wallet.clone().live())),
+    )
     .await;
     panics::end(background.into_iter().chain(life)).await;
     world.report()
@@ -394,8 +401,8 @@ impl World {
             .escrows()
             .into_iter()
             .find(|escrow| escrow.id == swap.swap_id)?;
-        let keys = derive_user_keys(&self.user_seed, NetworkType::Test, 0, swap.index).ok()?;
-        Some((escrow, swap.index, keys.share))
+        let share = self.shares.of(&self.user_seed, swap.index)?;
+        Some((escrow, swap.index, share))
     }
 
     async fn observe(&self) {

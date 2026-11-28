@@ -1,0 +1,17 @@
+[package]
+name = "zecswap-sim-evm"
+description = "The simulation's EVM, in a crate of its own so that revm's interpreter, generic over its state, is built optimised"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+revm = { version = "43", default-features = false, features = [
+    "optional_balance_check",
+    "optional_no_base_fee",
+    "portable",
+    "secp256k1",
+    "std",
+] }

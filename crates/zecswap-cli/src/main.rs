@@ -1,21 +1,14 @@
-mod deposit;
-mod store;
-mod swap;
-
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Arc;
 
 use alloy_primitives::Address;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use zcash_address::ZcashAddress;
-use zcash_keys::keys::UnifiedSpendingKey;
 use zecswap_api::Network;
-use zecswap_chain::zcash::{AccountUuid, Lightwalletd, Prover, TxId, Wallet, connect};
-
-use crate::store::Store;
-
-const POLL_INTERVAL: Duration = Duration::from_secs(20);
+use zecswap_chain::zcash::{Prover, Wallet, connect};
+use zecswap_cli::store::Store;
+use zecswap_cli::{Session, deposit, swap};
 
 #[derive(Parser)]
 #[command(about = "Test client for ZecSwap: a seed wallet plus the user side of a swap")]
@@ -107,56 +100,6 @@ enum Command {
     },
 }
 
-pub(crate) struct Session {
-    pub(crate) network: Network,
-    pub(crate) store: Store,
-    pub(crate) wallet: Wallet,
-    pub(crate) client: Lightwalletd,
-    pub(crate) prover: Prover,
-}
-
-impl Session {
-    pub(crate) async fn sync(&mut self) -> Result<()> {
-        self.wallet.sync(&mut self.client).await.context("syncing")
-    }
-
-    pub(crate) async fn sync_until(
-        &mut self,
-        mut done: impl FnMut(&mut Self) -> Result<bool>,
-    ) -> Result<()> {
-        loop {
-            self.sync().await?;
-            if done(self)? {
-                return Ok(());
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-    }
-
-    pub(crate) fn account(&self) -> Result<AccountUuid> {
-        self.wallet
-            .derived_account()?
-            .context("no wallet yet; run `init`")
-    }
-
-    pub(crate) fn pay(&mut self, to: &ZcashAddress, zatoshis: u64) -> Result<TxId> {
-        self.pay_all(&[(to.clone(), zatoshis)])
-    }
-
-    pub(crate) fn pay_all(&mut self, payments: &[(ZcashAddress, u64)]) -> Result<TxId> {
-        let network = self.wallet.network();
-        let usk =
-            UnifiedSpendingKey::from_seed(&network, &self.store.seed()?, zip32::AccountId::ZERO)
-                .map_err(|e| anyhow::anyhow!("deriving the spending key: {e:?}"))?;
-        let account = self.account()?;
-        Ok(self.wallet.pay(&self.prover, account, &usk, payments)?)
-    }
-
-    pub(crate) async fn broadcast(&mut self, txid: TxId) -> Result<()> {
-        Ok(self.wallet.broadcast(&mut self.client, txid).await?)
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -192,7 +135,7 @@ async fn main() -> Result<()> {
         client: connect(lightwalletd.unwrap_or(network.lightwalletd()))
             .await
             .context("connecting to lightwalletd")?,
-        prover: Prover::default(),
+        prover: Arc::new(Prover::default()),
     };
 
     match cli.command {

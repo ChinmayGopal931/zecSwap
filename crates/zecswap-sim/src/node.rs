@@ -9,10 +9,11 @@ use alloy::rpc::types::{Filter, Transaction as RpcTransaction, TransactionReques
 use revm::context::result::{ExecutionResult, Output};
 use revm::context::{BlockEnv, TxEnv};
 use revm::database::{CacheDB, EmptyDB};
-use revm::primitives::hardfork::SpecId;
-use revm::state::{AccountInfo, EvmState};
-use revm::{Context, DatabaseCommit, DatabaseRef, ExecuteEvm, MainBuilder, MainContext};
+use revm::state::AccountInfo;
+use revm::{DatabaseCommit, DatabaseRef};
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
+use zecswap_sim_evm::{State, run};
 
 use crate::seed::Seed;
 
@@ -21,8 +22,6 @@ const GAS_LIMIT: u64 = 60_000_000;
 const GWEI: u64 = 1_000_000_000;
 const TIP: u64 = GWEI / 10;
 pub(crate) const PROTECT: u64 = 25;
-
-type State = CacheDB<EmptyDB>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Weather {
@@ -116,6 +115,17 @@ pub struct Logged {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct Landed {
+    pub hash: B256,
+    pub input: Bytes,
+    pub block: u64,
+    pub succeeded: bool,
+    pub gas_used: u64,
+    pub price: u128,
+    pub logs: Vec<Log>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct Known {
     pub from: Address,
     pub nonce: u64,
@@ -183,44 +193,14 @@ struct Inner {
     shaky: bool,
     ambushed: bool,
     eases: bool,
+    eased_to: u64,
+    watched: Vec<Address>,
+    simulated: Vec<(Address, Bytes)>,
     trace: Vec<String>,
 }
 
 #[derive(Clone)]
 pub struct Node(Arc<Mutex<Inner>>);
-
-struct Ran {
-    result: ExecutionResult,
-    state: EvmState,
-}
-
-fn run(
-    state: &State,
-    chain_id: u64,
-    block: &BlockEnv,
-    tx: TxEnv,
-    relaxed: bool,
-) -> Result<Ran, String> {
-    let mut evm = Context::mainnet()
-        .with_ref_db(state)
-        .with_block(block.clone())
-        .modify_cfg_chained(|cfg| {
-            cfg.chain_id = chain_id;
-            cfg.spec = SpecId::OSAKA;
-            cfg.tx_gas_limit_cap = Some(u64::MAX);
-            if relaxed {
-                cfg.disable_base_fee = true;
-                cfg.disable_balance_check = true;
-                cfg.disable_nonce_check = true;
-            }
-        })
-        .build_mainnet();
-    let ran = evm.transact(tx).map_err(|e| e.to_string())?;
-    Ok(Ran {
-        result: ran.result,
-        state: ran.state,
-    })
-}
 
 fn env(number: u64, timestamp: u64, base_fee: u64) -> BlockEnv {
     BlockEnv {
@@ -235,6 +215,10 @@ fn env(number: u64, timestamp: u64, base_fee: u64) -> BlockEnv {
 
 fn quantity(value: impl std::fmt::LowerHex) -> Value {
     Value::String(format!("{value:#x}"))
+}
+
+pub(crate) fn raw(value: &impl serde::Serialize) -> Box<RawValue> {
+    serde_json::value::to_raw_value(value).expect("a JSON value")
 }
 
 impl Inner {
@@ -278,7 +262,7 @@ impl Inner {
         }
         let last = *self.fees.last().expect("genesis fee");
         if self.weather.fee_swing == 0 {
-            let eased = (last - last / 8).max(2 * GWEI);
+            let eased = (last - last / 8).max(self.eased_to);
             return match self.eases && last > eased {
                 true => eased,
                 false => last,
@@ -507,6 +491,9 @@ impl Inner {
         if let Some(gas) = gas {
             tx.gas_limit = gas;
         }
+        if let Some(price) = request.gas_price {
+            tx.gas_price = price;
+        }
         let block_env = env(block.number, block.timestamp, block.base_fee);
         run(&block.state, self.chain_id, &block_env, tx, true)
             .map(|ran| ran.result)
@@ -628,6 +615,23 @@ impl Inner {
         Ok(hash)
     }
 
+    fn pending(&self, who: Address) -> u64 {
+        let mut next = Self::nonce(&self.head().state, who);
+        let mut queued: Vec<u64> = self
+            .pool
+            .iter()
+            .filter(|pooled| pooled.tx.from == who && !pooled.tx.private)
+            .map(|pooled| pooled.tx.envelope.nonce())
+            .collect();
+        queued.sort_unstable();
+        for nonce in queued {
+            if nonce == next {
+                next += 1;
+            }
+        }
+        next
+    }
+
     fn outs(&self, from: Address, nonce: u64) -> impl Iterator<Item = u64> + '_ {
         let sent = self.published.iter().filter(move |sent| {
             let numbered = self.seen.get(&sent.hash);
@@ -724,7 +728,12 @@ impl Inner {
         })
     }
 
-    fn answer(&mut self, method: &str, params: Value, stale: bool) -> Result<Value, Refusal> {
+    fn answer(
+        &mut self,
+        method: &str,
+        params: Value,
+        stale: bool,
+    ) -> Result<Box<RawValue>, Refusal> {
         let arg = |index: usize| params.get(index).cloned().unwrap_or(Value::Null);
         fn read<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Refusal> {
             serde_json::from_value(value).map_err(Refusal::params)
@@ -736,7 +745,7 @@ impl Inner {
             }
         };
         let pending = |index: usize| arg(index) == json!("pending");
-        Ok(match method {
+        Ok(raw(&match method {
             "eth_chainId" => quantity(self.chain_id),
             "eth_blockNumber" => quantity(self.resolve(None, stale)?.number),
             "eth_gasPrice" => quantity(self.head().base_fee + TIP),
@@ -782,20 +791,7 @@ impl Inner {
             "eth_getTransactionCount" => {
                 let who: Address = read(arg(0))?;
                 if pending(1) {
-                    let mut next = Self::nonce(&self.head().state, who);
-                    let mut queued: Vec<u64> = self
-                        .pool
-                        .iter()
-                        .filter(|pooled| pooled.tx.from == who && !pooled.tx.private)
-                        .map(|pooled| pooled.tx.envelope.nonce())
-                        .collect();
-                    queued.sort_unstable();
-                    for nonce in queued {
-                        if nonce == next {
-                            next += 1;
-                        }
-                    }
-                    quantity(next)
+                    quantity(self.pending(who))
                 } else {
                     quantity(Self::nonce(&self.resolve(at(1)?, stale)?.state, who))
                 }
@@ -807,10 +803,15 @@ impl Inner {
                     false => self.resolve(at(1)?, stale)?,
                 };
                 let result = Self::reverted(self.simulate(&request, block, None)?)?;
-                json!(result.into_output().unwrap_or_default())
+                let returned = format!("\"{}\"", result.into_output().unwrap_or_default());
+                return Ok(RawValue::from_string(returned).expect("a JSON string"));
             }
             "eth_estimateGas" => {
                 let request: TransactionRequest = read(arg(0))?;
+                if let Some(from) = request.from.filter(|from| self.watched.contains(from)) {
+                    let input = request.input.input().cloned().unwrap_or_default();
+                    self.simulated.push((from, input));
+                }
                 let block = match pending(1) {
                     true => self.head(),
                     false => self.resolve(at(1)?, stale)?,
@@ -825,13 +826,13 @@ impl Inner {
             "eth_getTransactionByHash" => {
                 let hash: B256 = read(arg(0))?;
                 let Some(tx) = self.seen.get(&hash) else {
-                    return Ok(Value::Null);
+                    return Ok(raw(&Value::Null));
                 };
                 let located = self.located(hash);
                 if located.is_none()
                     && (tx.private || !self.pool.iter().any(|pooled| pooled.tx.hash == hash))
                 {
-                    return Ok(Value::Null);
+                    return Ok(raw(&Value::Null));
                 }
                 let shown = RpcTransaction {
                     inner: Recovered::new_unchecked(tx.envelope.clone(), tx.from),
@@ -880,7 +881,7 @@ impl Inner {
                     data: None,
                 });
             }
-        })
+        }))
     }
 }
 
@@ -911,6 +912,9 @@ impl Node {
             shaky: false,
             ambushed: false,
             eases: false,
+            eased_to: 2 * GWEI,
+            watched: Vec::new(),
+            simulated: Vec::new(),
             trace: Vec::new(),
         })))
     }
@@ -1046,6 +1050,12 @@ impl Node {
         self.0.lock().unwrap().eases = true;
     }
 
+    pub(crate) fn ease_fees_to(&self, fee: u64) {
+        let mut inner = self.0.lock().unwrap();
+        inner.eases = true;
+        inner.eased_to = fee;
+    }
+
     pub fn head(&self) -> (u64, u64) {
         let inner = self.0.lock().unwrap();
         (inner.head().number, inner.head().timestamp)
@@ -1171,6 +1181,48 @@ impl Node {
         queued.collect()
     }
 
+    pub(crate) fn watch(&self, who: Address) {
+        self.0.lock().unwrap().watched.push(who);
+    }
+
+    pub(crate) fn simulated(&self) -> Vec<(Address, Bytes)> {
+        self.0.lock().unwrap().simulated.clone()
+    }
+
+    pub(crate) fn landed_from(&self, from: Address) -> Vec<Landed> {
+        let inner = self.0.lock().unwrap();
+        let blocks = inner.blocks.iter();
+        let mined = blocks.flat_map(|block| block.mined.iter().map(move |mined| (block, mined)));
+        let theirs = mined.filter(|(_, mined)| mined.tx.from == from);
+        theirs
+            .map(|(block, mined)| {
+                let envelope = &mined.tx.envelope;
+                let base = u128::from(block.base_fee);
+                let tip = envelope.max_priority_fee_per_gas();
+                let cap = envelope.max_fee_per_gas();
+                Landed {
+                    hash: mined.tx.hash,
+                    input: envelope.input().clone(),
+                    block: block.number,
+                    succeeded: mined.succeeded,
+                    gas_used: mined.gas_used,
+                    price: tip.map_or(cap, |tip| base + tip.min(cap - base)),
+                    logs: mined.logs.clone(),
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn balance(&self, who: Address) -> U256 {
+        let inner = self.0.lock().unwrap();
+        let account = inner.head().state.basic_ref(who).ok().flatten();
+        account.map_or(U256::ZERO, |account| account.balance)
+    }
+
+    pub(crate) fn pending_count(&self, who: Address) -> u64 {
+        self.0.lock().unwrap().pending(who)
+    }
+
     pub(crate) fn weather(&self) -> (Seed, Weather) {
         let inner = self.0.lock().unwrap();
         (inner.seed, inner.weather)
@@ -1181,7 +1233,7 @@ impl Node {
         method: &str,
         params: Value,
         stale: bool,
-    ) -> Result<Value, Refusal> {
+    ) -> Result<Box<RawValue>, Refusal> {
         self.0.lock().unwrap().answer(method, params, stale)
     }
 

@@ -6,6 +6,10 @@ use tokio::task::{JoinError, JoinHandle};
 
 const TOLD: usize = 3;
 
+pub(crate) struct Killed;
+
+pub(crate) struct Unsent;
+
 thread_local! {
     static HELD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
@@ -24,6 +28,9 @@ pub(crate) fn caught<T>(simulation: impl FnOnce() -> T) -> (Option<T>, Vec<Strin
     HOOKED.call_once(|| {
         let usual = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
+            if info.payload().is::<Killed>() || info.payload().is::<Unsent>() {
+                return;
+            }
             hold(
                 info.to_string()
                     .split_whitespace()

@@ -27,7 +27,8 @@ use crate::run::{Report, connect, lives, notes, paused, ticks};
 use crate::seed::Seed;
 use crate::world::{CHAIN_ID, Chain, EPOCH, RAILGUN, Skewed, key};
 use payout::Paid;
-use relayer::{Desk, Door, LANDING, Relayer};
+use relayer::LANDING;
+pub(crate) use relayer::{Desk, Door, Relayer};
 pub use relayer::{Offer, Service};
 use wallet::{PAYOUT, RESCAN, Request, Wallet};
 
@@ -41,10 +42,10 @@ const DEPTH: u64 = 3;
 const TOLERANCE: u64 = 150;
 const TREASURY: Address = address!("0000000000000000000000000000000000007ea5");
 const RICH: u128 = 1_000_000_000_000_000_000_000;
-const FEE: u128 = 100_000;
-const FEE_BPS: u32 = 10;
-const MINIMUM: u128 = 2_000_000;
-const DAY: u64 = 24 * 60 * 60;
+pub(crate) const FEE: u128 = 100_000;
+pub(crate) const FEE_BPS: u32 = 10;
+pub(crate) const MINIMUM: u128 = 2_000_000;
+pub(crate) const DAY: u64 = 24 * 60 * 60;
 const STAYS: u64 = 60;
 const QUEUED: u64 = 13 * 60;
 const ROOMY: FeeCap = FeeCap {
@@ -499,6 +500,18 @@ fn transfers(node: &Node, token: Address) -> Vec<Moved> {
         .collect()
 }
 
+pub(crate) fn vault_of(node: &Node, deposits: Address, from: Address) -> Address {
+    let out = node.view(deposits, vaultOfCall { from }.abi_encode().into());
+    vaultOfCall::abi_decode_returns(&out.expect("the contract answers vaultOf"))
+        .expect("a vault's address")
+}
+
+pub(crate) fn deposited(node: &Node, deposits: Address, from: Address) -> bool {
+    let out = node.view(deposits, depositedCall { from }.abi_encode().into());
+    depositedCall::abi_decode_returns(&out.expect("the contract answers deposited"))
+        .expect("a flag")
+}
+
 pub fn run(seed: u64) -> Report<Plan, Ended> {
     run_with(seed, Plan::from_seed(Seed(seed)))
 }
@@ -576,11 +589,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
             keys.expect("deposit keys").key.address().into()
         })
         .collect();
-    let vault = |from: &Address| {
-        let out = node.view(deposits, vaultOfCall { from: *from }.abi_encode().into());
-        vaultOfCall::abi_decode_returns(&out.expect("the contract answers vaultOf"))
-            .expect("a vault's address")
-    };
+    let vault = |from: &Address| vault_of(&node, deposits, *from);
     let vaults: Vec<Address> = addresses.iter().map(vault).collect();
     let wallet = Arc::new(Wallet {
         user_seed,
@@ -631,9 +640,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report<Plan, Ended> {
         ),
     ];
     let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
-    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
-        spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
-    })
+    let life = lives(
+        "the wallet",
+        &*notes(&node),
+        start,
+        horizon,
+        &plan.crashes,
+        || spawn_local(Skewed::new(plan.skew, wallet.clone().live())),
+    )
     .await;
     let scanned = world.scan().await;
     panics::end(background.into_iter().chain(life)).await;
@@ -715,16 +729,9 @@ impl World {
 
     fn used(&self, index: u32) -> Used {
         let from = self.addresses[index as usize];
-        let out = self
-            .chain
-            .node
-            .view(self.deposits, depositedCall { from }.abi_encode().into());
         Used {
             balance: self.chain.token_balance(from),
-            deposited: depositedCall::abi_decode_returns(
-                &out.expect("the contract answers deposited"),
-            )
-            .expect("a flag"),
+            deposited: deposited(&self.chain.node, self.deposits, from),
         }
     }
 

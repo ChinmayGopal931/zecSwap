@@ -18,7 +18,7 @@ use crate::panics::{self, Named};
 use crate::relayer::{FEE, Relayer, RelayerDoor, Service};
 use crate::seed::Seed;
 use crate::wallet::{End, Saved, Wallet, Way};
-use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Skewed, UNIT, key};
+use crate::world::{CHAIN_ID, Chain, EPOCH, LATE_WINDOW, MIN_WINDOW, Shares, Skewed, UNIT, key};
 use crate::zcash::Zcash;
 
 const ZCASH_BLOCK: Duration = Duration::from_secs(25);
@@ -197,7 +197,7 @@ impl Plan {
         plan
     }
 
-    fn calm(&self) -> bool {
+    pub(crate) fn calm(&self) -> bool {
         self.weather.rpc_error == 0
             && self.weather.delayed == 0
             && self.weather.reorg == 0
@@ -300,6 +300,7 @@ pub(crate) async fn zcash_blocks(zcash: Zcash, seed: Seed, loss: u64, clears: In
 }
 
 pub(crate) async fn lives(
+    who: &'static str,
     note: &dyn Fn(String),
     start: Instant,
     horizon: impl Fn() -> Instant,
@@ -320,22 +321,22 @@ pub(crate) async fn lives(
             () = sleep_until(end) => if horizon() == end { break },
             () = sleep_until(crash.unwrap_or(end)), if crash.is_some() => {
                 let (_, rest) = crashes.remove(0);
-                panics::end([("the wallet", life)]).await;
-                note(format!("the wallet crashed, away {rest}s"));
+                panics::end([(who, life)]).await;
+                note(format!("{who} crashed, away {rest}s"));
                 sleep(Duration::from_secs(rest)).await;
                 rested = Instant::now();
-                note("the wallet is back".into());
+                note(format!("{who} is back"));
                 life = live();
             }
             ended = &mut life => {
-                panics::judge("the wallet", ended);
+                panics::judge(who, ended);
                 sleep(SETTLE).await;
                 return None;
             }
         }
     }
     life.abort();
-    Some(("the wallet", life))
+    Some((who, life))
 }
 
 struct World {
@@ -346,6 +347,7 @@ struct World {
     maker: Arc<Maker>,
     wallet: Arc<Wallet>,
     user_seed: [u8; 64],
+    shares: Shares,
     disagreements: Arc<Mutex<Vec<String>>>,
     alarms: Arc<Alarms>,
 }
@@ -369,7 +371,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         plan.mood,
         plan.fee,
         chain.clone(),
-        zcash.clone(),
+        Arc::new(zcash.clone()),
         connect(&node, &chain, "maker", maker_key, plan.private, &alarms),
     );
     let relayer = Relayer::new(
@@ -432,6 +434,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         maker: maker.clone(),
         wallet: wallet.clone(),
         user_seed,
+        shares: Shares::default(),
         disagreements: Arc::default(),
         alarms,
     });
@@ -453,9 +456,14 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
         ),
     ];
     let horizon = || world.alarms.until(start + Duration::from_secs(HORIZON));
-    let life = lives(&*notes(&node), start, horizon, &plan.crashes, || {
-        spawn_local(Skewed::new(plan.skew, wallet.clone().live()))
-    })
+    let life = lives(
+        "the wallet",
+        &*notes(&node),
+        start,
+        horizon,
+        &plan.crashes,
+        || spawn_local(Skewed::new(plan.skew, wallet.clone().live())),
+    )
     .await;
     panics::end(background.into_iter().chain(life)).await;
     world.report()
@@ -464,8 +472,7 @@ async fn simulate(seed: Seed, plan: Plan) -> Report {
 impl World {
     fn z(&self, saved: &Saved) -> Option<SecretShare> {
         let index = saved.quoted.as_ref()?.index;
-        let keys = derive_user_keys(&self.user_seed, NetworkType::Test, 0, index).ok()?;
-        Some(keys.share)
+        self.shares.of(&self.user_seed, index)
     }
 
     async fn observe(&self) {
@@ -707,7 +714,7 @@ impl World {
 
 pub(crate) fn shielded_to(
     chain: &Chain,
-    user_seed: &[u8; 64],
+    user_seed: &[u8],
     index: u32,
     amount: u128,
 ) -> (u128, bool) {

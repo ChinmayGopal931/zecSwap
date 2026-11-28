@@ -8,18 +8,50 @@ use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-pub(crate) struct Store {
+#[cfg(feature = "sim")]
+pub enum Touch<'a> {
+    Saving(&'a str, &'a [u8]),
+    Saved(&'a str),
+    Removing(&'a str),
+    Removed(&'a str),
+    Sending(zecswap_chain::zcash::TxId),
+    Sent(zecswap_chain::zcash::TxId),
+}
+
+#[cfg(feature = "sim")]
+pub type Fuse = std::rc::Rc<dyn Fn(Touch<'_>)>;
+
+pub struct Store {
     dir: PathBuf,
+    #[cfg(feature = "sim")]
+    fuse: Option<Fuse>,
 }
 
 impl Store {
-    pub(crate) fn new(dir: &Path) -> Self {
+    pub fn new(dir: &Path) -> Self {
         Self {
             dir: dir.to_owned(),
+            #[cfg(feature = "sim")]
+            fuse: None,
         }
     }
 
-    pub(crate) fn create_seed(&self) -> Result<Vec<u8>> {
+    #[cfg(feature = "sim")]
+    pub fn fused(dir: &Path, fuse: Fuse) -> Self {
+        Self {
+            dir: dir.to_owned(),
+            fuse: Some(fuse),
+        }
+    }
+
+    #[cfg(feature = "sim")]
+    pub fn touch(&self, touch: Touch<'_>) {
+        if let Some(fuse) = &self.fuse {
+            fuse(touch);
+        }
+    }
+
+    pub fn create_seed(&self) -> Result<Vec<u8>> {
         let path = self.dir.join("seed");
         if path.exists() {
             bail!("{} already exists", path.display());
@@ -35,25 +67,37 @@ impl Store {
         Ok(seed)
     }
 
-    pub(crate) fn seed(&self) -> Result<Vec<u8>> {
+    pub fn seed(&self) -> Result<Vec<u8>> {
         let hex = fs::read_to_string(self.dir.join("seed")).context("no wallet yet; run `init`")?;
         Ok(hex::decode(hex.trim())?)
     }
 
-    pub(crate) fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
+    pub fn save<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         let tmp = self.dir.join(format!("{name}.tmp"));
-        fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
-        Ok(fs::rename(tmp, self.dir.join(name))?)
+        let bytes = serde_json::to_vec_pretty(value)?;
+        #[cfg(feature = "sim")]
+        self.touch(Touch::Saving(name, &bytes));
+        fs::write(&tmp, bytes)?;
+        fs::rename(tmp, self.dir.join(name))?;
+        #[cfg(feature = "sim")]
+        self.touch(Touch::Saved(name));
+        Ok(())
     }
 
-    pub(crate) fn remove(&self, name: &str) -> Result<()> {
+    pub fn remove(&self, name: &str) -> Result<()> {
+        #[cfg(feature = "sim")]
+        self.touch(Touch::Removing(name));
         match fs::remove_file(self.dir.join(name)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
+            _ => {
+                #[cfg(feature = "sim")]
+                self.touch(Touch::Removed(name));
+                Ok(())
+            }
         }
     }
 
-    pub(crate) fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
+    pub fn load<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
         match fs::read(self.dir.join(name)) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

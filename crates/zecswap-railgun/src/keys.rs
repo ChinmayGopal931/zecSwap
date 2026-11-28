@@ -26,6 +26,10 @@ pub struct Receiver {
 
 impl Keys {
     pub fn from_seed(seed: &[u8], index: u32) -> Self {
+        #[cfg(feature = "sim")]
+        if let Some(keys) = derived::again(seed, index) {
+            return keys;
+        }
         let spending_key = derive(seed, &SPENDING_PATH, index);
         let viewing_key = derive(seed, &VIEWING_PATH, index);
 
@@ -37,10 +41,13 @@ impl Keys {
             master_public_key: to_bytes(&master_public_key),
             viewing_public_key: ed25519_public_key(&viewing_key),
         };
-        Self {
+        let keys = Self {
             viewing_key,
             receiver,
-        }
+        };
+        #[cfg(feature = "sim")]
+        derived::keep(seed, index, &keys);
+        keys
     }
 
     pub fn receiver(&self) -> Receiver {
@@ -76,6 +83,36 @@ impl Keys {
 impl Receiver {
     pub fn address(&self) -> String {
         address::encode(self)
+    }
+}
+
+#[cfg(feature = "sim")]
+mod derived {
+    use std::cell::RefCell;
+
+    use zeroize::Zeroizing;
+
+    use super::{Keys, Receiver};
+
+    type Kept = (Zeroizing<Vec<u8>>, u32, Zeroizing<[u8; 32]>, Receiver);
+
+    thread_local! {
+        static LAST: RefCell<Option<Kept>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn again(seed: &[u8], index: u32) -> Option<Keys> {
+        LAST.with_borrow(|last| {
+            let (of, at, viewing_key, receiver) = last.as_ref()?;
+            (of.as_slice() == seed && *at == index).then(|| Keys {
+                viewing_key: viewing_key.clone(),
+                receiver: *receiver,
+            })
+        })
+    }
+
+    pub(super) fn keep(seed: &[u8], index: u32, keys: &Keys) {
+        let seed = Zeroizing::new(seed.to_vec());
+        LAST.set(Some((seed, index, keys.viewing_key.clone(), keys.receiver)));
     }
 }
 

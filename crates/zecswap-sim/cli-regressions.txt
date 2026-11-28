@@ -1,0 +1,7 @@
+4 catches the next index unsaved, an open fee sent unsaved, a deposit sent unsaved, a finished swap's joint account never forgotten, and an unfinished swap replaced by a new one
+5 catches an unmined deposit not sent again after a restart
+30 catches a swap.json of another version overwritten
+34 catches an open fee sent unsaved and one never sent again once lost
+37 catches an open fee paid by a wallet that cannot then afford the deposit, and a deposit request posted unsaved
+48 catches a swap cancelled before its deposit never finished, the joint account and the deposit unsaved, and a deposit sent before it is saved
+75 catches a deposit sent unsaved, a deposit request posted unsaved, and a landed request kept in deposit.json

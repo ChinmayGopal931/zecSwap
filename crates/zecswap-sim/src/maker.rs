@@ -16,7 +16,7 @@ use zecswap_core::{
 use crate::net::{Answer, Answering, Asked, Served};
 use crate::seed::Seed;
 use crate::world::{CHAIN_ID, Chain, LATE_WINDOW, MIN_WINDOW, UNIT, UNIT_ZAT, wall};
-use crate::zcash::{PaymentId, Zcash};
+use crate::zcash::{PaymentId, Sees, Zcash};
 
 pub const QUOTE_LIFE: u64 = 10 * 60;
 pub const TO_T0: u64 = 45 * 60;
@@ -98,7 +98,7 @@ pub struct Maker {
     pub mood: Mood,
     fee: Fee,
     chain: Chain,
-    zcash: Zcash,
+    zcash: Arc<dyn Sees>,
     settlement: Settlement,
     pub address: Address,
     root: [u8; 32],
@@ -116,7 +116,7 @@ impl Maker {
         mood: Mood,
         fee: Fee,
         chain: Chain,
-        zcash: Zcash,
+        zcash: Arc<dyn Sees>,
         mut settlement: Settlement,
     ) -> Arc<Self> {
         settlement.reveal_with_margin(REVEAL_MARGIN);
@@ -129,10 +129,11 @@ impl Maker {
         )
         .expect("fee wallet keys");
         let other = derive_maker_share(&seed.bytes("maker-fee-share"), 0).expect("a share");
-        let fee_address =
+        let fee_account =
             JointAccount::derive(&other.public(), &keys.share.public(), &keys.viewing)
-                .expect("a fee account")
-                .unified_address(NetworkType::Test);
+                .expect("a fee account");
+        zcash.watch(&fee_account);
+        let fee_address = fee_account.unified_address(NetworkType::Test);
         Arc::new(Self {
             seed,
             mood,
@@ -328,8 +329,9 @@ impl Maker {
             &acceptance.user_share,
             &acceptance.viewing_keys,
         )
-        .map_err(|e| Answer::refuse(400, ErrorCode::Rejected, e.to_string()))?
-        .unified_address(NetworkType::Test);
+        .map_err(|e| Answer::refuse(400, ErrorCode::Rejected, e.to_string()))?;
+        self.zcash.watch(&joint);
+        let joint = joint.unified_address(NetworkType::Test);
         let cancel_at = (self.mood == Mood::CancelsEarly).then(|| {
             now + self
                 .seed

@@ -7517,23 +7517,31 @@ dependencies = [
 name = "zecswap-sim"
 version = "0.1.0"
 dependencies = [
+ "aes 0.8.4",
+ "aes-gcm",
  "alloy",
  "anyhow",
+ "ark-bn254 0.5.0",
+ "ark-ff 0.5.0",
  "bytes",
+ "curve25519-dalek",
  "h2",
  "hex",
  "http",
  "hyper-util",
  "incrementalmerkletree",
+ "light-poseidon",
  "orchard",
  "pczt",
  "prost",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
+ "rayon",
  "reqwest",
  "revm",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tonic",
  "tower",
@@ -7546,10 +7554,19 @@ dependencies = [
  "zcash_protocol",
  "zecswap-api",
  "zecswap-chain",
+ "zecswap-cli",
  "zecswap-client",
  "zecswap-core",
  "zecswap-railgun",
+ "zecswap-sim-evm",
  "zip32",
+]
+
+[[package]]
+name = "zecswap-sim-evm"
+version = "0.1.0"
+dependencies = [
+ "revm",
 ]
 
 [[package]]

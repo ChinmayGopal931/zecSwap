@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
+import concurrent.futures
 import hashlib
 import json
 import os
 import pathlib
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SEEDS = sys.argv[1] if len(sys.argv) > 1 else "0..150"
 ONLY = set(sys.argv[2:])
+WORKERS = int(os.environ.get("ZECSWAP_SIM_WORKERS", "1"))
+CORES = os.cpu_count() or 4
+SHARED = {"CARGO_BUILD_JOBS": CORES, "ZECSWAP_SIM_THREADS": (CORES + 1) // 2}
+BUILD = {"CARGO_INCREMENTAL": "1"}
+COPIED = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates", "contracts/out")
+CLONE = ["cp", "-Rpc"] if sys.platform == "darwin" else ["cp", "-Rp", "--reflink=auto"]
 JUDGE = "crates/zecswap-chain/src/evm/judge.rs"
 EVM = "crates/zecswap-chain/src/evm.rs"
 USER = "crates/zecswap-client/src/user.rs"
@@ -23,13 +32,20 @@ LIGHTWALLETD = "crates/zecswap-chain/src/zcash/lightwalletd.rs"
 SWEEP = "crates/zecswap-core/src/sweep.rs"
 SYNC = "crates/zecswap-chain/src/zcash/wallet/sync.rs"
 ALERT = "crates/zecswap-chain/src/alert.rs"
-BACKUP = ROOT / "target" / "sim-mutants"
-UNDO = BACKUP / "undo.json"
+RAILGUN = "crates/zecswap-chain/src/evm/railgun.rs"
+FUNDING = "crates/zecswap-chain/src/evm/funding.rs"
+CANONICAL = "crates/zecswap-chain/src/evm/canonical.rs"
+CLI_SWAP = "crates/zecswap-cli/src/swap.rs"
+CLI_DEPOSIT = "crates/zecswap-cli/src/deposit.rs"
+BACKUP = pathlib.Path("target") / "sim-mutants"
+RUNNING = set()
+HALT = threading.Event()
 FORWARD = ("survey", "seed ")
 BACKWARD = ("reverse_survey", "reverse seed ")
 DEPOSIT = ("deposit_survey", "deposit seed ")
 ZCASH = ("zcash_survey", "zcash seed ")
-OPEN = {"zcash_survey"}
+GUARD = ("guard_survey", "guard seed ")
+COMMAND = ("cli_survey", "cli seed ")
 SOUND = {}
 
 READY_SENT = """        self.relayer
@@ -687,99 +703,423 @@ MUTANTS = {
 """,
         ),
     ]),
+    "send-to-any-destination": (GUARD, [
+        (RAILGUN, 'to == self.railgun && value == 0,', 'true,'),
+    ]),
+    "send-of-any-size": (GUARD, [
+        (RAILGUN, '            data.len() <= MAX_CALLDATA_BYTES,\n            "the calldata is too large",', '            true,\n            "the calldata is too large",'),
+    ]),
+    "send-spending-nothing": (GUARD, [
+        (RAILGUN, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n                "each Railgun transaction must spend notes",', '                true,\n                "each Railgun transaction must spend notes",'),
+    ]),
+    "send-for-any-chain": (GUARD, [
+        (RAILGUN, 'require(bound.chainID == chain_id, "a proof is for another chain")?;', 'require(true, "a proof is for another chain")?;'),
+    ]),
+    "send-bound-to-an-adapter": (GUARD, [
+        (RAILGUN, 'bound.adaptContract.is_zero() && bound.adaptParams.is_zero(),', 'true,'),
+    ]),
+    "send-redirected": (GUARD, [
+        (RAILGUN, '                bound.unshield <= 1,\n', '                true,\n'),
+    ]),
+    "send-unshielding-any-token": (GUARD, [
+        (RAILGUN, 'bound.unshield == 0 || erc20(&tx.unshieldPreimage.token, self.token),', 'true,'),
+    ]),
+    "send-for-any-fee": (GUARD, [
+        (RAILGUN, '            paid >= self.fee,\n', '            true,\n'),
+    ]),
+    "fee-in-any-token": (GUARD, [
+        (RAILGUN, '(received.token == token.into_word().0).then_some(received.value)', 'Some(received.value)'),
+    ]),
+    "sent-over-the-gas-cap": (GUARD, [
+        (RAILGUN, '            gas_price <= policy.max_gas_price_wei,\n', '            true,\n'),
+    ]),
+    "sent-uncovered": (GUARD, [
+        (RAILGUN, '            covers(estimate, gas_price),\n', '            true,\n'),
+    ]),
+    "spent-unseen": (GUARD, [
+        (RAILGUN, '                if self.spends_spent_notes(transact).await? {', '                if self.spends_spent_notes(transact).await? && false {'),
+    ]),
+    "fourteen-nullifiers": (GUARD, [
+        (RAILGUN, 'const MAX_NULLIFIERS: usize = 13;', 'const MAX_NULLIFIERS: usize = 14;'),
+    ]),
+    "fourteen-commitments": (GUARD, [
+        (RAILGUN, 'const MAX_COMMITMENTS: usize = 13;', 'const MAX_COMMITMENTS: usize = 14;'),
+    ]),
+    "seventeen-transactions": (GUARD, [
+        (RAILGUN, 'pub const MAX_TRANSACTIONS: usize = 16;', 'pub const MAX_TRANSACTIONS: usize = 17;'),
+    ]),
+    "longer-annotations": (GUARD, [
+        (RAILGUN, 'const MAX_ANNOTATION_BYTES: usize = 62;', 'const MAX_ANNOTATION_BYTES: usize = 63;'),
+    ]),
+    "longer-memos": (GUARD, [
+        (RAILGUN, 'const MAX_MEMO_BYTES: usize = 1024;', 'const MAX_MEMO_BYTES: usize = 1025;'),
+    ]),
+    "larger-calldata": (GUARD, [
+        (RAILGUN, 'pub const MAX_CALLDATA_BYTES: usize = 64 * 1024;', 'pub const MAX_CALLDATA_BYTES: usize = 128 * 1024;'),
+    ]),
+    "unknown-read-as-pending": (GUARD, [
+        (RAILGUN, '                None => Status::Unknown,', '                None => Status::Pending,'),
+    ]),
+    "nonce-taken-at-the-tip": (GUARD, [
+        (RAILGUN, 'let Some(block) = latest.checked_sub(depth) else {', 'let Some(block) = latest.checked_sub(depth.min(0)) else {'),
+    ]),
+    "any-offset": (GUARD, [
+        (CANONICAL, '                if self.word(head)? != U256::from(end - start) {', '                if self.word(head)? != U256::from(end - start) && false {'),
+    ]),
+    "trailing-bytes": (GUARD, [
+        (CANONICAL, '    if end != data.len() {', '    if end > data.len() {'),
+    ]),
+    "dirty-padding": (GUARD, [
+        (CANONICAL, '                if padded[len..].iter().any(|&byte| byte != 0) {', '                if padded[len..].iter().any(|&byte| byte != 0) && false {'),
+    ]),
+    "uncapped-lengths": (GUARD, [
+        (CANONICAL, '        if len > U256::from(max) {', '        if len > U256::from(max.max(4096)) {'),
+    ]),
+    "uncapped-ciphertexts": (GUARD, [
+        (CANONICAL, '                let len = self.len(at, self.cap)?;', '                let len = self.len(at, self.cap.max(64))?;'),
+    ]),
+    "funding-to-any-destination": (GUARD, [
+        (FUNDING, 'to == self.relay_adapt && value == 0,', 'true,'),
+    ]),
+    "funding-without-success": (GUARD, [
+        (FUNDING, '            action.requireSuccess,\n', '            true,\n'),
+    ]),
+    "funding-any-minimum-gas": (GUARD, [
+        (FUNDING, 'action.minGasLimit <= U256::from(self.max_gas_limit),', 'true,'),
+    ]),
+    "funding-any-call-count": (GUARD, [
+        (FUNDING, 'action.calls.len() == 4,', 'true,'),
+    ]),
+    "funding-calls-with-eth": (GUARD, [
+        (FUNDING, 'action.calls.iter().all(|c| c.value.is_zero()),', 'true,'),
+    ]),
+    "funding-opens-any-contract": (GUARD, [
+        (FUNDING, '                && open_call.to == Address::from(domain.contract)\n', ''),
+    ]),
+    "funding-calls-any-target": (GUARD, [
+        (FUNDING, '            approve_call.to == self.token\n                && open_call.to == Address::from(domain.contract)\n                && fee_call.to == self.token\n                && shield_call.to == self.relay_adapt,', '            true,'),
+    ]),
+    "funding-fee-to-anyone": (GUARD, [
+        (FUNDING, 'payment.to == self.fee_recipient && payment.amount', 'payment.amount'),
+    ]),
+    "funding-any-fee": (GUARD, [
+        (FUNDING, 'payment.to == self.fee_recipient && payment.amount >= U256::from(self.fee),', 'payment.to == self.fee_recipient,'),
+    ]),
+    "funding-any-maker-token-user": (GUARD, [
+        (FUNDING, 'words.maker == self.maker && words.token == self.token && !words.user.is_zero(),', 'true,'),
+    ]),
+    "funding-any-amount-or-note": (GUARD, [
+        (FUNDING, 'words.amount > 0 && words.amount < (1u128 << 120) && !words.refundNote.is_zero(),', 'true,'),
+    ]),
+    "funding-any-deadlines": (GUARD, [
+        (FUNDING, 'words.deadline < words.t0 && words.t0 < words.t1,', 'true,'),
+    ]),
+    "funding-approves-anyone": (GUARD, [
+        (FUNDING, 'approve.spender == open_call.to && approve.amount', 'approve.amount'),
+    ]),
+    "funding-approves-any-amount": (GUARD, [
+        (FUNDING, 'approve.spender == open_call.to && approve.amount == U256::from(words.amount),', 'approve.spender == open_call.to,'),
+    ]),
+    "funding-any-shield-count": (GUARD, [
+        (FUNDING, '            shield._shieldRequests.len() == 1,\n', '            true,\n'),
+    ]),
+    "funding-any-dust-shield": (GUARD, [
+        (FUNDING, 'erc20(&dust.token, self.token) && dust.value.is_zero() && !dust.npk.is_zero(),', 'true,'),
+    ]),
+    "funding-any-swap-id": (GUARD, [
+        (FUNDING, 'id == reverse_swap_id(words.user, &terms.maker_share),', 'true,'),
+    ]),
+    "funding-any-signer": (GUARD, [
+        (FUNDING, 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user),', 'signer(&domain.open_reverse(&terms), signature) == Some(terms.user) || true,'),
+    ]),
+    "funding-spending-nothing": (GUARD, [
+        (FUNDING, '                !tx.nullifiers.is_empty() && !tx.commitments.is_empty(),\n', '                true,\n'),
+    ]),
+    "funding-unbound": (GUARD, [
+        (FUNDING, '                bound.chainID == domain.chain_id\n                    && bound.adaptContract == self.relay_adapt\n                    && bound.adaptParams == adapt_params,', '                true,'),
+    ]),
+    "funding-redirected": (GUARD, [
+        (FUNDING, '                bound.unshield <= 1,\n', '                true,\n'),
+    ]),
+    "funding-unshield-anywhere": (GUARD, [
+        (FUNDING, '                    unshield.npk == self.relay_adapt.into_word()\n                        && erc20(&unshield.token, self.token)\n                        && !unshield.value.is_zero(),', '                    true,'),
+    ]),
+    "funding-without-unshield": (GUARD, [
+        (FUNDING, '        require(unshields > 0, "funding must unshield from Railgun")?;\n', ''),
+    ]),
+    "config-any-addresses": (GUARD, [
+        (FUNDING, '!self.relay_adapt.is_zero() && !self.token.is_zero() && !self.maker.is_zero(),', 'true,'),
+    ]),
+    "config-relayer-as-maker": (GUARD, [
+        (FUNDING, '            self.maker != account,\n', '            true,\n'),
+    ]),
+    "config-fee-elsewhere": (GUARD, [
+        (FUNDING, '            self.fee_recipient == account,\n', '            true,\n'),
+    ]),
+    "config-no-gas": (GUARD, [
+        (FUNDING, 'self.max_gas_limit > 0 && self.max_gas_price_wei > 0,', 'true,'),
+    ]),
+    "adapter-of-any-railgun": (GUARD, [
+        (FUNDING, '!railgun.is_zero() && actual == railgun,', 'true,'),
+    ]),
+    "funding-past-its-deadline": (GUARD, [
+        (FUNDING, 'self.now().await? < terms.deadline,', 'true,'),
+    ]),
+    "funding-over-the-gas-cap": (GUARD, [
+        (FUNDING, 'fees.max_fee_per_gas <= policy.max_gas_price_wei,', 'true,'),
+    ]),
+    "funding-over-another-note": (GUARD, [
+        (FUNDING, 'funding.is_some_and(|f| f.refund_note.0 == terms.refund_note),', 'funding.is_some(),'),
+    ]),
+    "funding-over-a-rival-escrow": (GUARD, [
+        (FUNDING, '            Err(Error::WrongTerms(_)) => return Err(FundingError::Rejected(mismatch)),', '            Err(Error::WrongTerms(_)) => {}'),
+    ]),
+    "cli-index-unsaved": (COMMAND, [
+        (CLI_SWAP, "    store.save(NEXT_INDEX, &(index + 1))?;\n", ""),
+    ]),
+    "cli-fee-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "                    fee: Some(*txid.as_ref()),\n                };\n                wallet.store().save(STATE, run)?;\n",
+            "                    fee: Some(*txid.as_ref()),\n                };\n",
+        ),
+    ]),
+    "cli-fee-never-sent-again": (COMMAND, [
+        (CLI_SWAP, "if waited.is_none_or(|polls| polls >= FEE_RESEND) {", "if waited.is_none() {"),
+    ]),
+    "cli-no-funds-check": (COMMAND, [
+        (CLI_SWAP, "                if held < needed {", "                if held < needed && false {"),
+    ]),
+    "cli-no-cancelled-shortcut": (COMMAND, [
+        (
+            CLI_SWAP,
+            "if resumed && run.deposit.is_none() && user.state(&swap).await?.stage == Stage::Refunded {",
+            "if false {",
+        ),
+    ]),
+    "cli-joint-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "        run.joint_account = Some(account);\n        ctx.store.save(STATE, run)?;\n",
+            "        run.joint_account = Some(account);\n",
+        ),
+    ]),
+    "cli-deposit-unsaved": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.store.save(STATE, run)?;\n    ctx.broadcast(txid).await?;\n",
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.broadcast(txid).await?;\n",
+        ),
+    ]),
+    "cli-deposit-sent-first": (COMMAND, [
+        (
+            CLI_SWAP,
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.store.save(STATE, run)?;\n    ctx.broadcast(txid).await?;\n",
+            "    run.deposit = Some(*txid.as_ref());\n    ctx.broadcast(txid).await?;\n    ctx.store.save(STATE, run)?;\n",
+        ),
+    ]),
+    "cli-deposit-not-sent-again": (COMMAND, [
+        (CLI_SWAP, "            if let Err(e) = ctx.broadcast(txid).await {", "            if let Err(e) = Ok::<(), anyhow::Error>(()) {"),
+    ]),
+    "cli-nothing-forgotten": (COMMAND, [
+        (CLI_SWAP, "        ctx.wallet.forget(account)?;\n", "        let _ = account;\n"),
+    ]),
+    "cli-unfinished-runs-replaced": (COMMAND, [
+        (CLI_SWAP, "        && !run.finished\n", "        && run.finished\n"),
+    ]),
+    "cli-other-versions-overwritten": (COMMAND, [
+        (CLI_SWAP, "    let saved = store.load::<Run>(STATE).with_context(|| {", "    let saved = store.load::<Run>(STATE).or_else(|_| Ok::<_, anyhow::Error>(None)).with_context(|| {"),
+    ]),
+    "cli-request-unsaved": (COMMAND, [
+        (CLI_DEPOSIT, "            store.save(PENDING, &pending)\n", "            let _ = pending;\n            Ok(())\n"),
+    ]),
+    "cli-landed-request-kept": (COMMAND, [
+        (CLI_DEPOSIT, "                report(index, &deposit);\n                store.remove(PENDING)?;\n", "                report(index, &deposit);\n"),
+    ]),
 }
-
-
-def survey(test, prefix):
-    run = subprocess.run(
-        ["cargo", "test", "-p", "zecswap-sim", "--test", "swaps", test, "--", "--exact", "--ignored", "--nocapture"],
-        cwd=ROOT,
-        env={**os.environ, "ZECSWAP_SIM_SEEDS": SEEDS},
-        capture_output=True,
-        text=True,
-    )
-    lines = [line for line in run.stdout.splitlines() if line.startswith(prefix)]
-    if not lines:
-        sys.exit(run.stderr[-3000:])
-    failing = [line for line in lines if not line.rstrip().endswith("|")]
-    return len(lines), {line.split(":")[0].removeprefix(prefix): line.rsplit(" | ", 1)[-1] for line in failing}
 
 
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def put(path, text):
-    new = BACKUP / "new"
-    new.write_text(text)
-    if path.exists():
-        shutil.copymode(path, new)
-    os.replace(new, path)
+class Checkout:
+    def __init__(self, root, env, apart):
+        self.root = root
+        self.env = env
+        self.apart = apart
+        self.backup = root / BACKUP
+        self.undo = self.backup / "undo.json"
 
-
-def restore():
-    if not UNDO.exists():
-        return False
-    theirs = []
-    for path, (original, mutated) in json.loads(UNDO.read_text()).items():
-        source = ROOT / path
-        now = source.read_text() if source.exists() else None
-        if now is not None and digest(now) == mutated:
-            put(source, original)
-        elif now == original:
-            os.utime(source)
-        else:
-            theirs.append(path)
-    if theirs:
-        sys.exit(
-            f"not undone, as edited since the mutant went in: {' '.join(theirs)}. "
-            f"Take the mutant out by hand ({UNDO} holds each file as it was), then delete {UNDO}"
+    def survey(self, test, prefix):
+        if HALT.is_set():
+            sys.exit("stopped")
+        run = subprocess.Popen(
+            ["cargo", "test", "-p", "zecswap-sim", "--test", "swaps", test, "--", "--exact", "--ignored", "--nocapture"],
+            cwd=self.root,
+            env={**BUILD, **self.env, "ZECSWAP_SIM_SEEDS": SEEDS},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=self.apart,
         )
-    UNDO.unlink()
-    return True
+        RUNNING.add(run)
+        try:
+            out, err = run.communicate()
+        except BaseException:
+            run.kill()
+            run.wait()
+            raise
+        finally:
+            RUNNING.discard(run)
+        lines = [line for line in out.splitlines() if line.startswith(prefix)]
+        if not lines:
+            sys.exit(err[-3000:])
+        failing = [line for line in lines if not line.rstrip().endswith("|")]
+        return len(lines), {line.split(":")[0].removeprefix(prefix): line.rsplit(" | ", 1)[-1] for line in failing}
 
+    def put(self, path, text):
+        new = self.backup / "new"
+        new.write_text(text)
+        if path.exists():
+            shutil.copymode(path, new)
+        os.replace(new, path)
 
-def edited(name, edits):
-    files = {}
-    for path, old, new in edits:
-        text = files[path] if path in files else (ROOT / path).read_text()
-        if text.count(old) != 1:
-            sys.exit(f"{name}: {path} no longer has the line this mutant changes")
-        files[path] = text.replace(old, new)
-    return files
+    def restore(self):
+        if not self.undo.exists():
+            return False
+        theirs = []
+        for path, (original, mutated) in json.loads(self.undo.read_text()).items():
+            source = self.root / path
+            now = source.read_text() if source.exists() else None
+            if now is not None and digest(now) == mutated:
+                self.put(source, original)
+            elif now == original:
+                os.utime(source)
+            else:
+                theirs.append(path)
+        if theirs:
+            sys.exit(
+                f"not undone, as edited since the mutant went in: {' '.join(theirs)}. "
+                f"Take the mutant out by hand ({self.undo} holds each file as it was), then delete {self.undo}"
+            )
+        self.undo.unlink()
+        return True
+
+    def edited(self, name, edits):
+        files = {}
+        for path, old, new in edits:
+            text = files[path] if path in files else (self.root / path).read_text()
+            if text.count(old) != 1:
+                sys.exit(f"{name}: {path} no longer has the line this mutant changes")
+            files[path] = text.replace(old, new)
+        return files
+
+    def mutant(self, name):
+        (test, prefix), edits = MUTANTS[name]
+        files = self.edited(name, edits)
+        held = {path: ((self.root / path).read_text(), digest(text)) for path, text in files.items()}
+        try:
+            self.put(self.undo, json.dumps(held))
+            for path, text in files.items():
+                self.put(self.root / path, text)
+            return self.survey(test, prefix)
+        finally:
+            self.restore()
+
+    def copy(self, number, of):
+        root = self.backup / f"worker-{number}"
+        built = [f"target/{entry.name}" for entry in (self.root / "target").iterdir() if entry.name != BACKUP.name]
+        for part in (*COPIED, *built):
+            if (self.root / part).exists():
+                (root / part).parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run([*CLONE, self.root / part, root / part], check=True)
+        (root / BACKUP).mkdir(parents=True)
+        share = {name: str(max(1, int(self.env.get(name, whole)) // of)) for name, whole in SHARED.items()}
+        return Checkout(root, {**self.env, **share, "CARGO_TARGET_DIR": str(root / "target")}, True)
 
 
 def stopped(number, _):
     sys.exit(128 + number)
 
 
+def told(name, ran, seeds, unchanged, escaped):
+    test = MUTANTS[name][0][0]
+    if test not in SOUND:
+        SOUND[test] = unchanged(MUTANTS[name][0])
+        if SOUND[test]:
+            print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
+    seeds = [seed for seed, how in seeds.items() if SOUND[test].get(seed) != how]
+    print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
+    if not seeds:
+        escaped.append(name)
+
+
+def in_place(home, chosen, escaped):
+    unchanged = {survey: home.survey(*survey)[1] for survey in dict.fromkeys(MUTANTS[name][0] for name in chosen)}
+    for name in chosen:
+        ran, seeds = home.mutant(name)
+        told(name, ran, seeds, unchanged.get, escaped)
+
+
+def in_copies(home, chosen, escaped):
+    copies = queue.Queue()
+
+    def on_a_copy(work):
+        def run():
+            copy = copies.get()
+            try:
+                return work(copy)
+            finally:
+                copies.put(copy)
+
+        return run
+
+    workers = max(1, min(WORKERS, len(chosen)))
+    pool = concurrent.futures.ThreadPoolExecutor(workers)
+    try:
+        for number in range(workers):
+            copies.put(home.copy(number, workers))
+        unchanged = {
+            survey: pool.submit(on_a_copy(lambda copy, survey=survey: copy.survey(*survey)[1]))
+            for survey in dict.fromkeys(MUTANTS[name][0] for name in chosen)
+        }
+        mutants = [pool.submit(on_a_copy(lambda copy, name=name: copy.mutant(name))) for name in chosen]
+        for name, mutant in zip(chosen, mutants):
+            ran, seeds = mutant.result()
+            told(name, ran, seeds, lambda survey: unchanged[survey].result(), escaped)
+    finally:
+        HALT.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        for run in list(RUNNING):
+            try:
+                os.killpg(run.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        pool.shutdown()
+        left(home)
+
+
+def left(home):
+    for copy in home.backup.glob("worker-*"):
+        shutil.rmtree(copy, ignore_errors=True)
+
+
 def main():
     for number in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(number, stopped)
-    BACKUP.mkdir(parents=True, exist_ok=True)
-    if restore():
+    home = Checkout(ROOT, os.environ, False)
+    home.backup.mkdir(parents=True, exist_ok=True)
+    if home.restore():
         print("undid the mutant an earlier run left in place", flush=True)
-    (BACKUP / "new").unlink(missing_ok=True)
+    (home.backup / "new").unlink(missing_ok=True)
+    left(home)
+    chosen = [name for name in MUTANTS if not ONLY or name in ONLY]
     escaped = []
-    for name, ((test, prefix), edits) in MUTANTS.items():
-        if ONLY and name not in ONLY:
-            continue
-        files = edited(name, edits)
-        held = {path: ((ROOT / path).read_text(), digest(text)) for path, text in files.items()}
-        try:
-            put(UNDO, json.dumps(held))
-            for path, text in files.items():
-                put(ROOT / path, text)
-            ran, seeds = survey(test, prefix)
-        finally:
-            restore()
-        if test in OPEN and test not in SOUND:
-            SOUND[test] = survey(test, prefix)[1]
-            print(f"{test}: seeds failing unchanged, counted only where they fail otherwise: {' '.join(sorted(SOUND[test], key=int))}", flush=True)
-        seeds = [seed for seed, how in seeds.items() if SOUND.get(test, {}).get(seed) != how]
-        print(f"{name}: caught by {len(seeds)} of {ran} seeds ({test}): {' '.join(seeds[:12])}", flush=True)
-        if not seeds:
-            escaped.append(name)
+    if WORKERS > 1:
+        in_copies(home, chosen, escaped)
+    else:
+        in_place(home, chosen, escaped)
     if escaped:
         sys.exit(f"escaped the simulation: {' '.join(escaped)}")
 
