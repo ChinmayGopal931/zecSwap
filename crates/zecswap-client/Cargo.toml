@@ -20,7 +20,6 @@ zecswap-api = { path = "../zecswap-api" }
 zecswap-chain = { path = "../zecswap-chain" }
 zecswap-core = { path = "../zecswap-core" }
 zecswap-railgun = { path = "../zecswap-railgun" }
-zecswap-tokens = { path = "../zecswap-tokens" }
 zeroize.workspace = true
 
 [features]

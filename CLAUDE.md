@@ -12,8 +12,7 @@ This repo is the protocol and the user's side: the contracts, the crates wallets
 docs wallets follow. The maker, the relayer and the token issuer are services kept elsewhere.
 Nothing here depends on them, and a wallet takes nothing from them on trust.
 
-Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `docs/railgun-sends.md`,
-`docs/tokens.md`.
+Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `docs/railgun-sends.md`.
 
 ## Layout
 
@@ -24,7 +23,7 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-chain` | Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the Ethereum client (`evm`: settlement and sends, `judge.rs` for claims, reverse refunds and readies, `deposits.rs`, `railgun.rs`, `funding`), with the alerts both raise (`alert.rs`) |
 | `crates/zecswap-api` | The maker's and relayer's wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (quote, pay the open fee where one is asked, accept, verify on-chain, deposit, claim or refund), forward and reverse (`reverse.rs`), and a wallet's deposits (`Depositor`): the reference the apps mirror |
-| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578) an accept spends: the wallet's side, and with `server` the check a service makes of them (`docs/tokens.md`) |
+| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), retired: no wallet or service here spends them; kept only for the Android wallet's bindings (`zecswap-jni`, `android/`) until the app's own token code goes |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`): a library of its session, store and commands (`lib.rs`, `swap.rs`, `deposit.rs`, `store.rs`) that the binary and the simulation both run |
 | `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `guards.rs` and `guards/` (Railgun's notes and transactions as a wallet proves them, the wallets' requests, honest and hostile, and the relayer that serves them) for the relayer's request checks; `cli.rs` and `cli/` (the person who types the commands and kills them, the record of every durable step, the maker's view of the Zcash chain) for the command-line wallet; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, `reach.rs` for the situations a seed reached, and `shrink.rs` for a failing seed's plan made simpler a step at a time; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt`, `guard-regressions.txt` and `cli-regressions.txt` hold seeds that once failed |
@@ -466,7 +465,7 @@ No hand-written example tests (Conventions). These stand in for them:
   of the binary it runs no argument parsing, URL, `connect`, `USER_PRIVATE_KEY`, tracing, `status`,
   `send` or `send-many`. `Session.prover` is shared, so a typing does not build the proving key
   again.
-- **Not simulated yet**, and so without tests beyond the known answers: tokens,
+- **Not simulated yet**, and so without tests beyond the known answers:
   `ReverseUser::ready`'s wallet half and `watch_deposit` as the client composes them (the wallet
   calls they make are simulated in the Zcash run, the reverse run still gives `ready` its spendable
   balance), of the relayer-side request checks, `evm/deposits.rs`'s gas-price cap, ETH check and
@@ -474,10 +473,10 @@ No hand-written example tests (Conventions). These stand in for them:
   and its proof (the reverse run's relayer funds from tokens of its own, the relayer run's through
   stand-ins of Railgun and Relay Adapt, which are not Railgun's deployed contracts and are checked
   against none of them here, and whose proofs are a stand-in circuit's signatures, which check no
-  merkle path and no note's ownership beyond what the stand-in circuit holds); reverse status and
-  token returns, swap relayers that serve
+  merkle path and no note's ownership beyond what the stand-in circuit holds); reverse status,
+  swap relayers that serve
   another deployment, ask over the fee cap or are the maker, the JNI bindings, and of the CLI
-  `init`, `status`, `send`, `send-many`, tokens (`--issuer`), a mainnet directory and a crash inside
+  `init`, `status`, `send`, `send-many`, a mainnet directory and a crash inside
   a save itself (a kill lands between steps, never inside a write). Seven of the CLI's rules have no
   mutant, as no seed notices them gone: saving the quote or the accept (a lost quote is asked again
   at the next index, and the maker answers an accept again with the same swap), waiting for
@@ -590,9 +589,6 @@ No hand-written example tests (Conventions). These stand in for them:
   left, and posts its accept again through `feeRequired` until the quote expires
   (`FeeNotHonoured`). The CLI saves the quote before it pays and the payment before it sends. The
   fee is the maker's whatever follows; the deposit still waits for the contract.
-- **Tokens.** Where the maker asks for them, each accept spends a Privacy Pass token, handed back
-  once the user pays in, so a device walks away from at most `tokens_per_day` swaps a day
-  (`docs/tokens.md`).
 - **Deposits.** A deposit address derives from the seed (BIP-44
   `m/44'/60'/(1000 + account)'/0/index`, testnet `1'`); the relayer moves its USDC into the
   wallet's Railgun balance on one EIP-3009 `receiveWithAuthorization`, from an account of its own,

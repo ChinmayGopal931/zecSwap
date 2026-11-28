@@ -163,7 +163,6 @@ impl User {
                 UnwrapErr(SysRng),
             ),
             viewing_keys: keys.viewing,
-            token_request: None,
         };
         let swap_id = swap_id(quote.maker, &acceptance.user_share);
         let accepted = self
@@ -172,7 +171,6 @@ impl User {
                 quote.quote_id,
                 quote.expires_at,
                 quote.open_fee.is_some(),
-                swap_id,
                 &acceptance,
             )
             .await?;
@@ -197,10 +195,6 @@ impl User {
             "the maker asks an open fee: pay it between `quote` and `accept`"
         );
         self.accept(&quoted).await
-    }
-
-    pub async fn collect_token(&self, swap: &UserSwap) -> Result<bool> {
-        self.maker.collect_token(swap.swap_id).await
     }
 
     pub async fn verify(&self, swap: &UserSwap) -> Result<JointAccount> {

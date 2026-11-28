@@ -29,7 +29,6 @@ pub struct SwapArgs {
     pub token: Address,
     pub units: u32,
     pub payee: Payee,
-    pub tokens: Option<std::sync::Arc<zecswap_client::Tokens>>,
     pub max_open_fee: u64,
 }
 
@@ -113,10 +112,6 @@ impl FeeWallet for Session {
 }
 
 pub async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
-    let spending = |api: MakerApi| match &args.tokens {
-        Some(tokens) => api.with_tokens(tokens.clone()),
-        None => api,
-    };
     let (settlement, route) = match args.payee {
         Payee::Account(key) => (
             Settlement::connect(&args.rpc, args.contract, key)?,
@@ -130,7 +125,7 @@ pub async fn run(ctx: &mut Session, args: SwapArgs) -> Result<()> {
             },
         ),
     };
-    let maker = spending(MakerApi::new(args.maker)?);
+    let maker = MakerApi::new(args.maker)?;
     let seed = ctx.store.seed()?;
     let user = User::new(
         &seed,

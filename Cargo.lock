@@ -7450,7 +7450,6 @@ dependencies = [
  "zecswap-chain",
  "zecswap-core",
  "zecswap-railgun",
- "zecswap-tokens",
  "zeroize",
 ]
 

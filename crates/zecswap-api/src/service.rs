@@ -42,7 +42,6 @@ pub struct MakerInfo {
     pub token: Address,
     pub zcash_network: crate::Network,
     pub reverse_enabled: bool,
-    pub token_return_key: Option<String>,
 }
 
 impl MakerInfo {

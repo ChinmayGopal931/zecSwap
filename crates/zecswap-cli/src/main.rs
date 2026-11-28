@@ -71,12 +71,6 @@ enum Command {
         /// open, kept whether or not a deposit follows. A quote asking more is refused.
         #[arg(long, default_value_t = 500_000)]
         max_open_fee: u64,
-        /// Spend Privacy Pass tokens from this issuer where the maker takes them.
-        #[arg(long, env = "ZECSWAP_ISSUER_URL")]
-        issuer: Option<String>,
-        /// This device's attestation for the issuer: its id, in the issuer's insecure-test mode.
-        #[arg(long, env = "ZECSWAP_DEVICE", default_value = "zecswap-cli")]
-        device: String,
     },
     /// Shields this seed's deposit addresses' tokens into its Railgun wallet through a relayer,
     /// resuming an unfinished shield, then shows the address to deposit to next.
@@ -152,8 +146,6 @@ async fn main() -> Result<()> {
             relayer,
             max_fee,
             max_open_fee,
-            issuer,
-            device,
         } => {
             let payee = match relayer {
                 Some(relayer) => swap::Payee::Railgun { relayer, max_fee },
@@ -164,16 +156,6 @@ async fn main() -> Result<()> {
                         .context("USER_PRIVATE_KEY")?,
                 ),
             };
-            let tokens = match issuer {
-                Some(issuer) => {
-                    let info = zecswap_client::MakerApi::new(maker.clone())?.info().await?;
-                    let key = info.token_return_key.context("the maker takes no tokens")?;
-                    let device = zecswap_client::Unattested(device.into_bytes());
-                    let tokens = zecswap_client::Tokens::new(issuer, device, 5, &key)?;
-                    Some(std::sync::Arc::new(tokens))
-                }
-                None => None,
-            };
             let args = swap::SwapArgs {
                 maker,
                 rpc,
@@ -181,7 +163,6 @@ async fn main() -> Result<()> {
                 token,
                 units,
                 payee,
-                tokens,
                 max_open_fee,
             };
             swap::run(&mut ctx, args).await

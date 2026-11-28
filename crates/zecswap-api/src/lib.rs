@@ -8,7 +8,6 @@ pub mod reverse;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod service;
-pub mod tokens;
 
 pub use network::Network;
 
@@ -63,8 +62,6 @@ pub struct Acceptance {
     pub user_proof: ShareProof,
     #[serde(with = "bytes64")]
     pub viewing_keys: ViewingKeys,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_request: Option<String>,
 }
 
 pub const TICKET_HEADER: &str = "ZecSwap-Ticket";
@@ -90,13 +87,6 @@ pub struct Accepted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub late_window: Option<u64>,
     pub ticket: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Status {
-    pub swap_id: B256,
-    pub token_return: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

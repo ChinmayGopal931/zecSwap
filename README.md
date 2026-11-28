@@ -83,7 +83,6 @@ lasts 24 hours (an hour on the testnet).
 | [Reverse flow](docs/reverse-flow.md) | USDC to ZEC: you escrow USDC straight from Railgun, the maker sends ZEC to the joint address, you confirm it arrived, and the maker reveals its half to take the USDC |
 | [Deposits](docs/deposits.md) | Public USDC taken at a wallet's own deposit addresses and shielded into its Railgun balance |
 | [Railgun sends](docs/railgun-sends.md) | Private sends and withdrawals the relayer broadcasts for wallets with no ETH |
-| [Tokens](docs/tokens.md) | Privacy Pass tokens that limit how many swaps a device can walk away from each day |
 
 ## Repository layout
 
@@ -99,7 +98,7 @@ doesn't take their word for anything: it checks every term against the contract 
 | `crates/zecswap-railgun` | Railgun keys, `0zk` addresses and the shield notes payouts go to, checked against Railgun's own engine |
 | `crates/zecswap-client` | The user's side, step by step, in both directions: the reference wallets follow |
 | `crates/zecswap-api` | The maker's and relayer's HTTP APIs, as wallets speak them |
-| `crates/zecswap-tokens` | Privacy Pass tokens: fetching, spending and checking them |
+| `crates/zecswap-tokens` | Privacy Pass tokens, retired: kept only for the Android bindings until the app's own token code goes |
 | `crates/zecswap-jni` | The Android bindings, built as `libzecswap.so` |
 | `crates/zecswap-cli` | A testnet wallet and swap CLI |
 | `crates/zecswap-sim` | Whole swaps, both ways, a wallet's deposits and its Zcash wallet, simulated from one seed: the real client against a simulated chain, maker, relayer and lightwalletd |

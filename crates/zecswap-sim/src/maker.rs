@@ -6,7 +6,7 @@ use alloy::primitives::{Address, B256};
 use rand_chacha::ChaCha20Rng;
 use rand_chacha::rand_core::SeedableRng;
 use zecswap_api::service::{ErrorCode, MakerInfo};
-use zecswap_api::{Acceptance, Accepted, Network, OpenFee, Quote, QuoteRequest, Status, reverse};
+use zecswap_api::{Acceptance, Accepted, Network, OpenFee, Quote, QuoteRequest, reverse};
 use zecswap_chain::evm::judge::{self, Go};
 use zecswap_chain::evm::{BlockId, Settlement, Stage, reverse_swap_id, swap_id};
 use zecswap_core::{
@@ -418,7 +418,6 @@ impl Maker {
             token: self.chain.token,
             zcash_network: Network::Testnet,
             reverse_enabled: false,
-            token_return_key: None,
         })
     }
 }
@@ -436,13 +435,6 @@ impl Served for MakerDoor {
                 ("POST", ["v1", "quote", id, "accept"]) => match id.parse() {
                     Ok(id) => maker.accept(id, &asked).await,
                     Err(_) => Err(Answer::refuse(400, ErrorCode::InvalidRequest, "quote id")),
-                },
-                ("GET", ["v1", "swaps", id]) => match id.parse() {
-                    Ok(swap_id) => Ok(Answer::ok(&Status {
-                        swap_id,
-                        token_return: None,
-                    })),
-                    Err(_) => Err(Answer::refuse(400, ErrorCode::InvalidRequest, "swap id")),
                 },
                 _ => Err(Answer::refuse(404, ErrorCode::NotFound, "no such route")),
             };
