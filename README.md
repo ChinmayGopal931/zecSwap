@@ -87,8 +87,8 @@ lasts 24 hours (an hour on the testnet).
 ## Repository layout
 
 This repo is the protocol and your side of it: the contracts, and everything a wallet builds on.
-The maker, the relayer and the token issuer are services, and their code is not here. Your wallet
-doesn't take their word for anything: it checks every term against the contract before it pays.
+The maker and the relayer are services, and their code is not here. Your wallet doesn't take
+their word for anything: it checks every term against the contract before it pays.
 
 | Path | What it is |
 |---|---|
