@@ -9,8 +9,8 @@ contract can still pay an account (the Base route, shelved for the app, still te
 Veylor, a Vizor fork with Private USD, and the Zapp Android wallet.
 
 This repo is the protocol and the user's side: the contracts, the crates wallets build on, and the
-docs wallets follow. The maker, the relayer and the token issuer are services kept elsewhere.
-Nothing here depends on them, and a wallet takes nothing from them on trust.
+docs wallets follow. The maker and the relayer are services kept elsewhere. Nothing here
+depends on them, and a wallet takes nothing from them on trust.
 
 Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `docs/railgun-sends.md`.
 
@@ -23,7 +23,6 @@ Design docs: `docs/reverse-flow.md`, `docs/open-fee.md`, `docs/deposits.md`, `do
 | `crates/zecswap-chain` | Zcash light wallet over lightwalletd (sync, joint accounts, pay, sweep) and the Ethereum client (`evm`: settlement and sends, `judge.rs` for claims, reverse refunds and readies, `deposits.rs`, `railgun.rs`, `funding`), with the alerts both raise (`alert.rs`) |
 | `crates/zecswap-api` | The maker's and relayer's wire types (serde), shared with wallets; the Kotlin port's spec |
 | `crates/zecswap-client` | The user side, step by step (quote, pay the open fee where one is asked, accept, verify on-chain, deposit, claim or refund), forward and reverse (`reverse.rs`), and a wallet's deposits (`Depositor`): the reference the apps mirror |
-| `crates/zecswap-tokens` | Privacy Pass tokens (RFC 9577/9578), retired: no wallet or service here spends them; kept only for the Android wallet's bindings (`zecswap-jni`, `android/`) until the app's own token code goes |
 | `crates/zecswap-jni` | The Android wallet's bindings, `libzecswap.so` (`scripts/build-android.sh`) |
 | `crates/zecswap-cli` | Testnet wallet and user CLI (`init`, `status`, `send`, `send-many`, `swap`, `swap --relayer`, `deposit`): a library of its session, store and commands (`lib.rs`, `swap.rs`, `deposit.rs`, `store.rs`) that the binary and the simulation both run |
 | `crates/zecswap-sim` | The deterministic simulation (Testing, below): a simulated Ethereum node on an in-process EVM (`node.rs`, `rpc.rs`), HTTP link (`net.rs`), maker, relayer and Zcash ledger models, the wallet that drives the real `User` (`wallet.rs`), and the run with its plan and checks (`run.rs`); `reverse.rs` and `reverse/wallet.rs` the same for reverse swaps and `ReverseUser`; `deposits.rs` and `deposits/` (its wallet, its relayer and a paid-out swap) for a wallet's deposits, `Depositor` and rescues; `lightwallet.rs` and `lightwallet/` (a Zcash chain of real notes, its lightwalletd, the wallet that drives the real `zcash::Wallet`, and sweeps for the signer) for the Zcash wallet, the lightwalletd client and PCZT signing; `guards.rs` and `guards/` (Railgun's notes and transactions as a wallet proves them, the wallets' requests, honest and hostile, and the relayer that serves them) for the relayer's request checks; `cli.rs` and `cli/` (the person who types the commands and kills them, the record of every durable step, the maker's view of the Zcash chain) for the command-line wallet; `alerts.rs` for the senders' alerts and the operator who acts on them; `hunt.rs` for seeds run on every core and hunts over ranges of them, `reach.rs` for the situations a seed reached, and `shrink.rs` for a failing seed's plan made simpler a step at a time; `regressions.txt`, `reverse-regressions.txt`, `deposit-regressions.txt`, `zcash-regressions.txt`, `guard-regressions.txt` and `cli-regressions.txt` hold seeds that once failed |
@@ -520,9 +519,9 @@ No hand-written example tests (Conventions). These stand in for them:
 - **Open findings** stay out of this repo: the maintainers keep them, with the seeds that fail, in
   `docs/local/open-findings.md`. Seeds outside the default ranges may fail on one of them.
 - **Known answers** from outside implementations: Railgun's engine (`zecswap-railgun`), ethers'
-  deposit addresses, the Privacy Pass RFC's token, the contract's hashes, Railgun's SDK funding
-  vector, the audit's 97 window cases (`windows_spec.rs`), librustzcash's NU7 heights and circuit,
-  the Android port's vectors (`zecswap-jni/tests`), and in Foundry `test/Vectors.t.sol`.
+  deposit addresses, the contract's hashes, Railgun's SDK funding vector, the audit's 97 window
+  cases (`windows_spec.rs`), librustzcash's NU7 heights and circuit, the Android port's vectors
+  (`zecswap-jni/tests`), and in Foundry `test/Vectors.t.sol`.
 - **The contract**: Foundry's stateful invariants (`test/*.invariants.t.sol`), the fork tests and
   the Rust-against-Solidity fuzzing (`test/ffi`).
 
@@ -658,8 +657,7 @@ No hand-written example tests (Conventions). These stand in for them:
   (`swap.json is another version's`): rename a finished one `swap.json.finished-<date>`.
 - Rust is pinned to 1.92, the Android SDK's Rust backend's. Hence alloy 1.8, as alloy 2 needs
   Rust 1.94.1; alloy-core (`alloy-primitives`, `alloy-sol-type-parser`) runs at 1.7. `cargo update`
-  stays within the pin (resolver 3), but takes later `rsa` pre-releases as compatible, and they
-  break `blind-rsa-signatures` 0.18: `zecswap-tokens` pins the one it builds against.
+  stays within the pin (resolver 3).
 - `zcash_client_sqlite` needs `transparent-inputs` because `zcash_client_backend/pczt` turns it on.
 - Don't reintroduce an orchard fork or SDK patch: signing goes through pczt's public Signer.
 - Never sign EVM transactions through `ProviderBuilder::new()`'s default fillers: its nonce cache

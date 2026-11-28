@@ -8,7 +8,6 @@ default-members = [
     "crates/zecswap-core",
     "crates/zecswap-jni",
     "crates/zecswap-railgun",
-    "crates/zecswap-tokens",
 ]
 resolver = "3"
 
